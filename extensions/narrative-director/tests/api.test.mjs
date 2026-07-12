@@ -15,6 +15,8 @@ function createHarness(chatMetadata, harnessOptions = {}) {
       }
       if (path === "/agents") return harnessOptions.agents || [];
       if (path === "/agents/suite/rewrite") {
+        const rewriteNumber = calls.filter((call) => call.path === "/agents/suite/rewrite").length;
+        if (harnessOptions.failRewriteCall === rewriteNumber) return { rewrittenText: "invalid" };
         if (harnessOptions.analysisError) return { error: harnessOptions.analysisError };
         return { rewrittenText: harnessOptions.initializationResponse || harnessOptions.analysisResponse || "{}" };
       }
@@ -38,7 +40,6 @@ const story = core.createStory({
   name: "API story",
   chatId: "chat-1",
   privateDocument: "SECRET",
-  progressionProjection: "public stages",
   director: { connectionId: "director-connection" },
   tracker: { connectionId: "tracker-connection" },
 });
@@ -81,12 +82,16 @@ test("creates Director and tracker through public agent API with separated priva
 
 const analysisResponse = JSON.stringify({
   suggestedStoryName: "Analyzed story",
+  publicPremise: "A traveler arrives in a public square.",
   storySummary: "Summary",
   characterInformation: "Character facts",
   cardAdditions: "Durable facts",
   lorebookEntries: [{ name: "Place", description: "Place summary", content: "Place lore", keys: ["place"] }],
   privateDirectorDocument: "Complete private plan",
-  trackerProjection: "stage_one; reveal_place_seen",
+  privateCharacters: [{ id: "mara", name: "Mara", role: "Heir", privateGoal: "Find the archive" }],
+  secrets: [{ id: "archive", title: "Archive", ownerCharacterId: "mara", knownByCharacterIds: ["mara"], status: "locked", summary: "Private", revealCondition: "Door opens" }],
+  narrativeArcs: [{ id: "arrival_arc", title: "Arrival", status: "active", observedState: "The traveler arrived", momentum: "low" }],
+  candidateBeats: [{ id: "enter_archive", title: "Archive opportunity", relatedArcIds: ["arrival_arc"], status: "unavailable", hardPrerequisites: [], readinessSignals: ["The traveler asks about the archive"], blockers: [], setupStrategies: ["An NPC mentions the archive"], relatedSecretIds: ["archive"] }],
 });
 
 test("analysis is called only after explicit analyzeStory invocation", async () => {
@@ -95,6 +100,38 @@ test("analysis is called only after explicit analyzeStory invocation", async () 
   const result = await api.analyzeStory("analysis-connection", "Source story text");
   assert.equal(calls.filter((call) => call.path === "/agents/suite/rewrite").length, 1);
   assert.equal(result.storySummary, "Summary");
+  const request = calls.find((call) => call.path === "/agents/suite/rewrite");
+  assert.equal(request.body.selectedText, "Source story text");
+  assert.ok(request.body.instruction.length <= 4_000);
+});
+
+test("rejects an oversized analysis instruction locally before any API call", async () => {
+  const original = core.ANALYSIS_PROMPT;
+  core.ANALYSIS_PROMPT = "X".repeat(4_001);
+  try {
+    const { api, calls } = createHarness({}, { analysisResponse });
+    await assert.rejects(
+      () => api.analyzeStory("analysis-connection", "Short source"),
+      /Analysis instruction exceeds the Marinara 4,000-character limit/,
+    );
+    assert.equal(calls.length, 0);
+  } finally {
+    core.ANALYSIS_PROMPT = original;
+  }
+});
+
+test("surfaces the failed validation field without echoing private input", async () => {
+  const privateValue = "PRIVATE STORY CONTENT";
+  const marinara = { apiFetch: async () => ({ error: "Validation Error", details: [{ field: "instruction", message: privateValue }] }) };
+  const api = globalThis.__NarrativeDirectorApi.createApi(marinara);
+  await assert.rejects(async () => {
+    try { await api.analyzeStory("analysis-connection", "Short source"); }
+    catch (error) {
+      assert.match(error.message, /Validation Error: instruction/);
+      assert.doesNotMatch(error.message, /PRIVATE STORY CONTENT/);
+      throw error;
+    }
+  });
 });
 
 test("analysis surfaces connection errors and invalid responses", async () => {
@@ -103,6 +140,17 @@ test("analysis surfaces connection errors and invalid responses", async () => {
 
   const invalid = createHarness({}, { analysisResponse: "invalid response" });
   await assert.rejects(() => invalid.api.analyzeStory("analysis-connection", "Source"), /did not contain a JSON/);
+  assert.equal(invalid.api.getLastAnalysisRawResponse(), "invalid response");
+  invalid.api.clearLastAnalysisRawResponse();
+  assert.equal(invalid.api.getLastAnalysisRawResponse(), "");
+});
+
+test("raw analysis response is session-only and available after a parsing error", async () => {
+  const invalidRaw = "```json\n{not valid}\n```";
+  const { api } = createHarness({}, { analysisResponse: invalidRaw });
+  await assert.rejects(() => api.analyzeStory("analysis-connection", "Private source"));
+  assert.equal(api.getLastAnalysisRawResponse(), invalidRaw);
+  assert.equal(Object.hasOwn(story, "rawAnalysisResponse"), false);
 });
 
 test("creates public resources and associates them while preserving chat IDs", async () => {
@@ -129,7 +177,6 @@ const initializationResponse = JSON.stringify({
   revealedSecrets: [],
   blockedSecrets: [{ id: "secret_one", label: "Secret remains locked" }],
   characterStates: [{ name: "Mara", state: "Present" }],
-  trackerProgression: { currentStage: "stage_one", revealedEvents: ["event_one"] },
 });
 
 test("existing-chat analysis reads messages only after explicit invocation", async () => {
@@ -145,6 +192,52 @@ test("existing-chat analysis reads messages only after explicit invocation", asy
     ["/agents/suite/rewrite", "POST"],
   ]);
   assert.equal(calls.some((call) => /messages/.test(call.path) && call.options.method !== undefined), false);
+});
+
+test("long-chat initialization uses chronological blocks and carries partial state", async () => {
+  const messages = [
+    { id: "m1", role: "user", content: "A".repeat(30_000), activeSwipeIndex: 0 },
+    { id: "m2", role: "assistant", content: "B".repeat(30_000), activeSwipeIndex: 1 },
+  ];
+  const progress = [];
+  const { api, calls } = createHarness({}, { messages, initializationResponse });
+  const result = await api.initializeFromChat("analysis-connection", story, messages, { onProgress: (value) => progress.push(value) });
+  const rewrites = calls.filter((call) => call.path === "/agents/suite/rewrite");
+  assert.ok(rewrites.length > 1);
+  assert.equal(result.messageCount, 2);
+  assert.deepEqual(progress.map((item) => item.block), progress.map((_item, index) => index + 1));
+  assert.equal(JSON.parse(rewrites[1].body.selectedText).previousPartialState.happenedSummary, "Confirmed history");
+  const allParts = rewrites.flatMap((call) => JSON.parse(call.body.selectedText).activeChatMessages);
+  assert.equal(allParts.filter((item) => item.sourceIndex === 0).map((item) => item.content).join(""), messages[0].content);
+  assert.equal(allParts.filter((item) => item.sourceIndex === 1).map((item) => item.content).join(""), messages[1].content);
+});
+
+test("cancelled long-chat initialization does not return a partial proposal", async () => {
+  const messages = [{ id: "m1", role: "user", content: "A".repeat(60_000) }];
+  const controller = new AbortController();
+  const { api } = createHarness({}, { initializationResponse });
+  await assert.rejects(() => api.initializeFromChat("analysis-connection", story, messages, {
+    signal: controller.signal,
+    onProgress: () => controller.abort(),
+  }), /cancelled/i);
+});
+
+test("a failed long-chat block can resume from its in-memory checkpoint", async () => {
+  const messages = [
+    { id: "m1", role: "user", content: "A".repeat(30_000) },
+    { id: "m2", role: "assistant", content: "B".repeat(30_000) },
+  ];
+  const { api, calls } = createHarness({}, { initializationResponse, failRewriteCall: 2 });
+  let checkpoint;
+  await assert.rejects(async () => {
+    try { await api.initializeFromChat("analysis-connection", story, messages); }
+    catch (error) { checkpoint = error.initializationCheckpoint; throw error; }
+  }, /block 2/i);
+  assert.equal(checkpoint.nextBlock, 1);
+  const callsBeforeRetry = calls.filter((call) => call.path === "/agents/suite/rewrite").length;
+  const result = await api.initializeFromChat("analysis-connection", story, messages, { resume: checkpoint });
+  assert.ok(result.initialState);
+  assert.equal(calls.filter((call) => call.path === "/agents/suite/rewrite").length, callsBeforeRetry + 1);
 });
 
 test("invalid initialization response fails without changing the existing story", async () => {

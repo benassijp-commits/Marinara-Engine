@@ -18,8 +18,11 @@
     dirty: false,
     initializationProposal: null,
     initializationMessageCount: 0,
+    initializationBlockCount: 0,
     initializationStoryId: "",
     initializationChatId: "",
+    initializationCheckpoint: null,
+    initializationAbortController: null,
   };
 
   const launcher = marinara.addElement(document.body, "button", {
@@ -124,22 +127,33 @@
                   <span data-slot="analyze-label">Analyze story</span>
                 </button>
               </section>
+              <details class="nd-advanced nd-raw-response" data-slot="raw-response-section" hidden>
+                <summary>Raw AI response</summary>
+                <div class="nd-raw-warning">This response may contain the complete source story and private narrative data. It is kept only in memory until this panel closes or the extension reloads.</div>
+                <pre data-slot="raw-response"></pre>
+                <button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="copy-raw-response">Copy raw response</button>
+              </details>
               <div class="nd-form-grid nd-form-grid-two">
                 <label class="nd-field">
-                  <span>Story summary</span>
-                  <small>Concise overview generated for review.</small>
-                  <textarea name="storySummary" rows="5" placeholder="The analyzed story summary appears here"></textarea>
+                  <span>Public premise</span>
+                  <small>Only the apparent starting situation known to the user and present characters.</small>
+                  <textarea name="publicPremise" rows="5" placeholder="Initially safe premise, or empty"></textarea>
                 </label>
                 <label class="nd-field">
-                  <span>Character information</span>
-                  <small>Relevant identity, personality, appearance, relationships and situation.</small>
-                  <textarea name="characterInformation" rows="5" placeholder="Reviewable character information appears here"></textarea>
+                  <span>Complete story summary</span>
+                  <small>Private Director context. Never used to build public resources.</small>
+                  <textarea name="storySummary" rows="5" placeholder="The analyzed story summary appears here"></textarea>
                 </label>
               </div>
               <div class="nd-form-grid nd-form-grid-two">
                 <label class="nd-field">
+                  <span>Character information</span>
+                  <small>Externally observable and initially safe information only.</small>
+                  <textarea name="characterInformation" rows="5" placeholder="Reviewable character information appears here"></textarea>
+                </label>
+                <label class="nd-field">
                   <span>Proposed card additions</span>
-                  <small>Review here, then select the public sections in Apply.</small>
+                  <small>Only facts safe at the initial point.</small>
                   <textarea name="cardAdditions" rows="5" placeholder="Permanent public facts"></textarea>
                 </label>
                 <label class="nd-field">
@@ -158,6 +172,29 @@
                 <span>Private document</span>
                 <textarea name="privateDocument" rows="10" placeholder="Secrets, future events and unrevealed progressions"></textarea>
               </label>
+              <section class="nd-structured-private" aria-labelledby="nd-private-structure-title">
+                <div class="nd-apply-heading">
+                  <div><span class="nd-section-label">Structured private data</span><strong id="nd-private-structure-title">Characters, secrets, arcs and candidate beats</strong></div>
+                  <span class="nd-resource-state">Director only</span>
+                </div>
+                <div class="nd-structured-group">
+                  <div class="nd-structured-heading"><strong>Private characters</strong><button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="add-private-character">Add character</button></div>
+                  <div class="nd-structured-list" data-slot="private-characters"></div>
+                </div>
+                <div class="nd-structured-group">
+                  <div class="nd-structured-heading"><strong>Secrets</strong><button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="add-secret">Add secret</button></div>
+                  <div class="nd-structured-list" data-slot="private-secrets"></div>
+                </div>
+                <div class="nd-structured-group">
+                  <div class="nd-structured-heading"><strong>Adaptive arcs</strong><button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="add-narrative-arc">Add arc</button></div>
+                  <div class="nd-structured-list" data-slot="narrative-arcs"></div>
+                </div>
+                <div class="nd-structured-group">
+                  <div class="nd-structured-heading"><strong>Candidate beats</strong><button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="add-candidate-beat">Add beat</button></div>
+                  <small>Eligibility permits consideration only. Setup must act through NPCs, environment or external consequences—never by controlling {{user}}.</small>
+                  <div class="nd-structured-list" data-slot="candidate-beats"></div>
+                </div>
+              </section>
               <div class="nd-form-grid nd-form-grid-three">
                 <label class="nd-field nd-field-wide">
                   <span>Exclusive Director connection</span>
@@ -174,14 +211,9 @@
             </div>
             <div class="nd-tab-panel" data-panel="tracker" hidden>
               <div class="nd-privacy-banner nd-privacy-banner-neutral">
-                <strong>Minimal projection only</strong>
-                <span>The tracker receives this projection and the final response. The private Director document is rejected if it appears in the tracker payload.</span>
+                <strong>Observable tracker structure</strong>
+                <span>The tracker records evidence, arc/beat IDs and revelation layers. It never receives private explanations or setup strategies.</span>
               </div>
-              <label class="nd-field">
-                <span>Progression projection</span>
-                <small>Use public stage IDs and reveal conditions, without secrets or unrevealed prose.</small>
-                <textarea name="progressionProjection" rows="7" placeholder="stage_1 → stage_2 when an event becomes visible"></textarea>
-              </label>
               <div class="nd-form-grid nd-form-grid-three">
                 <label class="nd-field nd-field-wide">
                   <span>Tracker connection</span>
@@ -211,8 +243,15 @@
                   <span>Initialization connection</span>
                   <select name="initializationConnectionId"><option value="">Choose connection</option></select>
                 </label>
-                <button class="nd-button nd-button-primary" type="button" data-action="initialize-chat">Initialize from existing chat</button>
+                <div class="nd-initialization-actions">
+                  <button class="nd-button nd-button-primary" type="button" data-action="initialize-chat">Initialize from existing chat</button>
+                  <button class="nd-button nd-button-quiet" type="button" data-action="cancel-analysis" hidden>Cancel analysis</button>
+                </div>
               </section>
+              <div class="nd-initialization-progress" data-slot="initialization-progress" hidden role="status" aria-live="polite">
+                <strong data-slot="initialization-progress-label"></strong>
+                <span data-slot="initialization-progress-range"></span>
+              </div>
               <div class="nd-form-grid nd-form-grid-two">
                 <label class="nd-field"><span>What already happened</span><textarea name="initHappenedSummary" rows="6"></textarea></label>
                 <label class="nd-field"><span>Current story point</span><textarea name="initCurrentPoint" rows="6"></textarea></label>
@@ -222,10 +261,6 @@
                 <label class="nd-field"><span>Blocked secrets</span><small>JSON array with non-revealing id and label.</small><textarea name="initBlockedSecrets" rows="6"></textarea></label>
               </div>
               <label class="nd-field"><span>Current character states</span><small>JSON array with name and confirmed state.</small><textarea name="initCharacterStates" rows="7"></textarea></label>
-              <div class="nd-form-grid nd-form-grid-two">
-                <label class="nd-field"><span>Tracker current stage</span><input name="initTrackerStage" /></label>
-                <label class="nd-field"><span>Tracker revealed event IDs</span><small>One ID per line.</small><textarea name="initTrackerRevealedEvents" rows="4"></textarea></label>
-              </div>
               <div class="nd-activation-actions">
                 <button class="nd-button nd-button-primary" type="button" data-action="confirm-initialization">Confirm state and update agents</button>
                 <button class="nd-button nd-button-quiet" type="button" data-action="cancel-initialization">Cancel proposal</button>
@@ -234,7 +269,7 @@
             <div class="nd-tab-panel" data-panel="application" hidden>
               <div class="nd-privacy-banner nd-privacy-banner-neutral">
                 <strong>Public resources only</strong>
-                <span>This preview never includes the private Director document. Creation and chat association require the confirmation below.</span>
+                <span>This preview never includes the complete summary or private Director data. Confirm that these fields contain no unrevealed information.</span>
               </div>
               <section class="nd-apply-section" aria-labelledby="nd-card-preview-title">
                 <div class="nd-apply-heading">
@@ -246,7 +281,7 @@
                   <input name="applicationCharacterName" maxlength="200" placeholder="Character name" />
                 </label>
                 <div class="nd-choice-row" aria-label="Card sections">
-                  <label><input type="checkbox" name="cardSection" value="storySummary" /> Story summary</label>
+                  <label><input type="checkbox" name="cardSection" value="publicPremise" /> Public premise</label>
                   <label><input type="checkbox" name="cardSection" value="characterInformation" /> Character information</label>
                   <label><input type="checkbox" name="cardSection" value="cardAdditions" /> Permanent card details</label>
                 </div>
@@ -352,6 +387,24 @@
     box.append(strong, list);
   }
 
+  function renderRawAnalysisResponse() {
+    const raw = api.getLastAnalysisRawResponse();
+    const section = $('[data-slot="raw-response-section"]');
+    section.hidden = !raw;
+    $('[data-slot="raw-response"]').textContent = raw;
+  }
+
+  async function copyRawAnalysisResponse() {
+    const raw = api.getLastAnalysisRawResponse();
+    if (!raw) return;
+    try {
+      await navigator.clipboard.writeText(raw);
+      toast("Raw AI response copied.", "success");
+    } catch {
+      toast("Could not access the clipboard.", "error");
+    }
+  }
+
   function option(value, label) {
     const node = document.createElement("option");
     node.value = value;
@@ -384,8 +437,50 @@
     })), null, 2);
   }
 
+  function readStructuredPrivateEditor() {
+    return {
+      privateCharacters: $$('[data-private-character]').map((row) => ({
+        id: row.querySelector('[data-private-field="id"]').value.trim(),
+        name: row.querySelector('[data-private-field="name"]').value.trim(),
+        role: row.querySelector('[data-private-field="role"]').value.trim(),
+        privateGoal: row.querySelector('[data-private-field="privateGoal"]').value.trim(),
+      })),
+      secrets: $$('[data-private-secret]').map((row) => ({
+        id: row.querySelector('[data-secret-field="id"]').value.trim(),
+        title: row.querySelector('[data-secret-field="title"]').value.trim(),
+        ownerCharacterId: row.querySelector('[data-secret-field="ownerCharacterId"]').value.trim(),
+        knownByCharacterIds: row.querySelector('[data-secret-field="knownByCharacterIds"]').value.split(",").map((id) => id.trim()).filter(Boolean),
+        status: row.querySelector('[data-secret-field="status"]').value,
+        summary: row.querySelector('[data-secret-field="summary"]').value.trim(),
+        revealCondition: row.querySelector('[data-secret-field="revealCondition"]').value.trim(),
+      })),
+      narrativeArcs: $$('[data-narrative-arc]').map((row) => ({
+        id: row.querySelector('[data-arc-field="id"]').value.trim(),
+        title: row.querySelector('[data-arc-field="title"]').value.trim(),
+        status: row.querySelector('[data-arc-field="status"]').value,
+        observedState: row.querySelector('[data-arc-field="observedState"]').value.trim(),
+        momentum: row.querySelector('[data-arc-field="momentum"]').value,
+        impossibilityEvidence: row.querySelector('[data-arc-field="impossibilityEvidence"]').value.trim(),
+        impossibilityFact: row.querySelector('[data-arc-field="impossibilityFact"]').value.trim(),
+        confidence: row.querySelector('[data-arc-field="confidence"]').value,
+      })),
+      candidateBeats: $$('[data-candidate-beat]').map((row) => ({
+        id: row.querySelector('[data-beat-field="id"]').value.trim(),
+        title: row.querySelector('[data-beat-field="title"]').value.trim(),
+        relatedArcIds: row.querySelector('[data-beat-field="relatedArcIds"]').value.split(",").map((id) => id.trim()).filter(Boolean),
+        status: row.querySelector('[data-beat-field="status"]').value,
+        hardPrerequisites: readLines(row.querySelector('[data-beat-field="hardPrerequisites"]').value),
+        readinessSignals: readLines(row.querySelector('[data-beat-field="readinessSignals"]').value),
+        blockers: readLines(row.querySelector('[data-beat-field="blockers"]').value),
+        setupStrategies: readLines(row.querySelector('[data-beat-field="setupStrategies"]').value),
+        relatedSecretIds: row.querySelector('[data-beat-field="relatedSecretIds"]').value.split(",").map((id) => id.trim()).filter(Boolean),
+      })),
+    };
+  }
+
   function readDraft() {
     if (!state.draft) return null;
+    const privateStructure = readStructuredPrivateEditor();
     return core.createStory({
       ...state.draft,
       name: fields.name.value,
@@ -394,6 +489,7 @@
       analysisConnectionId: fields.analysisConnectionId.value,
       initializationConnectionId: fields.initializationConnectionId.value,
       sourceText: fields.sourceText.value,
+      publicPremise: fields.publicPremise.value,
       storySummary: fields.storySummary.value,
       characterInformation: fields.characterInformation.value,
       cardAdditions: fields.cardAdditions.value,
@@ -401,7 +497,7 @@
         ? readLorebookProposalEditor(fields.lorebookEntries.value)
         : fields.lorebookEntries.value,
       privateDocument: fields.privateDocument.value,
-      progressionProjection: fields.progressionProjection.value,
+      ...privateStructure,
       applicationCharacterName: fields.applicationCharacterName.value,
       applicationLorebookName: fields.applicationLorebookName.value,
       applicationCardSections: selectedCardSections(),
@@ -462,12 +558,13 @@
       "Choose connection",
     );
     fields.sourceText.value = story.sourceText;
+    fields.publicPremise.value = story.publicPremise;
     fields.storySummary.value = story.storySummary;
     fields.characterInformation.value = story.characterInformation;
     fields.cardAdditions.value = story.cardAdditions;
     fields.lorebookEntries.value = story.lorebookEntries;
     fields.privateDocument.value = story.privateDocument;
-    fields.progressionProjection.value = story.progressionProjection;
+    renderPrivateStructure(story);
     fields.applicationCharacterName.value = story.applicationCharacterName || story.name;
     fields.applicationLorebookName.value = story.applicationLorebookName || `${story.name} Lorebook`;
     $$('input[name="cardSection"]').forEach((input) => {
@@ -495,10 +592,149 @@
     return { id: connection.id, label: `${connection.name || "Connection"} · ${connection.model || connection.provider}` };
   }
 
+  function setRowValue(row, selector, value) {
+    const input = row.querySelector(selector);
+    if (input) input.value = value ?? "";
+  }
+
+  function renderPrivateStructure(story) {
+    const characters = $('[data-slot="private-characters"]');
+    const secrets = $('[data-slot="private-secrets"]');
+    const arcs = $('[data-slot="narrative-arcs"]');
+    const beats = $('[data-slot="candidate-beats"]');
+    characters.replaceChildren();
+    secrets.replaceChildren();
+    arcs.replaceChildren();
+    beats.replaceChildren();
+    story.privateCharacters.forEach((item, index) => {
+      const row = document.createElement("details");
+      row.className = "nd-structured-entry";
+      row.dataset.privateCharacter = String(index);
+      row.innerHTML = `<summary><span>${item.name || item.id}</span><small>${item.id}</small></summary>
+        <div class="nd-structured-fields">
+          <div class="nd-form-grid nd-form-grid-two">
+            <label class="nd-field"><span>ID</span><input data-private-field="id" /></label>
+            <label class="nd-field"><span>Name</span><input data-private-field="name" /></label>
+          </div>
+          <label class="nd-field"><span>Private role</span><input data-private-field="role" /></label>
+          <label class="nd-field"><span>Private goal</span><textarea data-private-field="privateGoal" rows="3"></textarea></label>
+          <button class="nd-button nd-button-danger-quiet nd-button-small" type="button" data-action="remove-private-character" data-index="${index}">Remove character</button>
+        </div>`;
+      setRowValue(row, '[data-private-field="id"]', item.id);
+      setRowValue(row, '[data-private-field="name"]', item.name);
+      setRowValue(row, '[data-private-field="role"]', item.role);
+      setRowValue(row, '[data-private-field="privateGoal"]', item.privateGoal);
+      characters.appendChild(row);
+    });
+    story.secrets.forEach((item, index) => {
+      const row = document.createElement("details");
+      row.className = "nd-structured-entry";
+      row.dataset.privateSecret = String(index);
+      row.innerHTML = `<summary><span>${item.title || item.id}</span><small>${item.status} · ${item.id}</small></summary>
+        <div class="nd-structured-fields">
+          <div class="nd-form-grid nd-form-grid-two">
+            <label class="nd-field"><span>ID</span><input data-secret-field="id" /></label>
+            <label class="nd-field"><span>Title</span><input data-secret-field="title" /></label>
+            <label class="nd-field"><span>Owner character ID</span><input data-secret-field="ownerCharacterId" /></label>
+            <label class="nd-field"><span>Known by character IDs</span><input data-secret-field="knownByCharacterIds" placeholder="id_one, id_two" /></label>
+            <label class="nd-field"><span>Status</span><select data-secret-field="status"><option value="locked">Locked</option><option value="foreshadowed">Foreshadowed</option><option value="suspected">Suspected</option><option value="partially_revealed">Partially revealed</option><option value="confirmed">Confirmed</option></select></label>
+          </div>
+          <label class="nd-field"><span>Private summary</span><textarea data-secret-field="summary" rows="3"></textarea></label>
+          <label class="nd-field"><span>Reveal condition</span><textarea data-secret-field="revealCondition" rows="3"></textarea></label>
+          <button class="nd-button nd-button-danger-quiet nd-button-small" type="button" data-action="remove-secret" data-index="${index}">Remove secret</button>
+        </div>`;
+      setRowValue(row, '[data-secret-field="id"]', item.id);
+      setRowValue(row, '[data-secret-field="title"]', item.title);
+      setRowValue(row, '[data-secret-field="ownerCharacterId"]', item.ownerCharacterId);
+      setRowValue(row, '[data-secret-field="knownByCharacterIds"]', item.knownByCharacterIds.join(", "));
+      setRowValue(row, '[data-secret-field="status"]', item.status);
+      setRowValue(row, '[data-secret-field="summary"]', item.summary);
+      setRowValue(row, '[data-secret-field="revealCondition"]', item.revealCondition);
+      secrets.appendChild(row);
+    });
+    story.narrativeArcs.forEach((item, index) => {
+      const row = document.createElement("details");
+      row.className = "nd-structured-entry";
+      row.dataset.narrativeArc = String(index);
+      row.innerHTML = `<summary><span>${item.title || item.id}</span><small>${item.status} · ${item.momentum}</small></summary>
+        <div class="nd-structured-fields"><div class="nd-form-grid nd-form-grid-two">
+          <label class="nd-field"><span>ID</span><input data-arc-field="id" /></label>
+          <label class="nd-field"><span>Title</span><input data-arc-field="title" /></label>
+          <label class="nd-field"><span>Status</span><select data-arc-field="status"><option value="inactive">Inactive</option><option value="active">Active</option><option value="paused">Paused</option><option value="completed">Completed</option><option value="abandoned">Abandoned</option></select></label>
+          <label class="nd-field"><span>Momentum</span><select data-arc-field="momentum"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+        </div><label class="nd-field"><span>Observed state</span><textarea data-arc-field="observedState" rows="3"></textarea></label>
+        <details class="nd-arc-abandonment"><summary>Abandonment evidence</summary><div class="nd-structured-fields">
+          <label class="nd-field"><span>Definitive impossibility evidence</span><textarea data-arc-field="impossibilityEvidence" rows="3"></textarea></label>
+          <label class="nd-field"><span>Confirmed impossibility fact</span><textarea data-arc-field="impossibilityFact" rows="3"></textarea></label>
+          <label class="nd-field"><span>Confidence</span><select data-arc-field="confidence"><option value="">Not established</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+          <small>Required only for abandoned. Refusal, delay, low readiness and recoverable divergence are not abandonment.</small>
+        </div></details>
+        <button class="nd-button nd-button-danger-quiet nd-button-small" type="button" data-action="remove-narrative-arc" data-index="${index}">Remove arc</button></div>`;
+      for (const key of ["id", "title", "status", "observedState", "momentum", "impossibilityEvidence", "impossibilityFact", "confidence"]) setRowValue(row, `[data-arc-field="${key}"]`, item[key]);
+      arcs.appendChild(row);
+    });
+    story.candidateBeats.forEach((item, index) => {
+      const row = document.createElement("details");
+      row.className = "nd-structured-entry";
+      row.dataset.candidateBeat = String(index);
+      row.innerHTML = `<summary><span>${item.title || item.id}</span><small>${item.status} · ${item.id}</small></summary>
+        <div class="nd-structured-fields"><div class="nd-form-grid nd-form-grid-two">
+          <label class="nd-field"><span>ID</span><input data-beat-field="id" /></label><label class="nd-field"><span>Title</span><input data-beat-field="title" /></label>
+          <label class="nd-field"><span>Status</span><select data-beat-field="status"><option value="unavailable">Unavailable</option><option value="eligible">Eligible</option><option value="active">Active</option><option value="deferred">Deferred</option><option value="completed">Completed</option><option value="skipped">Skipped</option></select></label>
+          <label class="nd-field"><span>Related arc IDs</span><input data-beat-field="relatedArcIds" /></label>
+          <label class="nd-field"><span>Related secret IDs</span><input data-beat-field="relatedSecretIds" /></label>
+        </div>
+        <label class="nd-field"><span>Hard prerequisites</span><small>One confirmed prerequisite per line.</small><textarea data-beat-field="hardPrerequisites" rows="3"></textarea></label>
+        <label class="nd-field"><span>Readiness signals</span><small>One observable signal per line.</small><textarea data-beat-field="readinessSignals" rows="3"></textarea></label>
+        <label class="nd-field"><span>Blockers</span><textarea data-beat-field="blockers" rows="3"></textarea></label>
+        <label class="nd-field"><span>Setup strategies</span><small>NPC/environment actions only; never control {{user}}.</small><textarea data-beat-field="setupStrategies" rows="3"></textarea></label>
+        <button class="nd-button nd-button-danger-quiet nd-button-small" type="button" data-action="remove-candidate-beat" data-index="${index}">Remove beat</button></div>`;
+      for (const key of ["id", "title", "status"]) setRowValue(row, `[data-beat-field="${key}"]`, item[key]);
+      for (const key of ["relatedArcIds", "relatedSecretIds"]) setRowValue(row, `[data-beat-field="${key}"]`, item[key].join(", "));
+      for (const key of ["hardPrerequisites", "readinessSignals", "blockers", "setupStrategies"]) setRowValue(row, `[data-beat-field="${key}"]`, item[key].join("\n"));
+      beats.appendChild(row);
+    });
+    for (const [container, label] of [[characters, "No private characters yet."], [secrets, "No secrets yet."], [arcs, "No adaptive arcs yet."], [beats, "No candidate beats yet."]]) {
+      if (!container.children.length) {
+        const empty = document.createElement("p");
+        empty.className = "nd-inline-empty";
+        empty.textContent = label;
+        container.appendChild(empty);
+      }
+    }
+  }
+
+  function nextStructuredId(prefix, items) {
+    let number = items.length + 1;
+    while (items.some((item) => item.id === `${prefix}_${number}`)) number++;
+    return `${prefix}_${number}`;
+  }
+
+  function mutatePrivateStructure(kind, index = -1) {
+    const draft = readDraft();
+    if (!draft) return;
+    if (kind === "add-character") {
+      draft.privateCharacters.push({ id: nextStructuredId("character", draft.privateCharacters), name: "New character", role: "Private role", privateGoal: "Private goal" });
+    } else if (kind === "add-secret") {
+      draft.secrets.push({ id: nextStructuredId("secret", draft.secrets), title: "New secret", ownerCharacterId: draft.privateCharacters[0]?.id || "character_1", knownByCharacterIds: [], status: "locked", summary: "Private summary", revealCondition: "Reveal condition" });
+    } else if (kind === "add-arc") {
+      draft.narrativeArcs.push({ id: nextStructuredId("arc", draft.narrativeArcs), title: "New arc", status: "inactive", observedState: "No confirmed movement yet", momentum: "low", impossibilityEvidence: "", impossibilityFact: "", confidence: "" });
+    } else if (kind === "add-beat") {
+      draft.candidateBeats.push({ id: nextStructuredId("beat", draft.candidateBeats), title: "New candidate beat", relatedArcIds: [draft.narrativeArcs[0]?.id || "arc_1"], status: "unavailable", hardPrerequisites: [], readinessSignals: ["Observable readiness signal"], blockers: [], setupStrategies: ["An NPC or environment setup"], relatedSecretIds: [] });
+    } else if (kind === "remove-character") draft.privateCharacters.splice(index, 1);
+    else if (kind === "remove-secret") draft.secrets.splice(index, 1);
+    else if (kind === "remove-arc") draft.narrativeArcs.splice(index, 1);
+    else if (kind === "remove-beat") draft.candidateBeats.splice(index, 1);
+    state.draft = core.createStory(draft, draft.createdAt);
+    state.dirty = true;
+    renderPrivateStructure(state.draft);
+    updateDerivedView();
+  }
+
   function renderInitializationProposal(proposal, story = state.draft) {
     const value = proposal || {
       happenedSummary: "", currentPoint: "", occurredEvents: [], pendingEvents: [], revealedSecrets: [],
-      blockedSecrets: [], characterStates: [], trackerProgression: { currentStage: "", revealedEvents: [] },
+      blockedSecrets: [], characterStates: [],
     };
     fields.initHappenedSummary.value = value.happenedSummary || "";
     fields.initCurrentPoint.value = value.currentPoint || "";
@@ -507,13 +743,11 @@
     fields.initRevealedSecrets.value = (value.revealedSecrets || []).join("\n");
     fields.initBlockedSecrets.value = JSON.stringify(value.blockedSecrets || [], null, 2);
     fields.initCharacterStates.value = JSON.stringify(value.characterStates || [], null, 2);
-    fields.initTrackerStage.value = value.trackerProgression?.currentStage || "";
-    fields.initTrackerRevealedEvents.value = (value.trackerProgression?.revealedEvents || []).join("\n");
     const hasPending = Boolean(
       state.initializationProposal && state.initializationStoryId === story?.id && state.initializationChatId === story?.chatId,
     );
     $('[data-slot="initialization-status"]').textContent = hasPending
-      ? `Unsaved proposal from ${state.initializationMessageCount} active messages. Review and confirm or cancel.`
+      ? `Unsaved proposal from ${state.initializationMessageCount} active messages in ${state.initializationBlockCount || 1} block(s). Review and confirm or cancel.`
       : story?.initializedChatId
         ? `Confirmed for chat ${story.initializedChatId}${story.initializedAt ? ` at ${story.initializedAt}` : ""}.`
         : "No initialization proposal loaded.";
@@ -540,10 +774,6 @@
       revealedSecrets: readLines(fields.initRevealedSecrets.value),
       blockedSecrets,
       characterStates,
-      trackerProgression: {
-        currentStage: fields.initTrackerStage.value,
-        revealedEvents: readLines(fields.initTrackerRevealedEvents.value),
-      },
     }));
   }
 
@@ -808,9 +1038,11 @@
       state.draft = analyzed;
       state.dirty = false;
       renderEditor();
+      renderRawAnalysisResponse();
       toast("Analysis complete. Review every proposal before activation.", "success");
     } catch (error) {
       state.draft = original;
+      renderRawAnalysisResponse();
       showErrors([error.message || "Story analysis failed. Your source text was preserved."]);
       toast("Analysis failed. The original source is unchanged.", "error");
     } finally {
@@ -818,11 +1050,24 @@
     }
   }
 
-  function clearInitializationProposal() {
+  function clearInitializationProposal(clearCheckpoint = true) {
     state.initializationProposal = null;
     state.initializationMessageCount = 0;
+    state.initializationBlockCount = 0;
     state.initializationStoryId = "";
     state.initializationChatId = "";
+    if (clearCheckpoint) state.initializationCheckpoint = null;
+  }
+
+  function showInitializationProgress(progress = null) {
+    const panel = $('[data-slot="initialization-progress"]');
+    const cancel = $('[data-action="cancel-analysis"]');
+    panel.hidden = !progress;
+    cancel.hidden = !progress;
+    if (!progress) return;
+    $('[data-slot="initialization-progress-label"]').textContent = `Analyzing block ${progress.block} of ${progress.blockCount}`;
+    const split = progress.splits?.length ? ` · split message parts: ${progress.splits.map((item) => `${item.message}:${item.part}/${item.total}`).join(", ")}` : "";
+    $('[data-slot="initialization-progress-range"]').textContent = `Messages ${progress.messageStart}–${progress.messageEnd}${split}`;
   }
 
   async function saveInitializationDiagnostic(story, input) {
@@ -845,30 +1090,54 @@
       return;
     }
     setBusy(true, "Reading active chat messages…");
+    state.initializationAbortController = new AbortController();
     showErrors([]);
     let messageCount = 0;
     try {
       const messages = await api.listChatMessages(original.chatId);
       messageCount = messages.length;
-      const result = await api.initializeFromChat(original.initializationConnectionId, original, messages);
+      const result = await api.initializeFromChat(original.initializationConnectionId, original, messages, {
+        resume: state.initializationCheckpoint,
+        signal: state.initializationAbortController.signal,
+        onProgress: showInitializationProgress,
+      });
+      state.initializationCheckpoint = null;
       state.initializationProposal = result.initialState;
       state.initializationMessageCount = result.messageCount;
+      state.initializationBlockCount = result.blockCount || 1;
       state.initializationStoryId = original.id;
       state.initializationChatId = original.chatId;
       renderInitializationProposal(result.initialState, original);
       toast("Initialization proposal ready. Nothing has been saved or activated.", "success");
     } catch (error) {
-      clearInitializationProposal();
+      if (error.name === "AbortError") {
+        clearInitializationProposal();
+        renderInitializationProposal(original.confirmedInitialState, original);
+        showErrors([]);
+        toast("Initialization cancelled. Previous state preserved.", "info");
+        return;
+      }
+      clearInitializationProposal(false);
+      if (error.initializationCheckpoint) state.initializationCheckpoint = error.initializationCheckpoint;
       await saveInitializationDiagnostic(original, {
-        operation: "initialize_existing_chat", status: "error", stage: "analysis",
+        operation: "initialize_existing_chat", status: "error", stage: error.block ? `block_${error.block}_of_${error.blockCount}` : "analysis",
         chatId: original.chatId, messageCount, error: "Initialization analysis failed.",
       });
       renderInitializationProposal(original.confirmedInitialState, original);
       showErrors([error.message || "Existing-chat initialization failed. The previous state was preserved."]);
       toast("Initialization failed. The chat and previous state are unchanged.", "error");
     } finally {
+      state.initializationAbortController = null;
+      showInitializationProgress(null);
       setBusy(false);
     }
+  }
+
+  function cancelInitializationAnalysis() {
+    state.initializationAbortController?.abort();
+    state.initializationCheckpoint = null;
+    showInitializationProgress(null);
+    toast("Cancellation requested. No partial state will be saved.", "info");
   }
 
   function cancelInitialization() {
@@ -965,9 +1234,7 @@
     try {
       preview = core.buildPublicResourcePreview(working);
       if (!preview.character.data.name.trim()) errors.push("Enter a character name.");
-      if (!preview.character.data.description.trim()) errors.push("Select at least one non-empty card section.");
       if (!preview.lorebook.name.trim()) errors.push("Enter a lorebook name.");
-      if (!preview.lorebookEntries.length) errors.push("Select at least one lorebook entry.");
     } catch (error) {
       errors.push(error.message);
     }
@@ -1217,7 +1484,7 @@
 
   function setBusy(busy, label = "Working…") {
     $$('button, input, select, textarea').forEach((element) => {
-      if (element.dataset.action !== "close") element.disabled = busy;
+      if (!["close", "cancel-analysis"].includes(element.dataset.action)) element.disabled = busy;
     });
     if (busy) toast(label, "info");
   }
@@ -1252,6 +1519,8 @@
   function closePanel() {
     if (state.dirty && !window.confirm("Close and discard unsaved changes?")) return;
     state.open = false;
+    api.clearLastAnalysisRawResponse();
+    renderRawAnalysisResponse();
     root.classList.remove("is-open");
     root.setAttribute("aria-hidden", "true");
     document.body.classList.remove("nd-body-locked");
@@ -1305,7 +1574,17 @@
     if (action === "new") newStory();
     if (action === "delete") void deleteCurrent();
     if (action === "analyze") void analyzeCurrent();
+    if (action === "copy-raw-response") void copyRawAnalysisResponse();
+    if (action === "add-private-character") mutatePrivateStructure("add-character");
+    if (action === "add-secret") mutatePrivateStructure("add-secret");
+    if (action === "add-narrative-arc") mutatePrivateStructure("add-arc");
+    if (action === "add-candidate-beat") mutatePrivateStructure("add-beat");
+    if (action === "remove-private-character") mutatePrivateStructure("remove-character", Number(event.target.closest("[data-index]").dataset.index));
+    if (action === "remove-secret") mutatePrivateStructure("remove-secret", Number(event.target.closest("[data-index]").dataset.index));
+    if (action === "remove-narrative-arc") mutatePrivateStructure("remove-arc", Number(event.target.closest("[data-index]").dataset.index));
+    if (action === "remove-candidate-beat") mutatePrivateStructure("remove-beat", Number(event.target.closest("[data-index]").dataset.index));
     if (action === "initialize-chat") void initializeExistingChat();
+    if (action === "cancel-analysis") cancelInitializationAnalysis();
     if (action === "confirm-initialization") void confirmInitialization();
     if (action === "cancel-initialization") cancelInitialization();
     if (action === "apply-resources") void applyPublicResources();
@@ -1347,6 +1626,7 @@
   });
   marinara.onCleanup(() => {
     document.body.classList.remove("nd-body-locked");
+    api.clearLastAnalysisRawResponse();
     delete globalThis.__narrativeDirectorLoaded;
     delete globalThis.__NarrativeDirectorCore;
     delete globalThis.__NarrativeDirectorStorage;

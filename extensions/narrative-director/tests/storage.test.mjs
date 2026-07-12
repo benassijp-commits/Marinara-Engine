@@ -45,7 +45,11 @@ test("analyzed result is saved and remains manually editable", async () => {
     cardAdditions: "Generated card proposal",
     lorebookEntries: [],
     privateDirectorDocument: "Private plan",
-    trackerProjection: "stage_one",
+    publicPremise: "Safe premise",
+    privateCharacters: [],
+    secrets: [],
+    narrativeArcs: [],
+    candidateBeats: [],
   });
   await store.saveStory(analyzed);
   const loaded = await store.getStory(original.id);
@@ -86,9 +90,17 @@ test("an initialization proposal is not persisted until explicit confirmation", 
     happenedSummary: "Occurred",
     currentPoint: "Current",
     occurredEvents: [], pendingEvents: [], revealedSecrets: [], blockedSecrets: [], characterStates: [],
-    trackerProgression: { currentStage: "stage", revealedEvents: [] },
   };
   assert.equal((await store.getStory(original.id)).confirmedInitialState, null, "cancel/no confirmation leaves storage unchanged");
   await store.saveStory(core.createStory({ ...original, confirmedInitialState: proposal, initializedChatId: "chat-1" }));
   assert.equal((await store.getStory(original.id)).confirmedInitialState.currentPoint, "Current");
+});
+
+test("session-only raw AI response is stripped before persistence", async () => {
+  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
+  const story = core.createStory({ id: "raw-story", name: "Raw", rawAnalysisResponse: "PRIVATE RAW RESPONSE" });
+  await store.saveStory(story);
+  const loaded = await store.getStory(story.id);
+  assert.equal(Object.hasOwn(story, "rawAnalysisResponse"), false);
+  assert.equal(JSON.stringify(loaded).includes("PRIVATE RAW RESPONSE"), false);
 });

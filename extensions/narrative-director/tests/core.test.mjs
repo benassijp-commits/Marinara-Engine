@@ -12,7 +12,6 @@ function validStory(overrides = {}) {
     characterId: "character-1",
     chatId: "chat-1",
     privateDocument: "PRIVATE_SECRET_ALPHA",
-    progressionProjection: "stage_one then stage_two",
     director: { connectionId: "connection-director" },
     tracker: { connectionId: "connection-tracker" },
     ...overrides,
@@ -52,8 +51,12 @@ test("prevents accidental private document inclusion in tracker payload", () => 
   assert.equal(payload.resultType, "custom_tracker_update");
   assert.equal(JSON.stringify(payload).includes(story.privateDocument), false);
 
-  const contaminated = validStory({ progressionProjection: "PRIVATE_SECRET_ALPHA" });
-  assert.throws(() => core.buildTrackerPayload(contaminated), /must never be included/);
+  assert.deepEqual(payload.settings.narrative.adaptiveTrackingPlan, {
+    arcs: [], beats: [], secrets: [], outputFieldNames: [
+      "nd_confirmed_facts", "nd_arc_states", "nd_readiness_evidence", "nd_blockers",
+      "nd_eligible_beats", "nd_secret_layers", "nd_confidence",
+    ],
+  });
 });
 
 test("activation preserves existing agent types and avoids duplicates", () => {
@@ -78,6 +81,7 @@ test("exports and imports a versioned JSON bundle", () => {
 
 const validAnalysis = {
   suggestedStoryName: "The Brass Key",
+  publicPremise: "Mara has recently arrived in the old quarter and carries an unusual brass key.",
   storySummary: "A traveler discovers a key linked to a hidden inheritance.",
   characterInformation: "Mara is observant, guarded and newly arrived in the city.",
   cardAdditions: "Mara notices small physical details before social cues.",
@@ -85,7 +89,26 @@ const validAnalysis = {
     { name: "Old Quarter", description: "Historic district", content: "The oldest district in the city.", keys: ["quarter"] },
   ],
   privateDirectorDocument: "The key belongs to Mara's missing sibling and opens a future sealed archive.",
-  trackerProjection: "stage_arrival; reveal_key_seen when the brass key is visibly discovered",
+  privateCharacters: [
+    { id: "mara", name: "Mara", role: "Missing heir", privateGoal: "Find her sibling" },
+    { id: "ivo", name: "Ivo", role: "Archive keeper", privateGoal: "Protect Mara" },
+  ],
+  secrets: [{
+    id: "key_origin", title: "Origin of the key", ownerCharacterId: "mara",
+    knownByCharacterIds: ["mara", "ivo"], status: "locked", summary: "The key belongs to Mara's sibling.",
+    revealCondition: "The sealed archive opens.",
+  }],
+  narrativeArcs: [{
+    id: "archive_arc", title: "The sealed archive", status: "active",
+    observedState: "Mara has reached the old quarter.", momentum: "medium",
+    impossibilityEvidence: "", impossibilityFact: "", confidence: "",
+  }],
+  candidateBeats: [{
+    id: "archive_threshold", title: "An invitation to the archive", relatedArcIds: ["archive_arc"],
+    status: "eligible", hardPrerequisites: ["Mara has the brass key"],
+    readinessSignals: ["Mara asks about the archive"], blockers: ["Mara explicitly leaves the district"],
+    setupStrategies: ["Ivo can leave a visible archive notice"], relatedSecretIds: ["key_origin"],
+  }],
 };
 
 test("parses a valid structured analysis", () => {
@@ -102,25 +125,98 @@ test("reports invalid JSON and invalid response shapes", () => {
   assert.throws(() => core.parseAnalysisResponse("not json"), /did not contain a JSON object/);
   assert.throws(
     () => core.parseAnalysisResponse(JSON.stringify({ storySummary: "Only one field" })),
-    /invalid structure/,
+    /invalid structure|private narrative structure is invalid/,
   );
 });
 
-test("applies analysis while keeping private Director and tracker projection separate", () => {
+test("analysis prompt requires the source language", () => {
+  assert.match(core.ANALYSIS_PROMPT, /predominant language of the supplied source text/i);
+});
+
+test("all rewrite instructions stay within the Marinara limit", () => {
+  assert.ok(core.ANALYSIS_PROMPT.length <= 4_000, `analysis prompt is ${core.ANALYSIS_PROMPT.length} characters`);
+  assert.ok(core.ANALYSIS_PROMPT.length <= 3_800, `analysis prompt exceeds the 3,800-character safety target`);
+  assert.ok(core.INITIALIZATION_PROMPT.length <= 4_000, `initialization prompt is ${core.INITIALIZATION_PROMPT.length} characters`);
+});
+
+test("analysis prompt defines public as initial knowledge and permits empty public output", () => {
+  assert.match(core.ANALYSIS_PROMPT, /PUBLIC means only information \{\{user\}\} and characters present can know at the beginning/i);
+  assert.match(core.ANALYSIS_PROMPT, /Worldbuilding is NOT automatically public/i);
+  assert.match(core.ANALYSIS_PROMPT, /empty publicPremise\/card fields or an empty lorebookEntries array/i);
+});
+
+test("analysis contract ends with adaptive structures and contains no legacy fields", () => {
+  for (const field of ["narrativeStages", "currentStageId", "trackerStages", "trackedSecrets", "trackerProjection"]) {
+    assert.doesNotMatch(core.ANALYSIS_PROMPT, new RegExp(field));
+  }
+  const shapeEnd = core.ANALYSIS_PROMPT.indexOf("PUBLIC means");
+  const shape = core.ANALYSIS_PROMPT.slice(0, shapeEnd);
+  assert.ok(shape.lastIndexOf('"candidateBeats"') > shape.lastIndexOf('"narrativeArcs"'));
+  assert.doesNotMatch(shape.slice(shape.lastIndexOf('"candidateBeats"')), /tracker|stage/i);
+});
+
+test("discarded legacy input fields are neither stored nor exported", () => {
+  const story = core.createStory({
+    ...validStory(), progressionProjection: "old", narrativeStages: [{ id: "old" }], currentStageId: "old",
+    trackerStages: [{ id: "old" }], trackedSecrets: [{ id: "old" }],
+  });
+  const serialized = JSON.stringify(core.exportBundle([story]));
+  for (const field of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
+    assert.equal(Object.hasOwn(story, field), false);
+    assert.equal(serialized.includes(`"${field}"`), false);
+  }
+});
+
+test("validates private narrative relationships and stable IDs", () => {
+  const parsed = core.parseAnalysisResponse(JSON.stringify(validAnalysis));
+  assert.equal(parsed.secrets[0].ownerCharacterId, "mara");
+  assert.deepEqual(parsed.secrets[0].knownByCharacterIds, ["mara", "ivo"]);
+  assert.equal(parsed.secrets[0].status, "locked");
+  assert.equal(core.parseAnalysisResponse(JSON.stringify(parsed)).secrets[0].id, "key_origin");
+  for (const status of ["locked", "foreshadowed", "suspected", "partially_revealed", "confirmed"]) {
+    assert.equal(core.parseAnalysisResponse(JSON.stringify({ ...validAnalysis, secrets: [{ ...validAnalysis.secrets[0], status }] })).secrets[0].status, status);
+  }
+});
+
+test("rejects secret content copied into public card or lorebook fields", () => {
+  assert.throws(
+    () => core.parseAnalysisResponse(JSON.stringify({ ...validAnalysis, cardAdditions: validAnalysis.secrets[0].summary })),
+    /unrevealed private information/,
+  );
+  assert.throws(
+    () => core.parseAnalysisResponse(JSON.stringify({
+      ...validAnalysis,
+      lorebookEntries: [{ name: "Leak", description: "", content: validAnalysis.secrets[0].revealCondition, keys: [] }],
+    })),
+    /unrevealed private information/,
+  );
+});
+
+test("allows empty public premise, card fields and lorebook entries", () => {
+  const parsed = core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis, publicPremise: "", characterInformation: "", cardAdditions: "", lorebookEntries: [],
+  }));
+  assert.equal(parsed.publicPremise, "");
+  assert.deepEqual(parsed.lorebookEntries, []);
+});
+
+test("applies analysis without creating redundant tracker structures", () => {
   const original = validStory({ sourceText: "ORIGINAL SOURCE" });
   const analyzed = core.applyAnalysis(original, validAnalysis, "2030-01-01T00:00:00.000Z");
   assert.equal(analyzed.sourceText, "ORIGINAL SOURCE");
   assert.equal(analyzed.storySummary, validAnalysis.storySummary);
   assert.equal(analyzed.characterInformation, validAnalysis.characterInformation);
   assert.equal(analyzed.privateDocument, validAnalysis.privateDirectorDocument);
-  assert.equal(analyzed.progressionProjection, validAnalysis.trackerProjection);
-  assert.notEqual(analyzed.privateDocument, analyzed.progressionProjection);
+  for (const key of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
+    assert.equal(Object.hasOwn(analyzed, key), false);
+  }
   assert.equal(JSON.parse(analyzed.lorebookEntries)[0].name, "Old Quarter");
 });
 
 test("builds a selected public preview without the private Director document", () => {
   const story = validStory({
-    storySummary: "Public summary",
+    publicPremise: "Public premise",
+    storySummary: "COMPLETE PRIVATE SUMMARY",
     characterInformation: "Public character details",
     cardAdditions: "Public permanent fact",
     lorebookEntries: JSON.stringify([
@@ -129,13 +225,15 @@ test("builds a selected public preview without the private Director document", (
     ]),
     applicationCharacterName: "Mara",
     applicationLorebookName: "Mara's World",
-    applicationCardSections: ["characterInformation", "cardAdditions"],
+    applicationCardSections: ["publicPremise", "characterInformation", "cardAdditions", "storySummary"],
     applicationLorebookSelection: [0],
   });
   const preview = core.buildPublicResourcePreview(story);
   assert.equal(preview.character.data.name, "Mara");
   assert.match(preview.character.data.description, /Public character details/);
-  assert.doesNotMatch(preview.character.data.description, /Public summary/);
+  assert.match(preview.character.data.description, /Public premise/);
+  assert.doesNotMatch(preview.character.data.description, /COMPLETE PRIVATE SUMMARY/);
+  assert.equal(preview.lorebook.description, "Public premise");
   assert.deepEqual(preview.lorebookEntries.map((entry) => entry.name), ["Included"]);
   assert.equal(JSON.stringify(preview).includes(story.privateDocument), false);
 });
@@ -192,7 +290,6 @@ const validInitialState = {
   revealedSecrets: ["The key bears Mara's family crest."],
   blockedSecrets: [{ id: "sibling_archive", label: "Sibling archive secret remains locked" }],
   characterStates: [{ name: "Mara", state: "Alert, holding the key, trusts Ivo cautiously." }],
-  trackerProgression: { currentStage: "archive_threshold", revealedEvents: ["key_found"] },
 };
 
 test("parses and validates a reviewable existing-chat state", () => {
@@ -218,17 +315,43 @@ test("builds read-only active-swipe input without mutating past messages", () =>
   assert.deepEqual(messages, before);
 });
 
-test("Director receives confirmed state while tracker receives only the filtered projection", () => {
-  const story = validStory({ confirmedInitialState: validInitialState });
+test("Director receives complete private structure while tracker receives only IDs and states", () => {
+  const story = validStory({ ...validAnalysis, confirmedInitialState: validInitialState });
   const director = core.buildDirectorPayload(story);
   const tracker = core.buildTrackerPayload(story);
   assert.deepEqual(director.settings.narrative.currentState, validInitialState);
+  assert.equal(director.settings.narrative.completeStorySummary, validAnalysis.storySummary);
+  assert.deepEqual(director.settings.narrative.privateStructure.secrets, validAnalysis.secrets);
   assert.match(director.promptTemplate, /narrative\.currentState/);
+  assert.match(director.promptTemplate, /narrative\.privateStructure/);
+  assert.match(director.promptTemplate, /narrative\.completeStorySummary/);
   assert.equal(JSON.stringify(tracker).includes(story.privateDocument), false);
-  assert.equal(JSON.stringify(tracker).includes("archive_opens"), false);
-  assert.equal(JSON.stringify(tracker).includes("Sibling archive secret remains locked"), false);
-  assert.deepEqual(tracker.settings.narrative.initialState.blockedSecretIds, ["sibling_archive"]);
-  assert.match(tracker.promptTemplate, /narrative\.initialState/);
+  assert.equal(JSON.stringify(tracker).includes(validAnalysis.secrets[0].summary), false);
+  assert.equal(JSON.stringify(tracker).includes(validAnalysis.secrets[0].revealCondition), false);
+  assert.equal(JSON.stringify(tracker).includes(validAnalysis.privateCharacters[0].privateGoal), false);
+  assert.equal(JSON.stringify(tracker).includes(validAnalysis.storySummary), false);
+  assert.equal(tracker.settings.narrative.adaptiveTrackingPlan.arcs[0].id, "archive_arc");
+  assert.equal(tracker.settings.narrative.adaptiveTrackingPlan.beats[0].id, "archive_threshold");
+  assert.deepEqual(tracker.settings.narrative.adaptiveTrackingPlan.secrets, [{ id: "key_origin", status: "locked" }]);
+  assert.equal(JSON.stringify(tracker.settings.narrative.adaptiveTrackingPlan).includes("Ivo can leave"), false);
+  assert.match(tracker.promptTemplate, /narrative\.adaptiveTrackingPlan/);
+  const serializedPayloads = JSON.stringify({ director, tracker });
+  for (const field of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
+    assert.equal(serializedPayloads.includes(field), false);
+  }
+  const contaminated = core.createStory({
+    ...story,
+    tracker: { ...story.tracker, promptTemplate: `Track this: ${validAnalysis.secrets[0].summary}` },
+  });
+  assert.throws(() => core.buildTrackerPayload(contaminated), /Private narrative details/);
+});
+
+test("exports structured narrative data but never session-only raw responses", () => {
+  const story = validStory(validAnalysis);
+  const exported = core.exportBundle([story]);
+  assert.equal(exported.stories[0].secrets[0].id, "key_origin");
+  assert.equal(JSON.stringify(exported).includes("rawAnalysisResponse"), false);
+  assert.equal(JSON.stringify(exported).includes("rewrittenText"), false);
 });
 
 test("existing-chat diagnostics contain counts and update flags, never chat content", () => {
@@ -246,4 +369,87 @@ test("existing-chat diagnostics contain counts and update flags, never chat cont
   assert.equal(entry.directorUpdated, true);
   assert.equal(entry.trackerUpdated, true);
   assert.equal(JSON.stringify(entry).includes("The active swipe response"), false);
+});
+
+test("validates adaptive arc, beat and secret references", () => {
+  const parsed = core.parseAnalysisResponse(JSON.stringify(validAnalysis));
+  assert.equal(parsed.narrativeArcs[0].momentum, "medium");
+  assert.deepEqual(parsed.candidateBeats[0].relatedArcIds, ["archive_arc"]);
+  assert.deepEqual(parsed.candidateBeats[0].relatedSecretIds, ["key_origin"]);
+  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis,
+    candidateBeats: [{ ...validAnalysis.candidateBeats[0], relatedArcIds: ["missing_arc"] }],
+  })), /unknown arc/);
+  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis,
+    narrativeArcs: [...validAnalysis.narrativeArcs, { ...validAnalysis.narrativeArcs[0] }],
+  })), /Duplicate narrative arc id/);
+});
+
+test("Director protects player agency and receives complete adaptive planning", () => {
+  const payload = core.buildDirectorPayload(validStory(validAnalysis));
+  assert.match(payload.promptTemplate, /Never control, prescribe or assume \{\{user\}\} actions/i);
+  assert.match(payload.promptTemplate, /ignore, refuse, delay or diverge/i);
+  assert.match(payload.promptTemplate, /current_game_state/i);
+  assert.deepEqual(payload.settings.narrative.adaptivePlan.candidateBeats, validAnalysis.candidateBeats);
+  assert.deepEqual(payload.settings.narrative.privateStructure.narrativeArcs, validAnalysis.narrativeArcs);
+});
+
+test("tracker records observations only and bridge state is readable next turn", () => {
+  const payload = core.buildTrackerPayload(validStory(validAnalysis));
+  assert.match(payload.promptTemplate, /insufficient evidence, preserve the previous value/i);
+  assert.match(payload.promptTemplate, /Eligibility never means execution/i);
+  assert.doesNotMatch(JSON.stringify(payload), /Ivo can leave a visible archive notice/);
+  const state = core.extractAdaptiveTrackerState({ playerStats: { customTrackerFields: [
+    { name: "nd_confirmed_facts", value: '["Mara refused the invitation"]' },
+    { name: "nd_eligible_beats", value: "[]" },
+    { name: "nd_confidence", value: "high" },
+  ] } });
+  assert.deepEqual(state.nd_confirmed_facts, ["Mara refused the invitation"]);
+  assert.deepEqual(state.nd_eligible_beats, []);
+  assert.equal(state.nd_confidence, "high");
+});
+
+test("splits long chats chronologically without omitting active message content", () => {
+  const messages = [
+    { id: "m1", role: "user", content: "A".repeat(40_000), activeSwipeIndex: 0 },
+    { id: "m2", role: "assistant", content: "B".repeat(24_000), activeSwipeIndex: 2 },
+    { id: "m3", role: "user", content: "C".repeat(24_000), activeSwipeIndex: 0 },
+  ];
+  const prepared = core.buildInitializationChunks(validStory(), messages, 30_000);
+  assert.ok(prepared.chunks.length > 1);
+  const flattened = prepared.chunks.flatMap((chunk) => chunk.messages);
+  assert.deepEqual(flattened.map((item) => item.sourceIndex), [...flattened.map((item) => item.sourceIndex)].sort((a, b) => a - b));
+  for (const [index, message] of messages.entries()) {
+    assert.equal(flattened.filter((item) => item.sourceIndex === index).map((item) => item.content).join(""), message.content);
+  }
+  assert.ok(prepared.chunks.some((chunk) => chunk.splitMessageParts.length > 0));
+});
+
+test("passes partial state into the next initialization block", () => {
+  const chunks = core.buildInitializationChunks(validStory(), [
+    { id: "m1", role: "user", content: "A".repeat(30_000) },
+    { id: "m2", role: "assistant", content: "B".repeat(30_000) },
+  ], 35_000).chunks;
+  const partial = { happenedSummary: "First block confirmed" };
+  const input = JSON.parse(core.buildInitializationChunkInput(validStory(), chunks[1], partial));
+  assert.deepEqual(input.previousPartialState, partial);
+});
+
+test("enforces conservative abandoned arcs while allowing pause and recovery", () => {
+  const baseArc = validAnalysis.narrativeArcs[0];
+  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "paused", momentum: "low" }],
+  })));
+  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "active", momentum: "medium" }],
+  })));
+  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "abandoned" }],
+  })), /impossibilityEvidence/);
+  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
+    ...validAnalysis,
+    narrativeArcs: [{ ...baseArc, status: "abandoned", impossibilityEvidence: "The indispensable keeper died on screen", impossibilityFact: "The keeper is definitively dead and has no coherent replacement", confidence: "high" }],
+  })));
+  assert.match(core.DEFAULT_TRACKER_PROMPT, /Refusal, delay, low readiness/i);
 });
