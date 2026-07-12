@@ -1,0 +1,11 @@
+{
+  "kind": "marinara.extension",
+  "version": 1,
+  "config": {
+    "name": "Narrative Director",
+    "description": "Manage private narrative plans with custom Director and tracker agents.",
+    "enabled": false,
+    "cssPath": "extension.css",
+    "jsPath": "extension.js"
+  }
+}
