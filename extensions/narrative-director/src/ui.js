@@ -6,7 +6,7 @@
   const storage = NarrativeDirectorStorage.createStore();
   const api = NarrativeDirectorApi.createApi(marinara);
   const state = { open: false, projects: [], currentId: "", draft: null, resources: { chats: [], connections: [] }, tab: "source", dirty: false,
-    initializationProposal: null, initializationCheckpoint: null, initializationAbortController: null, initializationMessageCount: 0 };
+    analysisCheckpoint: null, analysisAbortController: null, initializationProposal: null, initializationCheckpoint: null, initializationAbortController: null, initializationMessageCount: 0 };
 
   const launcher = marinara.addElement(document.body, "button", { type: "button", class: "nd-launcher", textContent: "Narrative Director", title: "Open Narrative Director" });
   const root = marinara.addElement(document.body, "div", { class: "nd-root", "aria-hidden": "true" });
@@ -25,12 +25,13 @@
             <section class="nd-panel" data-panel="source">
               <div class="nd-form-grid"><label class="nd-field"><span>Project type</span><select name="projectType"><option value="character_focus">Character focus</option><option value="world_ensemble">World / ensemble</option></select></label><label class="nd-field"><span>Chat</span><select name="chatId"><option value="">Choose chat</option></select></label></div>
               <label class="nd-field"><span>Story source</span><textarea name="sourceText" rows="12" maxlength="50000" placeholder="Paste an outline or story source, up to 50,000 characters"></textarea><small><span data-slot="source-count">0</span> / 50,000</small></label>
-              <div class="nd-action-strip"><label class="nd-field"><span>Analysis connection</span><select name="analysisConnectionId"><option value="">Choose connection</option></select></label><button class="nd-button nd-button-primary" type="button" data-action="analyze">Analyze story</button></div>
+              <div class="nd-action-strip"><label class="nd-field"><span>Analysis connection</span><select name="analysisConnectionId"><option value="">Choose connection</option></select></label><button class="nd-button nd-button-primary" type="button" data-action="analyze">Analyze story</button><button class="nd-button nd-button-quiet" type="button" data-action="cancel-story-analysis" hidden>Cancel</button></div>
+              <div class="nd-progress" data-slot="analysis-progress" aria-live="polite" hidden><strong data-slot="analysis-progress-label"></strong><span data-slot="analysis-progress-range"></span></div>
               <label class="nd-check"><input type="checkbox" name="creativeEnrichment" disabled><span>Creative enrichment is a separate future action and remains disabled.</span></label>
               <details class="nd-raw" data-slot="raw-section" hidden><summary>Raw AI response</summary><p class="nd-warning">May contain the complete story and private data. Session memory only, never saved or exported.</p><pre data-slot="raw-response"></pre><button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="copy-raw">Copy response</button></details>
             </section>
             <section class="nd-panel" data-panel="review" hidden>
-              <div class="nd-intro"><strong>Atomic disclosure review</strong><span>Mixed paragraphs are split into individual facts. Decide every uncertain item before Apply.</span></div>
+              <div class="nd-intro"><strong>Narrative disclosure review</strong><span>Related details share a fact when subject, category, visibility and character knowledge match. Decide every uncertain item before Apply.</span></div>
               <div class="nd-review-groups"><section><h3>Public</h3><div data-slot="facts-public"></div></section><section><h3>Private</h3><div data-slot="facts-private"></div></section><section><h3>Uncertain, requires review</h3><div data-slot="facts-uncertain"></div></section></div>
               <button class="nd-button nd-button-quiet" type="button" data-action="add-fact">Add fact</button>
             </section>
@@ -157,7 +158,14 @@
   async function saveProject() { const project = readDraft(); if (!project) return; const validation = core.validateProject(project); if (!validation.valid) return errors(validation.errors); await storage.saveProject(project); state.projects = await storage.listProjects(); state.draft = project; state.dirty = false; $('[data-slot="save-state"]').textContent = "Saved locally"; renderProjectList(); toast("Local draft saved.", "success"); }
   async function deleteProject() { if (!state.draft || !window.confirm("Delete this local draft? Server memories and public resources are not deleted.")) return; await storage.deleteProject(state.draft.id); state.projects = await storage.listProjects(); state.currentId = ""; state.draft = null; state.dirty = false; renderEditor(); }
 
-  async function analyze() { const before = readDraft(); if (!before) return; setBusy(true); errors([]); try { const analysis = await api.analyzeStory(before.analysisConnectionId, before.sourceText, before.projectType); state.draft = core.applyAnalysis(before, analysis); state.dirty = true; writeDraft(state.draft); setTab("review"); toast("Structured extraction ready for review.", "success"); } catch (error) { renderRaw(); errors([error.message]); } finally { setBusy(false); } }
+  async function analyze() {
+    const before = readDraft(); if (!before) return; const controller = new AbortController(); state.analysisAbortController = controller; const cancel = $('[data-action="cancel-story-analysis"]'); const progressPanel = $('[data-slot="analysis-progress"]'); cancel.hidden = false; setBusy(true, ["cancel-story-analysis"]); errors([]);
+    try {
+      const analysis = await api.analyzeStory(before.analysisConnectionId, before.sourceText, before.projectType, { signal: controller.signal, resume: state.analysisCheckpoint, onProgress: (progress) => { progressPanel.hidden = false; $('[data-slot="analysis-progress-label"]').textContent = `Analyzing block ${progress.block} of ${progress.blockCount}`; $('[data-slot="analysis-progress-range"]').textContent = `Characters ${progress.charStart.toLocaleString()}–${progress.charEnd.toLocaleString()}`; } });
+      state.analysisCheckpoint = null; state.draft = core.applyAnalysis(before, analysis); state.dirty = true; writeDraft(state.draft); setTab("review"); toast("Structured extraction ready for review.", "success");
+    } catch (error) { if (error.analysisCheckpoint) state.analysisCheckpoint = error.analysisCheckpoint; renderRaw(); if (error.name !== "AbortError") errors([error.message]); else toast("Analysis cancelled. Analyze again to resume this session.", "info"); }
+    finally { setBusy(false); cancel.hidden = true; state.analysisAbortController = null; }
+  }
   function addFact() { const project = readDraft(); if (!project) return; const facts = [...project.intermediate.facts, { id: nextId("fact", project.intermediate.facts), subjectId: project.intermediate.characters[0]?.id || project.intermediate.places[0]?.id || "project", category: "context", text: "New fact", visibility: "uncertain", knownByCharacterIds: [], evidence: "Manual entry" }]; state.draft = core.createProject({ ...project, intermediate: { ...project.intermediate, facts } }, project.createdAt); state.dirty = true; renderFacts(state.draft); }
   function removeFact(id) { const project = readDraft(); if (!project) return; state.draft = core.createProject({ ...project, intermediate: { ...project.intermediate, facts: project.intermediate.facts.filter((row) => row.id !== id) } }, project.createdAt); state.dirty = true; renderFacts(state.draft); }
 
@@ -192,7 +200,7 @@
   function setBusy(busy, allowed = []) { $$('button, input, select, textarea').forEach((element) => { if (!allowed.includes(element.dataset.action)) element.disabled = busy; }); }
   function setTab(tab) { const project = readDraft() || state.draft; state.tab = tab; $$('[data-tab]').forEach((button) => button.setAttribute("aria-selected", String(button.dataset.tab === tab))); $$('[data-panel]').forEach((panel) => { panel.hidden = panel.dataset.panel !== tab; }); if (project && tab === "public") renderPublic(project); if (project && tab === "agents") void refreshAgents(); }
   function openPanel() { state.open = true; root.classList.add("is-open"); root.setAttribute("aria-hidden", "false"); document.body.classList.add("nd-body-locked"); void refreshAll().then(() => $('.nd-shell')?.focus()); }
-  function closePanel() { if (state.dirty && !window.confirm("Close and discard unsaved changes?")) return; api.clearLastRawResponse(); renderRaw(); state.open = false; root.classList.remove("is-open"); root.setAttribute("aria-hidden", "true"); document.body.classList.remove("nd-body-locked"); }
+  function closePanel() { if (state.dirty && !window.confirm("Close and discard unsaved changes?")) return; api.clearLastRawResponse(); state.analysisCheckpoint = null; renderRaw(); state.open = false; root.classList.remove("is-open"); root.setAttribute("aria-hidden", "true"); document.body.classList.remove("nd-body-locked"); }
   function exportJson() { if (!state.projects.length) return toast("No saved projects to export.", "error"); const blob = new Blob([JSON.stringify(core.exportBundle(state.projects), null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = "narrative-director-projects.json"; link.click(); URL.revokeObjectURL(url); }
   async function importJson(file) { if (!file) return; try { const projects = core.importBundle(JSON.parse(await file.text())); const current = new Map(state.projects.map((row) => [row.id, row])); for (const project of projects) current.set(project.id, project); await storage.replaceProjects([...current.values()]); state.projects = await storage.listProjects(); state.currentId = projects[0]?.id || ""; state.draft = projects[0] || null; state.dirty = false; renderEditor(); toast(`Imported ${projects.length} project${projects.length === 1 ? "" : "s"}.`, "success"); } catch (error) { errors([error.message]); } }
 
@@ -202,6 +210,7 @@
     const project = event.target.closest?.("[data-project-id]"); if (project) return void selectProject(project.dataset.projectId);
     const target = event.target.closest?.("[data-action]"); const action = target?.dataset.action; if (!action) return;
     if (action === "close") closePanel(); if (action === "new") newProject(); if (action === "delete") void deleteProject(); if (action === "analyze") void analyze();
+    if (action === "cancel-story-analysis") state.analysisAbortController?.abort();
     if (action === "copy-raw") navigator.clipboard.writeText(api.getLastRawResponse()).then(() => toast("Raw response copied.", "success"), () => toast("Clipboard unavailable.", "error"));
     if (action === "add-fact") addFact(); if (action === "remove-fact") removeFact(target.dataset.id); if (action === "apply") void applyResources();
     if (action === "initialize") void initialize(); if (action === "cancel-analysis") state.initializationAbortController?.abort();
@@ -214,5 +223,5 @@
   marinara.on(editor, "input", () => { state.dirty = true; $('[data-slot="save-state"]').textContent = "Unsaved changes"; $('[data-slot="source-count"]').textContent = String(fields.sourceText.value.length); errors([]); });
   marinara.on($('[data-slot="import-file"]'), "change", (event) => { void importJson(event.target.files?.[0]); event.target.value = ""; });
   marinara.on(document, "keydown", (event) => { if (!state.open) return; if (event.key === "Escape") closePanel(); if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void saveProject(); } });
-  marinara.onCleanup(() => { document.body.classList.remove("nd-body-locked"); api.clearLastRawResponse(); delete globalThis.__narrativeDirectorLoaded; delete globalThis.__NarrativeDirectorCore; delete globalThis.__NarrativeDirectorStorage; delete globalThis.__NarrativeDirectorApi; });
+  marinara.onCleanup(() => { document.body.classList.remove("nd-body-locked"); api.clearLastRawResponse(); state.analysisCheckpoint = null; delete globalThis.__narrativeDirectorLoaded; delete globalThis.__NarrativeDirectorCore; delete globalThis.__NarrativeDirectorStorage; delete globalThis.__NarrativeDirectorApi; });
 })();

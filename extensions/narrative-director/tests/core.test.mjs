@@ -38,13 +38,50 @@ test("official import preset configures Director and Tracker without Context Inj
   assert.equal(director.phase, "pre_generation"); assert.equal(director.resultType, "director_event");
   assert.equal(tracker.phase, "post_processing"); assert.equal(tracker.resultType, "custom_tracker_update"); assert.equal(tracker.settings.customCapabilities.edit_trackers, true);
   assert.deepEqual(director.settings.enabledTools, ["search_lorebook"]); assert.deepEqual(tracker.settings.enabledTools, ["search_lorebook"]);
+  assert.equal(director.promptTemplate, core.DIRECTOR_PROMPT.replace(/\s+/g, " ")); assert.equal(tracker.promptTemplate, core.TRACKER_PROMPT.replace(/\s+/g, " "));
   assert.doesNotMatch(JSON.stringify(preset), /context_injection/i);
 });
 
 test("all production rewrite instructions are within 4,000 characters and universal", () => {
-  for (const prompt of [core.analysisInstruction("character_focus"), core.analysisInstruction("world_ensemble"), core.INITIALIZATION_PROMPT, core.REPAIR_PROMPT]) assert.ok(prompt.length <= 4_000, `${prompt.length}`);
+  for (const prompt of [core.analysisInstruction("character_focus"), core.analysisInstruction("world_ensemble"), core.analysisPartInstruction("character_focus", 1, 99), core.INITIALIZATION_PROMPT, core.REPAIR_PROMPT, core.DIRECTOR_PROMPT, core.TRACKER_PROMPT]) assert.ok(prompt.length <= 4_000, `${prompt.length}`);
   const prompts = [core.ANALYSIS_PROMPT, core.INITIALIZATION_PROMPT, core.DIRECTOR_PROMPT, core.TRACKER_PROMPT].join("\n");
   for (const fixture of ["Harbor Watch", "Courier", "blue coat", "refuge", "Warden"]) assert.doesNotMatch(prompts, new RegExp(fixture, "i"));
+});
+
+test("analysis prompt groups narratively related facts instead of mapping every sentence", () => {
+  assert.match(core.ANALYSIS_PROMPT, /not one object per sentence/i); assert.match(core.ANALYSIS_PROMPT, /subject, category, visibility and knownByCharacterIds/i); assert.doesNotMatch(core.ANALYSIS_PROMPT, /Classify every fact separately/i);
+});
+
+test("JSON classification distinguishes valid, repairable, truncated, empty and incompatible output", () => {
+  assert.equal(core.classifyJsonResponse(JSON.stringify(analysis)).kind, "valid");
+  assert.equal(core.classifyJsonResponse(`${JSON.stringify(analysis).slice(0, -1)},}`).kind, "repairable");
+  assert.equal(core.classifyJsonResponse('{"facts":[{"id":"f41"').kind, "truncated");
+  assert.equal(core.classifyJsonResponse(JSON.stringify(analysis), "length").kind, "truncated");
+  assert.equal(core.classifyJsonResponse("  ").kind, "empty"); assert.equal(core.classifyJsonResponse("plain prose").kind, "incompatible");
+});
+
+test("logical source blocks preserve every character and stay chronological", () => {
+  const source = `# Opening\n${"A".repeat(6_500)}\n\n# Future\n${"B".repeat(6_500)}`; const blocks = core.splitAnalysisSource(source); assert.ok(blocks.length > 1); assert.equal(blocks.map((row) => row.text).join(""), source);
+  blocks.forEach((block, index) => { assert.equal(block.index, index); assert.match(block.context, /# Opening/); if (index) assert.equal(block.start, blocks[index - 1].end); }); assert.match(`${blocks.at(-1).context}\n${blocks.at(-1).text}`, /# Future/);
+});
+
+test("deterministic progressive merge preserves visibility, knowledge and valid references", () => {
+  const first = structuredClone(analysis); first.facts = analysis.facts.slice(0, 2); first.secrets = analysis.secrets; first.narrativeArcs = analysis.narrativeArcs; first.candidateBeats = [];
+  const second = structuredClone(analysis); second.characters[0].id = "courier_again"; second.mainCharacterId = "courier_again"; second.facts = [
+    { id: "coat_more", subjectId: "courier_again", category: "appearance", text: "The coat has brass buttons.", visibility: "public", knownByCharacterIds: ["courier_again", "warden"], evidence: "Visible in opening." },
+    analysis.facts[2],
+  ]; second.secrets = [{ ...analysis.secrets[0], id: "destination_again", ownerCharacterId: "courier_again", knownByCharacterIds: ["courier_again", "warden"] }]; second.knowledgeMatrix = [{ characterId: "warden", knownFactIds: [], knownSecretIds: ["destination_again"] }];
+  const mergedA = core.mergeAnalysisPartials([first, second], "character_focus"); const mergedB = core.mergeAnalysisPartials([first, second], "character_focus"); assert.deepEqual(mergedA, mergedB);
+  assert.equal(mergedA.characters.filter((row) => row.name === "Courier").length, 1); assert.deepEqual(new Set(mergedA.facts.map((row) => row.visibility)), new Set(["public", "private", "uncertain"]));
+  const coat = mergedA.facts.find((row) => /brass buttons/.test(row.text)); assert.match(coat.text, /blue coat/i); assert.ok(mergedA.characters.some((row) => row.id === coat.subjectId));
+  const secret = mergedA.secrets[0]; assert.equal(secret.knownByCharacterIds.length, 2); assert.ok(mergedA.knowledgeMatrix.find((row) => row.characterId === secret.knownByCharacterIds.find((id) => mergedA.characters.find((character) => character.id === id)?.name === "Warden"))?.knownSecretIds.includes(secret.id));
+  for (const beat of mergedA.candidateBeats) { assert.ok(beat.relatedArcIds.every((id) => mergedA.narrativeArcs.some((arc) => arc.id === id))); assert.ok(beat.relatedSecretIds.every((id) => mergedA.secrets.some((row) => row.id === id))); }
+});
+
+test("fixed agent prompts enforce advisory Director and observational Tracker boundaries", () => {
+  for (const value of [core.DIRECTOR_LOREBOOK_SENTINEL, "eligible beat is only a possibility", "clue, then suspicion, then confirmation", "{{user}} agency", "never an automatic action"]) assert.match(core.DIRECTOR_PROMPT, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  for (const value of [core.TRACKER_LOREBOOK_SENTINEL, "Without new evidence, preserve prior values exactly", "never direct the story", "never execute, reveal, advance or order", "Refusal, delay, low readiness or divergence never abandon"]) assert.match(core.TRACKER_PROMPT, new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  const preset = JSON.parse(readFileSync(new URL("../presets/marinara-agents.json", import.meta.url), "utf8")); const tracker = preset.agents.find((row) => row.type === core.TRACKER_TYPE); const contract = JSON.parse(tracker.promptTemplate.match(/Return exactly (\{\"fields\":\[.*?\]\})\./)[1]); assert.deepEqual(contract.fields.map((row) => row.name), core.TRACKER_FIELD_NAMES); assert.ok(contract.fields.every((row) => typeof row.value === "string"));
 });
 
 test("analysis parses fenced JSON and keeps mixed facts separate", () => {
@@ -134,5 +171,6 @@ test("production source contains no removed architecture", () => {
 test("UI exposes review groups, lorebook recovery, and responsive no-overflow rules", () => {
   const ui = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8"); const css = readFileSync(new URL("../src/extension.css", import.meta.url), "utf8");
   assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-lorebook/); assert.match(ui, /lorebook-contract-warning/);
+  assert.match(ui, /analysis-progress/); assert.match(ui, /cancel-story-analysis/); assert.match(ui, /Characters.*charStart/);
   assert.match(css, /@media \(max-width: 620px\)/); assert.match(css, /overflow-wrap: anywhere/);
 });

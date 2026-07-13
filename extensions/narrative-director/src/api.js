@@ -25,17 +25,29 @@ const NarrativeDirectorApi = (() => {
       return post("/agents/suite/rewrite", body);
     }
 
-    async function rewriteAndParse({ connectionId, selectedText, instruction, label, agentName, dataLabel, parse, keepRaw = false }) {
-      const first = await rewrite({ connectionId, selectedText, instruction, agentName, dataLabel }, label);
+    function finishReason(response) { return response?.finishReason || response?.finish_reason || response?.usage?.finishReason || response?.choices?.[0]?.finish_reason || ""; }
+    function rememberRaw(raw, label, append) { const value = label ? `[${label}]\n${raw}` : raw; lastRawResponse = append && lastRawResponse ? `${lastRawResponse}\n\n${value}` : value; }
+    function responseError(label, kind) {
+      if (kind === "truncated") { const error = new Error(`${label} response was truncated before its JSON object completed. Retry this block with a connection that allows a complete compact response.`); error.code = "ND_TRUNCATED_OUTPUT"; return error; }
+      if (kind === "empty") return new Error(`${label} connection returned no usable text.`);
+      return new Error(`${label} response did not contain a complete JSON object compatible with the requested schema.`);
+    }
+
+    async function rewriteAndParse({ connectionId, selectedText, instruction, label, agentName, dataLabel, contextSections, parse, keepRaw = false, appendRaw = false, rawLabel = "" }) {
+      const first = await rewrite({ connectionId, selectedText, instruction, agentName, dataLabel, ...(contextSections?.length ? { contextSections } : {}) }, label);
       if (typeof first?.rewrittenText !== "string") throw new Error(`${label} connection returned no usable text.`);
-      if (keepRaw) lastRawResponse = first.rewrittenText;
-      try { return parse(first.rewrittenText); } catch (firstError) {
-        if (first.rewrittenText.length > SELECTED_TEXT_LIMIT) throw firstError;
-        const repaired = await rewrite({ connectionId, selectedText: first.rewrittenText, instruction: core.REPAIR_PROMPT, agentName: `${agentName} JSON Repair`, dataLabel: `${dataLabel} invalid JSON response` }, `${label} repair`);
-        if (typeof repaired?.rewrittenText !== "string") throw firstError;
-        if (keepRaw) lastRawResponse = `${first.rewrittenText}\n\n[Automatic repair attempt]\n${repaired.rewrittenText}`;
-        try { return parse(repaired.rewrittenText); } catch { throw firstError; }
-      }
+      if (keepRaw) rememberRaw(first.rewrittenText, rawLabel, appendRaw);
+      const classified = core.classifyJsonResponse(first.rewrittenText, finishReason(first));
+      if (classified.kind === "truncated" || classified.kind === "empty" || classified.kind === "incompatible") throw responseError(label, classified.kind);
+      if (classified.kind === "valid") return parse(first.rewrittenText);
+      let firstError; try { return parse(first.rewrittenText); } catch (error) { firstError = error; }
+      if (first.rewrittenText.length > SELECTED_TEXT_LIMIT) throw firstError;
+      const repaired = await rewrite({ connectionId, selectedText: first.rewrittenText, instruction: core.REPAIR_PROMPT, agentName: `${agentName} JSON Repair`, dataLabel: `${dataLabel} invalid JSON response` }, `${label} repair`);
+      if (typeof repaired?.rewrittenText !== "string") throw firstError;
+      if (keepRaw) rememberRaw(repaired.rewrittenText, `${rawLabel || label} automatic repair`, true);
+      const repairClassification = core.classifyJsonResponse(repaired.rewrittenText, finishReason(repaired));
+      if (repairClassification.kind !== "valid") throw repairClassification.kind === "truncated" ? responseError(`${label} repair`, "truncated") : firstError;
+      try { return parse(repaired.rewrittenText); } catch { throw firstError; }
     }
 
     async function listCharacters() {
@@ -95,12 +107,28 @@ const NarrativeDirectorApi = (() => {
       return { project: core.parseDirectorLorebookContent(entry.content, { chatId }), lorebookId: discovered.lorebookId, entryIds: { director: entry.id, tracker: discovered.entries.find((row) => row?.name === core.TRACKER_LOREBOOK_SENTINEL)?.id || "" } };
     }
 
-    async function analyzeStory(connectionId, sourceText, projectType = "character_focus") {
-      lastRawResponse = "";
+    async function analyzeStory(connectionId, sourceText, projectType = "character_focus", options = {}) {
       if (!core.cleanId(connectionId)) throw new Error("Choose an analysis connection.");
       if (typeof sourceText !== "string" || !sourceText.trim()) throw new Error("Paste a story before analyzing it.");
       if (sourceText.length > core.MAX_ANALYSIS_SOURCE_LENGTH) throw new Error(`Story analysis supports up to ${core.MAX_ANALYSIS_SOURCE_LENGTH.toLocaleString()} characters.`);
-      return rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: core.parseAnalysisResponse, keepRaw: true });
+      const blocks = core.splitAnalysisSource(sourceText); const signature = core.sourceSignature(sourceText);
+      const resumable = options.resume && options.resume.sourceSignature === signature && options.resume.projectType === projectType && Array.isArray(options.resume.partials) && Number.isInteger(options.resume.completedBlocks) && options.resume.completedBlocks >= 0 && options.resume.completedBlocks <= blocks.length;
+      if (blocks.length === 1) { lastRawResponse = ""; options.onProgress?.({ block: 1, blockCount: 1, charStart: 1, charEnd: sourceText.length }); return rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: core.parseAnalysisResponse, keepRaw: true }); }
+      const checkpoint = resumable ? options.resume : { sourceSignature: signature, projectType, completedBlocks: 0, partials: [], rawResponse: "" };
+      lastRawResponse = checkpoint.rawResponse || "";
+      for (let index = checkpoint.completedBlocks; index < blocks.length; index++) {
+        if (options.signal?.aborted) { const error = new Error("Analysis cancelled. Completed blocks remain available only for retry during this session."); error.name = "AbortError"; error.analysisCheckpoint = checkpoint; throw error; }
+        const block = blocks[index]; options.onProgress?.({ block: index + 1, blockCount: blocks.length, charStart: block.start + 1, charEnd: block.end });
+        try {
+          const partial = await rewriteAndParse({ connectionId, selectedText: block.text, instruction: core.analysisPartInstruction(projectType, index + 1, blocks.length), label: `Analysis block ${index + 1}`, agentName: "Narrative Director Compact Extractor", dataLabel: `Fictional source block ${index + 1} of ${blocks.length}`, contextSections: block.context ? [{ label: "Source structure context", content: block.context }] : [], parse: core.parseAnalysisPartialResponse, keepRaw: true, appendRaw: Boolean(lastRawResponse), rawLabel: `Analysis block ${index + 1} of ${blocks.length}` });
+          if (options.signal?.aborted) { const error = new Error("Analysis cancelled. Completed blocks remain available only for retry during this session."); error.name = "AbortError"; error.analysisCheckpoint = checkpoint; throw error; }
+          checkpoint.partials[index] = partial; checkpoint.completedBlocks = index + 1; checkpoint.rawResponse = lastRawResponse;
+        } catch (cause) {
+          if (cause.analysisCheckpoint) throw cause;
+          checkpoint.rawResponse = lastRawResponse; const error = new Error(`Analysis block ${index + 1} of ${blocks.length} failed: ${cause.message || "unknown error"} Retry Analyze story to continue from this block.`); error.analysisCheckpoint = checkpoint; error.block = index + 1; error.blockCount = blocks.length; throw error;
+        }
+      }
+      return core.mergeAnalysisPartials(checkpoint.partials, projectType);
     }
 
     async function initializeFromChat(connectionId, project, messages, options = {}) {

@@ -25,6 +25,6 @@ test("confirmed state and public and agent-lorebook IDs survive local persistenc
 });
 
 test("raw responses and removed agent configuration fields are never persisted", async () => {
-  const store = storageFactory.createStore(createFakeIndexedDB()); const project = core.createProject({ id: "clean", rawAnalysisResponse: "RAW PRIVATE", director: { connectionId: "secret" }, tracker: { promptTemplate: "old" } });
-  await store.saveProject(project); const serialized = JSON.stringify(await store.getProject(project.id)); assert.ok(!serialized.includes("RAW PRIVATE")); assert.ok(!serialized.includes("connectionId\":\"secret")); assert.ok(!serialized.includes("promptTemplate"));
+  const store = storageFactory.createStore(createFakeIndexedDB()); const project = core.createProject({ id: "clean", rawAnalysisResponse: "RAW PRIVATE", analysisCheckpoint: { rawResponse: "PARTIAL PRIVATE", partials: [{ privateDocument: "PRIVATE BLOCK" }] }, director: { connectionId: "secret" }, tracker: { promptTemplate: "old" } });
+  await store.saveProject(project); const serialized = JSON.stringify(await store.getProject(project.id)); assert.ok(!serialized.includes("RAW PRIVATE")); assert.ok(!serialized.includes("PARTIAL PRIVATE")); assert.ok(!serialized.includes("PRIVATE BLOCK")); assert.ok(!serialized.includes("analysisCheckpoint")); assert.ok(!serialized.includes("connectionId\":\"secret")); assert.ok(!serialized.includes("promptTemplate"));
 });
