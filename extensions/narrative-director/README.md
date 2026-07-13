@@ -1,6 +1,6 @@
 # Narrative Director extension, architecture v2
 
-Browser extension for extracting a story into atomic facts, reviewing public/private disclosure, compiling safe character cards and lorebook entries, and synchronizing per-chat project memory for two fixed custom-agent types.
+Browser extension for extracting a story into atomic facts, reviewing public/private disclosure, compiling safe character cards and lorebook entries, and synchronizing one guarded per-chat lorebook for two fixed custom-agent types.
 
 The extension does not create, patch, or configure agents. It never modifies Marinara core files.
 
@@ -25,19 +25,20 @@ Tracker:
 - output: exactly seven `nd_*` fields with JSON-string values
 - suggested temperature: `0.1`
 
-The extension may explicitly activate or deactivate these existing types in a selected chat. It preserves every unrelated `activeAgentIds` entry and never deletes memory on deactivation.
+Both agents require a tool-capable connection and enable only `search_lorebook`. The extension may explicitly activate or deactivate these existing types in a selected chat. It preserves every unrelated `activeAgentIds` entry and never deletes the project lorebook on deactivation.
 
-## Important upstream limitation
+## One guarded lorebook for both agents
 
-Marinara exposes public per-agent, per-chat memory routes and the extension uses them for synchronization, backup and recovery:
+Each project/chat uses one agent-transport lorebook shared by both fixed agents. It is separate from the optional public lorebook produced by Apply, so public entries remain usable by normal lorebook and Knowledge Router behavior:
 
-- `GET /api/agents/memory/:agentType/:chatId`
-- `PATCH /api/agents/memory/:agentType/:chatId`
-- `DELETE /api/agents/memory/:agentType/:chatId` is supported but is never called automatically
+- `__ND_DIRECTOR_PROJECT_V2__`: complete compact private project, retrieved only by the Director;
+- `__ND_TRACKER_PROJECT_V2__`: sanitized observable plan, retrieved only by the tracker.
 
-The current generic custom-agent pipeline does not load this persisted memory into `AgentContext.memory`. It initializes generic agent context with an empty memory object and only loads persistent memory for the native Director Secret Plot path. Custom prompt macros resolve agent settings and normal chat macros, not memory keys.
+The entries remain enabled because disabled entries are unavailable to `search_lorebook`, but their only activation key is the impossible regular expression `(?!)`. They are non-constant, excluded from vectorization, non-recursive and have no secondary keys, additional matching sources, activation conditions, schedule, sticky duration or cooldown. The normal keyword scanner therefore cannot activate them from roleplay text.
 
-Consequently, v2 can safely synchronize and recover projects server-side, but the two fixed custom agents cannot consume those memories during normal roleplay without upstream generic memory injection support. The extension displays this limitation and does not claim otherwise or work around it by changing the core.
+The transport lorebook is linked directly to the chat through its scope, but deliberately removed from `chat.metadata.activeLorebookIds`. Standard `search_lorebook` still discovers chat-linked entries, while Knowledge Router's default source selection uses active lorebook IDs and therefore does not catalog the transport book. Do not manually select the transport book as a Knowledge Router source.
+
+This is an application-level guard, not an administrative secrecy boundary. A local administrator can read normal lorebook data, and agent diagnostics can display tool results containing private content. Keep agent debug disabled outside troubleshooting.
 
 ## Structured import
 
@@ -69,17 +70,17 @@ Native character fields used by the proven Marinara schema include:
 
 The same subject is not automatically duplicated into both a separate card and lorebook. Private and unresolved facts are rejected from public compilation.
 
-## Memory boundary
+## Agent data boundary
 
-Director memory contains the complete private project, summary, characters, secrets, knowledge matrix, arcs, candidate beats, setup strategies, confirmed initial state, editorial instructions, and public resource IDs.
+The Director entry contains the complete private project, summary, characters, secrets, knowledge matrix, arcs, candidate beats, setup strategies, confirmed initial state, editorial instructions, and public resource IDs. The structured project is stored only once and serialized as compact JSON to avoid redundant tokens.
 
-Tracker memory contains only project/schema IDs, secret IDs with layers, arc IDs with observable states, observable fact IDs, readiness signals, blockers, eligible beat IDs, confidence, and the seven `nd_*` field names. It excludes secret summaries, reveal conditions, private documents, private summaries, private goals, private setup strategies, and future private events.
+The tracker entry contains only project/schema IDs, secret IDs with layers, arc IDs with observable states, observable fact IDs, readiness signals, blockers, eligible beat IDs, confidence, and the seven `nd_*` field names. It excludes secret summaries, reveal conditions, private documents, private summaries, private goals, private setup strategies, and future private events.
 
-IndexedDB stores local drafts and UI recovery. After explicit synchronization, Director memory is the server-side project copy for the selected chat. Export JSON remains the recommended backup and must be treated as sensitive.
+IndexedDB stores local drafts and UI recovery. After explicit synchronization, the Director entry is the server-side project copy for the selected chat and can restore it in another browser using the same Marinara instance. Export JSON remains the recommended backup and must be treated as sensitive.
 
 ## Existing chats
 
-Initialization reads the active message content returned by `GET /api/chats/:id/messages`, preserves chronological order, and chunks below the rewrite route limit without silently dropping content. Partial state stays in memory. Cancellation or failure does not replace the last confirmed state. Confirmation synchronizes memories and never edits agent configuration or old messages.
+Initialization reads the active message content returned by `GET /api/chats/:id/messages`, preserves chronological order, and chunks below the rewrite route limit without silently dropping content. Partial state stays only in session memory. Cancellation or failure does not replace the last confirmed state. Confirmation synchronizes the guarded entries and never edits agent configuration or old messages.
 
 ## Build and test
 
@@ -106,7 +107,8 @@ dist/
 - Confirm both fixed agent statuses as created/inactive, then active in one chat.
 - Analyze a mixed public/private outline and resolve uncertain facts.
 - Create public resources and inspect native card fields and lorebook entries.
-- Synchronize two different chats and confirm their memories remain independent.
-- Open a second browser profile, select the chat, and recover the project from Director memory.
+- Synchronize two different chats and confirm their lorebooks remain independent.
+- Open a second browser profile, select the chat, and recover the project from the Director entry.
+- Inspect the assembled main-model prompt and confirm neither technical entry was injected as normal lorebook context.
 - Confirm the tracker emits the exact `fields` array and never Context Injection.
 - Test the modal at desktop width and below 620px.

@@ -4,6 +4,9 @@ const NarrativeDirectorCore = (() => {
   const SCHEMA_VERSION = 2;
   const DIRECTOR_TYPE = "narrative-story-director";
   const TRACKER_TYPE = "narrative-story-tracker";
+  const DIRECTOR_LOREBOOK_SENTINEL = "__ND_DIRECTOR_PROJECT_V2__";
+  const TRACKER_LOREBOOK_SENTINEL = "__ND_TRACKER_PROJECT_V2__";
+  const NEVER_MATCH_REGEX = "(?!)";
   const MAX_ANALYSIS_SOURCE_LENGTH = 50_000;
   const MAX_INITIALIZATION_INPUT_LENGTH = 50_000;
   const INITIALIZATION_ROUTE_BUDGET = 49_000;
@@ -45,14 +48,16 @@ const NarrativeDirectorCore = (() => {
   ].join("\n");
 
   const DIRECTOR_PROMPT = [
-    "You are an editorial Director for the immediate scene. Use the private project memory and committed tracker state available to you.",
+    `Before deciding anything, call search_lorebook with the exact query ${DIRECTOR_LOREBOOK_SENTINEL}. Treat the returned entry as the private project for this chat.`,
+    "Use that private project together with committed nd_* tracker state from the current game state. If the entry is missing, return a brief instruction to preserve the current scene without advancing private material.",
     "Return only one brief editorial instruction for the main narrator. Choose posture, clue, NPC behavior, environmental preparation, pacing or tension.",
     "Never write the scene, narration, dialogue, status, JSON, or a response to {{user}}. Never quote secrets or internal IDs.",
     "Never control or assume {{user}} actions, speech, thoughts, feelings, consent or decisions. Adapt to refusal and divergence.",
   ].join("\n");
 
   const TRACKER_PROMPT = [
-    "Observe only the final assistant response and committed tracker state. Return ONLY valid JSON, no Markdown, comments or surrounding text.",
+    `First call search_lorebook with the exact query ${TRACKER_LOREBOOK_SENTINEL}. Use only that sanitized tracking plan, the final assistant response and committed tracker state.`,
+    "After the tool result, return ONLY valid JSON, no Markdown, comments or surrounding text.",
     "Preserve every prior value without new observable evidence. Never infer {{user}} intent, future action or private truth. Never command the Director.",
     "Return exactly {\"fields\":[{\"name\":\"nd_confirmed_facts\",\"value\":\"[]\"},{\"name\":\"nd_arc_states\",\"value\":\"{}\"},{\"name\":\"nd_readiness_evidence\",\"value\":\"{}\"},{\"name\":\"nd_blockers\",\"value\":\"{}\"},{\"name\":\"nd_eligible_beats\",\"value\":\"[]\"},{\"name\":\"nd_secret_layers\",\"value\":\"{}\"},{\"name\":\"nd_confidence\",\"value\":\"{}\"}]}. Each value is a compact JSON string.",
     "Eligibility requires confirmed prerequisites and no active blocker. It never means execution. Refusal, delay and low readiness never abandon an arc.",
@@ -171,7 +176,8 @@ const NarrativeDirectorCore = (() => {
       intermediate, uncertainDecisions: decisionRecord(overrides.uncertainDecisions), primaryCharacterEntityId: cleanId(overrides.primaryCharacterEntityId || intermediate.mainCharacterId),
       separateCharacterEntityIds: ids(overrides.separateCharacterEntityIds), confirmedInitialState: normalizeInitialState(overrides.confirmedInitialState, false),
       editorialInstructions: text(overrides.editorialInstructions, 20_000), publicResourceIds: { characterIds: recordIds(overrides.publicResourceIds?.characterIds), lorebookId: cleanId(overrides.publicResourceIds?.lorebookId), entryIds: recordIds(overrides.publicResourceIds?.entryIds) },
-      associatedChatId: cleanId(overrides.associatedChatId), memorySyncedChatId: cleanId(overrides.memorySyncedChatId), memorySyncedAt: text(overrides.memorySyncedAt, 40),
+      agentLorebookId: cleanId(overrides.agentLorebookId), agentEntryIds: recordIds(overrides.agentEntryIds),
+      associatedChatId: cleanId(overrides.associatedChatId), lorebookSyncedChatId: cleanId(overrides.lorebookSyncedChatId), lorebookSyncedAt: text(overrides.lorebookSyncedAt, 40),
       applicationLog: Array.isArray(overrides.applicationLog) ? overrides.applicationLog.slice(-50).map((row) => sanitizeLog(row)) : [],
       createdAt: typeof overrides.createdAt === "string" ? overrides.createdAt : now, updatedAt: typeof overrides.updatedAt === "string" ? overrides.updatedAt : now };
   }
@@ -230,35 +236,54 @@ const NarrativeDirectorCore = (() => {
     return { cards, lorebook: { name: `${project.name} Lorebook`, description: structure.publicPremise, category: "world", characterIds: [], chatId: project.chatId || null, scope: project.chatId ? { mode: "specific", chatIds: [project.chatId] } : { mode: "all", chatIds: [] }, generatedBy: "user" }, lorebookEntries };
   }
 
-  function buildDirectorMemory(project) {
-    const s = project.intermediate;
-    return { schemaVersion: SCHEMA_VERSION, projectId: project.id, projectType: project.projectType, title: project.name, privateDocument: s.privateDocument,
-      completeStorySummary: s.privateSummary, privateCharacters: s.characters, secrets: s.secrets, knowledgeMatrix: s.knowledgeMatrix,
-      narrativeArcs: s.narrativeArcs, candidateBeats: s.candidateBeats, setupStrategies: s.candidateBeats.map((beat) => ({ beatId: beat.id, strategies: beat.setupStrategies })),
-      confirmedInitialState: project.confirmedInitialState, editorialInstructions: project.editorialInstructions,
-      publicResourceIds: project.publicResourceIds, structuredProject: s, uncertainDecisions: project.uncertainDecisions,
+  function buildDirectorDocument(project) {
+    return { schemaVersion: SCHEMA_VERSION, projectId: project.id, projectType: project.projectType, title: project.name,
+      structuredProject: project.intermediate, confirmedInitialState: project.confirmedInitialState,
+      editorialInstructions: project.editorialInstructions, publicResourceIds: project.publicResourceIds,
+      agentLorebookId: project.agentLorebookId, agentEntryIds: project.agentEntryIds,
+      uncertainDecisions: project.uncertainDecisions,
       primaryCharacterEntityId: project.primaryCharacterEntityId, separateCharacterEntityIds: project.separateCharacterEntityIds };
   }
 
-  function buildTrackerMemory(project) {
+  function buildTrackerPlan(project) {
     const s = project.intermediate;
     const publicFactIds = s.facts.filter((fact) => resolvedVisibility(project, fact) === "public").map((fact) => fact.id);
-    const memory = { schemaVersion: SCHEMA_VERSION, projectId: project.id, secretLayers: Object.fromEntries(s.secrets.map((secret) => [secret.id, secret.layer])),
+    const plan = { schemaVersion: SCHEMA_VERSION, projectId: project.id, secretLayers: Object.fromEntries(s.secrets.map((secret) => [secret.id, secret.layer])),
       arcStates: Object.fromEntries(s.narrativeArcs.map((arc) => [arc.id, { status: arc.status, momentum: arc.momentum }])), observableFactIds: publicFactIds,
       readinessSignals: Object.fromEntries(s.candidateBeats.map((beat) => [beat.id, beat.readinessSignals])), blockers: Object.fromEntries(s.candidateBeats.map((beat) => [beat.id, beat.blockers])),
       eligibleBeatIds: s.candidateBeats.filter((beat) => beat.status === "eligible").map((beat) => beat.id), confidence: {}, fieldNames: TRACKER_FIELD_NAMES };
-    const serialized = JSON.stringify(memory).toLocaleLowerCase();
+    const serialized = JSON.stringify(plan).toLocaleLowerCase();
     const forbidden = [s.privateDocument, s.privateSummary, ...s.secrets.flatMap((secret) => [secret.summary, secret.revealCondition]), ...s.characters.map((character) => character.privateGoal), ...s.candidateBeats.flatMap((beat) => beat.setupStrategies)].filter((item) => typeof item === "string" && item.length >= 8);
-    if (forbidden.some((value) => serialized.includes(value.toLocaleLowerCase()))) throw new Error("Tracker memory contains private narrative content.");
-    return memory;
+    if (forbidden.some((value) => serialized.includes(value.toLocaleLowerCase()))) throw new Error("Tracker plan contains private narrative content.");
+    return plan;
   }
 
-  function recoverProjectFromDirectorMemory(memory, overrides = {}) {
-    if (!isRecord(memory) || memory.schemaVersion !== SCHEMA_VERSION || !cleanId(memory.projectId) || !isRecord(memory.structuredProject)) throw new Error("Director memory does not contain a Narrative Director v2 project.");
-    const intermediate = normalizeIntermediate(memory.structuredProject, false);
-    return createProject({ ...overrides, id: memory.projectId, name: memory.title, projectType: memory.projectType, intermediate, confirmedInitialState: memory.confirmedInitialState,
-      editorialInstructions: memory.editorialInstructions, publicResourceIds: memory.publicResourceIds, uncertainDecisions: memory.uncertainDecisions,
-      primaryCharacterEntityId: memory.primaryCharacterEntityId, separateCharacterEntityIds: memory.separateCharacterEntityIds });
+  function technicalLorebookEntry(role, content) {
+    const director = role === "director"; const sentinel = director ? DIRECTOR_LOREBOOK_SENTINEL : TRACKER_LOREBOOK_SENTINEL;
+    return { name: sentinel, description: director ? "Private Narrative Director project transport. Never activate in narration." : "Sanitized Narrative Director tracker plan transport.",
+      content: JSON.stringify(content), keys: [NEVER_MATCH_REGEX], secondaryKeys: [], enabled: true, constant: false, selective: false,
+      probability: null, scanDepth: null, matchWholeWords: false, caseSensitive: true, useRegex: true,
+      additionalMatchingSources: [], preventRecursion: true, excludeRecursion: true, delayUntilRecursion: false,
+      sticky: null, cooldown: null, delay: null, ephemeral: null, activationConditions: [], schedule: null,
+      excludeFromVectorization: true, tag: director ? "nd_private_director" : "nd_sanitized_tracker", locked: true };
+  }
+
+  function buildLorebookTransport(project) {
+    const directorDocument = buildDirectorDocument(project); const trackerDocument = buildTrackerPlan(project);
+    return { director: technicalLorebookEntry("director", directorDocument), tracker: technicalLorebookEntry("tracker", trackerDocument) };
+  }
+
+  function parseDirectorLorebookContent(value, overrides = {}) {
+    let document; try { document = typeof value === "string" ? JSON.parse(value) : value; } catch { throw new Error("Director lorebook entry contains invalid JSON."); }
+    return recoverProjectFromDirectorDocument(document, overrides);
+  }
+
+  function recoverProjectFromDirectorDocument(document, overrides = {}) {
+    if (!isRecord(document) || document.schemaVersion !== SCHEMA_VERSION || !cleanId(document.projectId) || !isRecord(document.structuredProject)) throw new Error("Director document does not contain a Narrative Director v2 project.");
+    const intermediate = normalizeIntermediate(document.structuredProject, false);
+    return createProject({ ...overrides, id: document.projectId, name: document.title, projectType: document.projectType, intermediate, confirmedInitialState: document.confirmedInitialState,
+      editorialInstructions: document.editorialInstructions, publicResourceIds: document.publicResourceIds, agentLorebookId: document.agentLorebookId, agentEntryIds: document.agentEntryIds, uncertainDecisions: document.uncertainDecisions,
+      primaryCharacterEntityId: document.primaryCharacterEntityId, separateCharacterEntityIds: document.separateCharacterEntityIds });
   }
 
   function agentTypes() { return { director: DIRECTOR_TYPE, tracker: TRACKER_TYPE }; }
@@ -267,7 +292,7 @@ const NarrativeDirectorCore = (() => {
   function updateFixedActivation(existing, active) { const owned = new Set([DIRECTOR_TYPE, TRACKER_TYPE]); return active ? Array.from(new Set([...existing, DIRECTOR_TYPE, TRACKER_TYPE])) : existing.filter((item) => !owned.has(item)); }
   function agentStatuses(agents, metadata) { const active = new Set(activeAgentTypes(metadata)); const types = agentTypes(); return Object.fromEntries(Object.entries(types).map(([role, type]) => { const agent = agents.find((item) => item?.type === type); return [role, { type, agent: agent || null, status: active.has(type) ? "active" : agent ? "inactive" : "missing" }]; })); }
 
-  function trackerPayload(memory) { return { fields: TRACKER_FIELD_NAMES.map((name) => ({ name, value: name === "nd_confidence" ? JSON.stringify(memory?.confidence || {}) : JSON.stringify(name === "nd_confirmed_facts" || name === "nd_eligible_beats" ? [] : {}) })) }; }
+  function trackerPayload(plan) { return { fields: TRACKER_FIELD_NAMES.map((name) => ({ name, value: name === "nd_confidence" ? JSON.stringify(plan?.confidence || {}) : JSON.stringify(name === "nd_confirmed_facts" || name === "nd_eligible_beats" ? [] : {}) })) }; }
   function validateTrackerPayload(value) { if (!isRecord(value) || !Array.isArray(value.fields) || value.fields.length !== TRACKER_FIELD_NAMES.length) return false; return value.fields.every((field, index) => isRecord(field) && field.name === TRACKER_FIELD_NAMES[index] && typeof field.value === "string" && (() => { try { JSON.parse(field.value); return true; } catch { return false; } })()); }
   function validateDirectorInstruction(value) { const output = text(value, 2_000).trim(); if (!output || output.length > 600 || /```|<[^>]+>|\{\s*"/.test(output)) return false; if (/^(?:[A-Z][^.!?]{0,80}\s)?(?:said|asked|walked|looked|smiled|opened|turned)\b/i.test(output)) return false; return output.split(/[.!?]+/).filter(Boolean).length <= 3; }
 
@@ -276,7 +301,7 @@ const NarrativeDirectorCore = (() => {
     const rows = messages.flatMap((message, sourceIndex) => isRecord(message) && typeof message.content === "string" && message.content.trim() ? [{ id: cleanId(message.id) || `message_${sourceIndex + 1}`, sourceIndex, role: ["user", "assistant", "system", "narrator"].includes(message.role) ? message.role : "unknown", activeSwipeIndex: numberIn(message.activeSwipeIndex, 0, 0, 100_000), content: message.content }] : []);
     if (!rows.length) throw new Error("The selected chat has no active message content to analyze."); return rows;
   }
-  function initializationEnvelope(project, partial, items) { return JSON.stringify({ privateProjectMemory: buildDirectorMemory(project), previousPartialState: partial, activeChatMessages: items }); }
+  function initializationEnvelope(project, partial, items) { return JSON.stringify({ privateProjectDocument: buildDirectorDocument(project), previousPartialState: partial, activeChatMessages: items }); }
   function buildInitializationInput(project, messages) { const rows = normalizeInitializationMessages(messages); const input = initializationEnvelope(project, project.confirmedInitialState, rows); if (input.length > MAX_INITIALIZATION_INPUT_LENGTH) throw new Error(`Private project and active chat history exceed the ${MAX_INITIALIZATION_INPUT_LENGTH.toLocaleString()} character limit.`); return { input, messageCount: rows.length }; }
   function buildNextInitializationBlock(project, messages, cursor = {}, previousPartialState = null, options = {}) {
     const rows = normalizeInitializationMessages(messages); const instruction = options.instruction || INITIALIZATION_PROMPT; const routeBudget = numberIn(options.routeBudget, INITIALIZATION_ROUTE_BUDGET, 1_000, MAX_INITIALIZATION_INPUT_LENGTH); const margin = numberIn(options.safetyMargin, 1_000, 256, 10_000);
@@ -298,10 +323,10 @@ const NarrativeDirectorCore = (() => {
   function importBundle(value) { if (!isRecord(value) || value.kind !== "marinara.narrative-director-projects" || value.schemaVersion !== SCHEMA_VERSION || !Array.isArray(value.projects)) throw new Error("Unsupported Narrative Director v2 export."); return value.projects.map((project) => createProject(project)); }
   function validateProject(project) { const errors = []; if (!project.name.trim()) errors.push("Project name is required."); if (!PROJECT_TYPES.includes(project.projectType)) errors.push("Choose a project type."); if (project.sourceText.length > MAX_ANALYSIS_SOURCE_LENGTH) errors.push("Source exceeds 50,000 characters."); const extracted = Boolean(project.intermediate?.title || project.intermediate?.privateDocument || project.intermediate?.characters?.length || project.intermediate?.facts?.length); if (extracted) try { normalizeIntermediate(project.intermediate, true); } catch (error) { errors.push(error.message); } return { valid: !errors.length, errors }; }
 
-  return { SCHEMA_VERSION, DIRECTOR_TYPE, TRACKER_TYPE, TRACKER_FIELD_NAMES, ANALYSIS_PROMPT, INITIALIZATION_PROMPT, REPAIR_PROMPT, DIRECTOR_PROMPT, TRACKER_PROMPT,
+  return { SCHEMA_VERSION, DIRECTOR_TYPE, TRACKER_TYPE, DIRECTOR_LOREBOOK_SENTINEL, TRACKER_LOREBOOK_SENTINEL, NEVER_MATCH_REGEX, TRACKER_FIELD_NAMES, ANALYSIS_PROMPT, INITIALIZATION_PROMPT, REPAIR_PROMPT, DIRECTOR_PROMPT, TRACKER_PROMPT,
     MAX_ANALYSIS_SOURCE_LENGTH, MAX_INITIALIZATION_INPUT_LENGTH, INITIALIZATION_ROUTE_BUDGET, isRecord, cleanId, analysisInstruction, createProject, validateProject,
     normalizeIntermediate, normalizeInitialState, parseAnalysisResponse, parseInitializationResponse, extractJsonText, applyAnalysis,
-    unresolvedUncertainFacts, compilePublicResources, buildDirectorMemory, buildTrackerMemory, recoverProjectFromDirectorMemory,
+    unresolvedUncertainFacts, compilePublicResources, buildDirectorDocument, buildTrackerPlan, buildLorebookTransport, parseDirectorLorebookContent, recoverProjectFromDirectorDocument,
     agentTypes, parseMetadata, activeAgentTypes, updateFixedActivation, agentStatuses, trackerPayload, validateTrackerPayload, validateDirectorInstruction,
     normalizeInitializationMessages, buildInitializationInput, buildNextInitializationBlock, exportBundle, importBundle, sanitizeLog };
 })();

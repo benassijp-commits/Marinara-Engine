@@ -18,7 +18,6 @@ const NarrativeDirectorApi = (() => {
     const get = (path) => request(path);
     const post = (path, body) => request(path, { method: "POST", body: JSON.stringify(body) });
     const patch = (path, body) => request(path, { method: "PATCH", body: JSON.stringify(body) });
-    const remove = (path) => request(path, { method: "DELETE" });
 
     function rewrite(body, label) {
       if (typeof body.instruction !== "string" || body.instruction.length > INSTRUCTION_LIMIT) throw new Error(`${label} instruction exceeds the Marinara 4,000-character limit`);
@@ -61,20 +60,39 @@ const NarrativeDirectorApi = (() => {
       return patch(`/chats/${encodeURIComponent(chatId)}/metadata`, { activeAgentIds, ...(active ? { enableAgents: true } : {}) });
     }
 
-    async function getAgentMemory(agentType, chatId) { const result = await get(`/agents/memory/${encodeURIComponent(agentType)}/${encodeURIComponent(chatId)}`); return result?.memory || {}; }
-    async function patchAgentMemory(agentType, chatId, memory) { return patch(`/agents/memory/${encodeURIComponent(agentType)}/${encodeURIComponent(chatId)}`, { patch: memory }); }
-    async function deleteAgentMemory(agentType, chatId) { return remove(`/agents/memory/${encodeURIComponent(agentType)}/${encodeURIComponent(chatId)}`); }
-    async function loadProjectMemories(chatId) {
-      const types = core.agentTypes(); const [director, tracker] = await Promise.all([getAgentMemory(types.director, chatId), getAgentMemory(types.tracker, chatId)]); return { director, tracker };
+    async function listLorebookEntries(lorebookId) { const rows = await get(`/lorebooks/${encodeURIComponent(lorebookId)}/entries`); return Array.isArray(rows) ? rows : []; }
+    async function listLorebooks() { const rows = await get("/lorebooks"); return Array.isArray(rows) ? rows : Array.isArray(rows?.items) ? rows.items : []; }
+    async function updateLorebookEntry(lorebookId, entryId, payload) { return patch(`/lorebooks/${encodeURIComponent(lorebookId)}/entries/${encodeURIComponent(entryId)}`, payload); }
+    async function discoverProjectLorebook(chatId) {
+      const books = await listLorebooks(); const candidates = books.filter((book) => book?.chatId === chatId || (book?.scope?.mode === "specific" && Array.isArray(book.scope.chatIds) && book.scope.chatIds.includes(chatId)));
+      for (const book of candidates) { if (!core.cleanId(book?.id)) continue; const entries = await listLorebookEntries(book.id); if (entries.some((entry) => entry?.name === core.DIRECTOR_LOREBOOK_SENTINEL)) return { lorebookId: book.id, entries }; }
+      return null;
     }
-    async function syncProjectMemories(project) {
-      if (!core.cleanId(project.chatId)) throw new Error("Choose a chat before synchronizing memory.");
-      const statuses = await getAgentStatuses(project.chatId);
-      if (Object.values(statuses).some((entry) => entry.status === "missing")) throw new Error("Both fixed agents must exist before memory can be synchronized.");
-      const types = core.agentTypes(); const directorMemory = core.buildDirectorMemory(project); const trackerMemory = core.buildTrackerMemory(project);
-      const directorResult = await patchAgentMemory(types.director, project.chatId, directorMemory);
-      try { const trackerResult = await patchAgentMemory(types.tracker, project.chatId, trackerMemory); return { director: directorResult, tracker: trackerResult }; }
-      catch (error) { error.directorMemoryUpdated = Boolean(directorResult); throw error; }
+    async function keepTransportOutOfActiveLorebooks(chatId, lorebookId) { const chat = await getChat(chatId); const metadata = core.parseMetadata(chat?.metadata); return patch(`/chats/${encodeURIComponent(chatId)}/metadata`, { activeLorebookIds: readIds(metadata.activeLorebookIds).filter((id) => id !== lorebookId), excludedLorebookIds: readIds(metadata.excludedLorebookIds).filter((id) => id !== lorebookId) }); }
+    async function upsertTechnicalEntry(lorebookId, entryId, payload) {
+      if (core.cleanId(entryId)) { const updated = await updateLorebookEntry(lorebookId, entryId, payload); if (!core.cleanId(updated?.id)) throw new Error(`No entry ID returned for ${payload.name}.`); return updated; }
+      const created = await createLorebookEntry(lorebookId, payload); if (!core.cleanId(created?.id)) throw new Error(`No entry ID returned for ${payload.name}.`); return created;
+    }
+    async function syncProjectLorebook(project) {
+      if (!core.cleanId(project.chatId)) throw new Error("Choose a chat before synchronizing the project lorebook.");
+      let lorebookId = core.cleanId(project.agentLorebookId); let knownEntries = [];
+      if (!lorebookId) { const discovered = await discoverProjectLorebook(project.chatId); lorebookId = discovered?.lorebookId || ""; knownEntries = discovered?.entries || []; }
+      if (!lorebookId) { const created = await createLorebook({ name: `${project.name} · Agent Transport`, description: "Narrative Director agent transport. Do not select as a Knowledge Router source.", category: "uncategorized", chatId: project.chatId, scope: { mode: "specific", chatIds: [project.chatId] }, generatedBy: "user", recursiveScanning: false, excludeFromVectorization: true }); lorebookId = core.cleanId(created?.id); if (!lorebookId) throw new Error("No lorebook ID returned."); }
+      await keepTransportOutOfActiveLorebooks(project.chatId, lorebookId);
+      if (!knownEntries.length) knownEntries = await listLorebookEntries(lorebookId);
+      const transport = core.buildLorebookTransport(project); const entryIds = { ...project.agentEntryIds };
+      const directorKnown = knownEntries.find((entry) => entry?.name === core.DIRECTOR_LOREBOOK_SENTINEL); const trackerKnown = knownEntries.find((entry) => entry?.name === core.TRACKER_LOREBOOK_SENTINEL);
+      const director = await upsertTechnicalEntry(lorebookId, directorKnown?.id, transport.director); entryIds.director = director.id;
+      try { const tracker = await upsertTechnicalEntry(lorebookId, trackerKnown?.id, transport.tracker); entryIds.tracker = tracker.id; }
+      catch (error) { error.directorLorebookUpdated = true; error.lorebookId = lorebookId; error.entryIds = entryIds; throw error; }
+      const completeProject = core.createProject({ ...project, agentLorebookId: lorebookId, agentEntryIds: entryIds }, project.createdAt);
+      await updateLorebookEntry(lorebookId, entryIds.director, core.buildLorebookTransport(completeProject).director);
+      return { lorebookId, entryIds };
+    }
+    async function loadProjectFromLorebook(chatId) {
+      const discovered = await discoverProjectLorebook(chatId); if (!discovered) throw new Error("No synchronized Narrative Director lorebook was found for this chat.");
+      const entry = discovered.entries.find((row) => row?.name === core.DIRECTOR_LOREBOOK_SENTINEL); if (!entry?.content) throw new Error("The Director project entry is empty.");
+      return { project: core.parseDirectorLorebookContent(entry.content, { chatId }), lorebookId: discovered.lorebookId, entryIds: { director: entry.id, tracker: discovered.entries.find((row) => row?.name === core.TRACKER_LOREBOOK_SENTINEL)?.id || "" } };
     }
 
     async function analyzeStory(connectionId, sourceText, projectType = "character_focus") {
@@ -114,7 +132,7 @@ const NarrativeDirectorApi = (() => {
     async function associateLorebookWithChat(chatId, lorebookId) { const chat = await getChat(chatId); const metadata = core.parseMetadata(chat.metadata); return patch(`/chats/${encodeURIComponent(chatId)}/metadata`, { activeLorebookIds: Array.from(new Set([...readIds(metadata.activeLorebookIds), lorebookId])), excludedLorebookIds: readIds(metadata.excludedLorebookIds).filter((id) => id !== lorebookId) }); }
 
     return { get, listCharacters, listChats, listConnections, listAgents, getChat, listChatMessages, getGameState, getAgentStatuses, updateChatActivation,
-      getAgentMemory, patchAgentMemory, deleteAgentMemory, loadProjectMemories, syncProjectMemories, analyzeStory, initializeFromChat,
+      syncProjectLorebook, loadProjectFromLorebook, discoverProjectLorebook, listLorebooks, listLorebookEntries, updateLorebookEntry, analyzeStory, initializeFromChat,
       createCharacter, createLorebook, createLorebookEntry, associateCharactersWithChat, associateLorebookWithChat,
       getLastRawResponse: () => lastRawResponse, clearLastRawResponse: () => { lastRawResponse = ""; } };
   }

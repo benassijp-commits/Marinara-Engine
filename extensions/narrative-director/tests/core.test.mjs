@@ -37,6 +37,7 @@ test("official import preset configures Director and Tracker without Context Inj
   const director = preset.agents.find((row) => row.type === core.DIRECTOR_TYPE); const tracker = preset.agents.find((row) => row.type === core.TRACKER_TYPE);
   assert.equal(director.phase, "pre_generation"); assert.equal(director.resultType, "director_event");
   assert.equal(tracker.phase, "post_processing"); assert.equal(tracker.resultType, "custom_tracker_update"); assert.equal(tracker.settings.customCapabilities.edit_trackers, true);
+  assert.deepEqual(director.settings.enabledTools, ["search_lorebook"]); assert.deepEqual(tracker.settings.enabledTools, ["search_lorebook"]);
   assert.doesNotMatch(JSON.stringify(preset), /context_injection/i);
 });
 
@@ -70,15 +71,24 @@ test("Apply is blocked while an uncertain fact has no decision", () => {
   assert.throws(() => core.compilePublicResources(project({ uncertainDecisions: {} })), /Resolve 1 uncertain fact/);
 });
 
-test("Director memory is complete while Tracker memory cannot reconstruct secrets", () => {
-  const value = project(); const director = core.buildDirectorMemory(value); const tracker = core.buildTrackerMemory(value); const trackerText = JSON.stringify(tracker);
-  assert.equal(director.privateDocument, analysis.privateDocument); assert.equal(director.secrets[0].summary, analysis.secrets[0].summary); assert.equal(director.knowledgeMatrix[0].characterId, "courier");
+test("Director document is complete while Tracker plan cannot reconstruct secrets", () => {
+  const value = project(); const director = core.buildDirectorDocument(value); const tracker = core.buildTrackerPlan(value); const trackerText = JSON.stringify(tracker);
+  assert.equal(director.structuredProject.privateDocument, analysis.privateDocument); assert.equal(director.structuredProject.secrets[0].summary, analysis.secrets[0].summary); assert.equal(director.structuredProject.knowledgeMatrix[0].characterId, "courier");
   for (const forbidden of [analysis.privateDocument, analysis.privateSummary, analysis.characters[0].privateGoal, analysis.secrets[0].summary, analysis.secrets[0].revealCondition, analysis.candidateBeats[0].setupStrategies[0]]) assert.ok(!trackerText.includes(forbidden));
   assert.deepEqual(tracker.secretLayers, { map_destination: "locked" }); assert.deepEqual(tracker.fieldNames, core.TRACKER_FIELD_NAMES);
 });
 
-test("different chats can recover the same project from independent Director memory", () => {
-  const memory = core.buildDirectorMemory(project()); const a = core.recoverProjectFromDirectorMemory(memory, { chatId: "chat-a" }); const b = core.recoverProjectFromDirectorMemory(memory, { chatId: "chat-b" });
+test("single-lorebook transport keeps complete concepts for Director and sanitized observations for Tracker", () => {
+  const transport = core.buildLorebookTransport(project()); const director = JSON.parse(transport.director.content); const tracker = JSON.parse(transport.tracker.content);
+  assert.equal(director.structuredProject.secrets[0].summary, analysis.secrets[0].summary); assert.equal(director.structuredProject.candidateBeats[0].setupStrategies[0], analysis.candidateBeats[0].setupStrategies[0]);
+  assert.deepEqual(transport.director.keys, [core.NEVER_MATCH_REGEX]); assert.deepEqual(transport.tracker.keys, [core.NEVER_MATCH_REGEX]);
+  assert.equal(new RegExp(core.NEVER_MATCH_REGEX).test(`${analysis.title} ${analysis.privateDocument} ordinary roleplay`), false);
+  for (const entry of [transport.director, transport.tracker]) { assert.equal(entry.enabled, true); assert.equal(entry.constant, false); assert.equal(entry.useRegex, true); assert.equal(entry.excludeFromVectorization, true); assert.equal(entry.preventRecursion, true); assert.deepEqual(entry.additionalMatchingSources, []); }
+  const trackerText = JSON.stringify(tracker); for (const forbidden of [analysis.privateDocument, analysis.privateSummary, analysis.secrets[0].summary, analysis.secrets[0].revealCondition, analysis.candidateBeats[0].setupStrategies[0]]) assert.ok(!trackerText.includes(forbidden));
+});
+
+test("different chats can recover the same project from its Director document", () => {
+  const memory = core.buildDirectorDocument(project()); const a = core.recoverProjectFromDirectorDocument(memory, { chatId: "chat-a" }); const b = core.recoverProjectFromDirectorDocument(memory, { chatId: "chat-b" });
   assert.equal(a.id, b.id); assert.notEqual(a.chatId, b.chatId); assert.equal(b.intermediate.privateDocument, analysis.privateDocument);
 });
 
@@ -94,7 +104,7 @@ test("activation preserves unrelated agents", () => {
 });
 
 test("Tracker payload is the minimum exact Custom Tracker fields array", () => {
-  const payload = core.trackerPayload(core.buildTrackerMemory(project())); assert.equal(payload.fields.length, 7); assert.deepEqual(payload.fields.map((row) => row.name), core.TRACKER_FIELD_NAMES); assert.ok(core.validateTrackerPayload(payload));
+  const payload = core.trackerPayload(core.buildTrackerPlan(project())); assert.equal(payload.fields.length, 7); assert.deepEqual(payload.fields.map((row) => row.name), core.TRACKER_FIELD_NAMES); assert.ok(core.validateTrackerPayload(payload));
   assert.equal(core.validateTrackerPayload({ fields: payload.fields.slice(1) }), false);
 });
 
@@ -121,8 +131,8 @@ test("production source contains no removed architecture", () => {
   assert.doesNotMatch(source, /post\(["']\/agents["']/); assert.doesNotMatch(source, /patch\(["']\/agents\//);
 });
 
-test("UI exposes review groups, server memory recovery, and responsive no-overflow rules", () => {
+test("UI exposes review groups, lorebook recovery, and responsive no-overflow rules", () => {
   const ui = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8"); const css = readFileSync(new URL("../src/extension.css", import.meta.url), "utf8");
-  assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-memory/); assert.match(ui, /memory-contract-warning/);
+  assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-lorebook/); assert.match(ui, /lorebook-contract-warning/);
   assert.match(css, /@media \(max-width: 620px\)/); assert.match(css, /overflow-wrap: anywhere/);
 });

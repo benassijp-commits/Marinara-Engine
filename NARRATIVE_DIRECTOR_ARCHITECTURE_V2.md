@@ -1,5 +1,7 @@
 # Narrative Director, revisão arquitetural v2
 
+> Historical checkpoint: the server-memory limitation described below was subsequently resolved inside the extension by `NARRATIVE_DIRECTOR_LOREBOOK_TRANSPORT.md`. The current runtime transport is one guarded chat-scoped lorebook; the core remains unchanged.
+
 ## Resultado
 
 A extensão foi reconstruída no modelo v2 exclusivamente em `extensions/narrative-director/`.

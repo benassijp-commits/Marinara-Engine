@@ -18,10 +18,10 @@ test("replaceProjects atomically replaces imported v2 drafts", async () => {
   await store.replaceProjects([core.createProject({ id: "new-a" }), core.createProject({ id: "new-b" })]); assert.deepEqual((await store.listProjects()).map((row) => row.id).sort(), ["new-a", "new-b"]);
 });
 
-test("confirmed state and public resource IDs survive local persistence", async () => {
+test("confirmed state and public and agent-lorebook IDs survive local persistence", async () => {
   const store = storageFactory.createStore(createFakeIndexedDB()); const confirmedInitialState = { happenedSummary: "Started", currentPoint: "Gate", occurredEvents: [], pendingEventIds: [], revealedSecretIds: [], blockedSecretIds: [], characterStates: [], confirmedFacts: [] };
-  const project = core.createProject({ id: "stateful", confirmedInitialState, publicResourceIds: { characterIds: { lead: "char-a" }, lorebookId: "book-a", entryIds: { harbor: "entry-a" } } });
-  await store.saveProject(project); const loaded = core.createProject(await store.getProject(project.id)); assert.equal(loaded.confirmedInitialState.currentPoint, "Gate"); assert.deepEqual(loaded.publicResourceIds.characterIds, { lead: "char-a" });
+  const project = core.createProject({ id: "stateful", confirmedInitialState, publicResourceIds: { characterIds: { lead: "char-a" }, lorebookId: "book-a", entryIds: { harbor: "entry-a" } }, agentLorebookId: "book-agent", agentEntryIds: { director: "entry-director", tracker: "entry-tracker" } });
+  await store.saveProject(project); const loaded = core.createProject(await store.getProject(project.id)); assert.equal(loaded.confirmedInitialState.currentPoint, "Gate"); assert.deepEqual(loaded.publicResourceIds.characterIds, { lead: "char-a" }); assert.equal(loaded.agentLorebookId, "book-agent"); assert.deepEqual(loaded.agentEntryIds, { director: "entry-director", tracker: "entry-tracker" });
 });
 
 test("raw responses and removed agent configuration fields are never persisted", async () => {
