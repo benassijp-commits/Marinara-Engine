@@ -54,6 +54,11 @@ test("complete JSON inside Markdown is parsed without a repair call", async () =
   const { api, calls } = harness({ rewrites: [`Result:\n\`\`\`json\n${JSON.stringify(analysis)}\n\`\`\``] }); const result = await api.analyzeStory("conn", "short source"); assert.equal(result.title, analysis.title); assert.equal(calls.filter((call) => call.path === "/agents/suite/rewrite").length, 1);
 });
 
+test("saved classification instructions are sent to every progressive analysis block", async () => {
+  const source = `# Opening\n${"A".repeat(6_500)}\n\n# Later\n${"B".repeat(6_500)}`; const policy = "PUBLIC = opening knowledge. PRIVATE = hidden relationships. UNCERTAIN = unconfirmed claims."; const shared = harness(); await shared.api.analyzeStory("conn", source, "character_focus", { classificationInstructions: policy });
+  const calls = shared.calls.filter((call) => call.path === "/agents/suite/rewrite"); assert.ok(calls.length > 1); assert.ok(calls.every((call) => call.body.instruction.includes(policy))); assert.ok(calls.every((call) => call.body.instruction.includes("fixed JSON shape")));
+});
+
 test("progressive analysis covers every source block and retries only the failed block", async () => {
   const source = ["# Opening\n", "A".repeat(6_500), "\n\n# Secret\n", "B".repeat(6_500)].join(""); const blocks = core.splitAnalysisSource(source); assert.ok(blocks.length > 1);
   const outputs = blocks.map(() => JSON.stringify(analysis)); outputs[1] = "not json"; outputs.splice(2, 0, JSON.stringify(analysis));

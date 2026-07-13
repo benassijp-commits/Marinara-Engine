@@ -44,13 +44,14 @@ This is an application-level guard, not an administrative secrecy boundary. A lo
 
 1. Create a project and choose **Character focus** or **World / ensemble**.
 2. Paste up to 50,000 characters and choose a connection.
-3. Press **Analyze story**. No request happens automatically.
-4. Review compact narrative facts in **Public**, **Private**, and **Uncertain** groups.
-5. Resolve every uncertain fact before Apply.
-6. Review the deterministic card and lorebook preview.
-7. Confirm before creating resources.
+3. Optionally open **Analysis Classification Instructions** to edit and save the disclosure policy locally. The protected JSON contract is not editable.
+4. Press **Analyze story**. No request happens automatically.
+5. Review compact narrative facts in **Public**, **Private**, and **Uncertain** groups.
+6. Resolve every uncertain fact before Apply.
+7. Review the deterministic card and lorebook preview.
+8. Confirm before creating resources.
 
-Analysis uses `POST /api/agents/suite/rewrite`. Every instruction is below 4,000 characters and every `selectedText` is validated at 50,000 characters. Sources up to 7,000 characters use one compact extraction. Larger sources are split chronologically at logical boundaries into blocks near 6,000 characters. Each call returns only a canonical fragment; the extension merges fragments deterministically without asking the model to regenerate the full project. Repeated entities are merged, references are remapped, character knowledge is unioned, and facts with the same subject, category, visibility and knowers are grouped.
+Analysis uses `POST /api/agents/suite/rewrite`. Every instruction is below 4,000 characters and every `selectedText` is validated at 50,000 characters. Sources up to 7,000 characters use one compact extraction. Larger sources are split chronologically at logical boundaries into blocks near 6,000 characters. Each call returns only a canonical fragment; the extension merges fragments deterministically without asking the model to regenerate the full project. Repeated entities are merged, references are remapped, character knowledge is unioned, and conflicting visibility resolves conservatively as private, then uncertain, then public. The saved classification policy is added to every analysis block at runtime, so changing it does not require rebuilding the extension.
 
 Plain and fenced JSON are accepted. Structurally incomplete output is reported as truncated and never sent through whole-response repair. One repair attempt remains available only for a structurally complete object with a small syntax defect. Completed blocks and raw responses remain in session memory only. **Analyze story** retries the failed block, while closing or reloading clears the checkpoint. Partial analyses are never written to IndexedDB, exports or logs.
 
@@ -58,7 +59,7 @@ Creative enrichment is deliberately separate and disabled. Extraction works with
 
 ## Deterministic public compilation
 
-The compiler uses only facts reviewed as public.
+The compiler uses only facts reviewed as public. It also sanitizes public premise, character description, appearance, personality, scenario and world-rule projection against private facts, secrets, private goals, future arcs, reveal conditions and candidate beats. Mixed public/private text is split at narrative boundaries, and explicitly private source sections override model inference.
 
 Character focus creates a native character card for the primary character. World / ensemble creates a narrator/world card. Selected secondary characters can become separate cards; unselected public characters, places, organizations, and rules can become lorebook entries.
 

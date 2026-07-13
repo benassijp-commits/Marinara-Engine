@@ -18,6 +18,10 @@ test("replaceProjects atomically replaces imported v2 drafts", async () => {
   await store.replaceProjects([core.createProject({ id: "new-a" }), core.createProject({ id: "new-b" })]); assert.deepEqual((await store.listProjects()).map((row) => row.id).sort(), ["new-a", "new-b"]);
 });
 
+test("analysis classification instructions persist as a local setting", async () => {
+  const store = storageFactory.createStore(createFakeIndexedDB()); const value = "PUBLIC = opening knowledge only. PRIVATE = hidden information."; await store.setMeta("analysisClassificationInstructions", value); assert.equal(await store.getMeta("analysisClassificationInstructions"), value);
+});
+
 test("confirmed state and public and agent-lorebook IDs survive local persistence", async () => {
   const store = storageFactory.createStore(createFakeIndexedDB()); const confirmedInitialState = { happenedSummary: "Started", currentPoint: "Gate", occurredEvents: [], pendingEventIds: [], revealedSecretIds: [], blockedSecretIds: [], characterStates: [], confirmedFacts: [] };
   const project = core.createProject({ id: "stateful", confirmedInitialState, publicResourceIds: { characterIds: { lead: "char-a" }, lorebookId: "book-a", entryIds: { harbor: "entry-a" } }, agentLorebookId: "book-agent", agentEntryIds: { director: "entry-director", tracker: "entry-tracker" } });

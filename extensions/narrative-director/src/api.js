@@ -112,16 +112,16 @@ const NarrativeDirectorApi = (() => {
       if (!core.cleanId(connectionId)) throw new Error("Choose an analysis connection.");
       if (typeof sourceText !== "string" || !sourceText.trim()) throw new Error("Paste a story before analyzing it.");
       if (sourceText.length > core.MAX_ANALYSIS_SOURCE_LENGTH) throw new Error(`Story analysis supports up to ${core.MAX_ANALYSIS_SOURCE_LENGTH.toLocaleString()} characters.`);
-      const blocks = core.splitAnalysisSource(sourceText); const signature = core.sourceSignature(sourceText);
-      const resumable = options.resume && options.resume.sourceSignature === signature && options.resume.projectType === projectType && Array.isArray(options.resume.partials) && Array.isArray(options.resume.queue) && Number.isInteger(options.resume.completedBlocks) && options.resume.completedBlocks >= 0;
+      const blocks = core.splitAnalysisSource(sourceText); const signature = core.sourceSignature(sourceText); const classificationInstructions = core.classificationInstructions(options.classificationInstructions); const classificationSignature = core.sourceSignature(classificationInstructions);
+      const resumable = options.resume && options.resume.sourceSignature === signature && options.resume.classificationSignature === classificationSignature && options.resume.projectType === projectType && Array.isArray(options.resume.partials) && Array.isArray(options.resume.queue) && Number.isInteger(options.resume.completedBlocks) && options.resume.completedBlocks >= 0;
       if (blocks.length === 1 && !resumable) {
         lastRawResponse = ""; options.onProgress?.({ block: 1, blockCount: 1, blockPath: "1", subdivisionDepth: 0, charStart: 1, charEnd: sourceText.length });
-        try { return await rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: core.parseAnalysisResponse, keepRaw: true }); }
+        try { return await rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType, classificationInstructions), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: (value) => core.sanitizeAnalysisClassification(core.parseAnalysisResponse(value), sourceText), keepRaw: true }); }
         catch (cause) {
           if (cause.code !== "ND_TRUNCATED_OUTPUT" || sourceText.length < core.ANALYSIS_MIN_BLOCK_LENGTH * 2) throw cause;
         }
       }
-      const checkpoint = resumable ? options.resume : { sourceSignature: signature, projectType, completedBlocks: 0, partials: [], queue: blocks.length === 1 ? core.subdivideAnalysisBlock({ ...blocks[0], path: "1", depth: 0 }, sourceText) : blocks, rawResponse: lastRawResponse, subdivisions: blocks.length === 1 ? 1 : 0, attempts: blocks.length === 1 ? 1 : 0 };
+      const checkpoint = resumable ? options.resume : { sourceSignature: signature, classificationSignature, projectType, completedBlocks: 0, partials: [], queue: blocks.length === 1 ? core.subdivideAnalysisBlock({ ...blocks[0], path: "1", depth: 0 }, sourceText) : blocks, rawResponse: lastRawResponse, subdivisions: blocks.length === 1 ? 1 : 0, attempts: blocks.length === 1 ? 1 : 0 };
       lastRawResponse = checkpoint.rawResponse || "";
       if (!resumable && blocks.length === 1) options.onProgress?.({ subdivided: true, block: 1, blockCount: checkpoint.queue.length, blockPath: "1", childPaths: checkpoint.queue.map((block) => block.path), subdivisionDepth: 1, charStart: 1, charEnd: sourceText.length });
       while (checkpoint.queue.length) {
@@ -131,7 +131,7 @@ const NarrativeDirectorApi = (() => {
         options.onProgress?.({ block: blockNumber, blockCount, blockPath: block.path, subdivisionDepth: block.depth, autoSubdivided: block.depth > 0, charStart: block.start + 1, charEnd: block.end });
         checkpoint.attempts++;
         try {
-          const partial = await rewriteAndParse({ connectionId, selectedText: block.text, instruction: core.analysisPartInstruction(projectType, blockNumber, blockCount), label: `Analysis block ${block.path}`, agentName: "Narrative Director Compact Extractor", dataLabel: `Fictional source block ${block.path}`, contextSections: block.context ? [{ label: "Source structure context", content: block.context }] : [], parse: core.parseAnalysisPartialResponse, keepRaw: true, appendRaw: Boolean(lastRawResponse), rawLabel: `Analysis block ${block.path}` });
+          const partial = await rewriteAndParse({ connectionId, selectedText: block.text, instruction: core.analysisPartInstruction(projectType, blockNumber, blockCount, classificationInstructions), label: `Analysis block ${block.path}`, agentName: "Narrative Director Compact Extractor", dataLabel: `Fictional source block ${block.path}`, contextSections: block.context ? [{ label: "Source structure context", content: block.context }] : [], parse: core.parseAnalysisPartialResponse, keepRaw: true, appendRaw: Boolean(lastRawResponse), rawLabel: `Analysis block ${block.path}` });
           if (options.signal?.aborted) { const error = new Error("Analysis cancelled. Completed blocks remain available only for retry during this session."); error.name = "AbortError"; error.analysisCheckpoint = checkpoint; throw error; }
           checkpoint.partials.push(partial); checkpoint.queue.shift(); checkpoint.completedBlocks++; checkpoint.rawResponse = lastRawResponse;
         } catch (cause) {
@@ -148,7 +148,7 @@ const NarrativeDirectorApi = (() => {
           const error = new Error(`Analysis block ${block.path} failed: ${cause.message || "unknown error"}${bounded}`); error.analysisCheckpoint = checkpoint; error.block = blockNumber; error.blockCount = blockCount; throw error;
         }
       }
-      return core.mergeAnalysisPartials(checkpoint.partials, projectType);
+      return core.mergeAnalysisPartials(checkpoint.partials, projectType, sourceText);
     }
 
     async function initializeFromChat(connectionId, project, messages, options = {}) {

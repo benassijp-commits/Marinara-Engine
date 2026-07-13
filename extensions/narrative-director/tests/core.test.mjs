@@ -48,6 +48,13 @@ test("all production rewrite instructions are within 4,000 characters and univer
   for (const fixture of ["Harbor Watch", "Courier", "blue coat", "refuge", "Warden"]) assert.doesNotMatch(prompts, new RegExp(fixture, "i"));
 });
 
+test("editable classification policy preserves the fixed JSON contract", () => {
+  const custom = "PUBLIC = opening knowledge only. PRIVATE = every hidden relationship. UNCERTAIN = unconfirmed interpretation."; const full = core.analysisInstruction("character_focus", custom); const part = core.analysisPartInstruction("character_focus", 1, 2, custom);
+  assert.match(core.DEFAULT_CLASSIFICATION_INSTRUCTIONS, /PUBLIC = known at the beginning/i); assert.match(core.DEFAULT_CLASSIFICATION_INSTRUCTIONS, /PRIVATE = secret/i); assert.match(core.DEFAULT_CLASSIFICATION_INSTRUCTIONS, /UNCERTAIN = interpretation/i); assert.match(core.DEFAULT_CLASSIFICATION_INSTRUCTIONS, /Source presence is not in-story publicity/i);
+  for (const prompt of [full, part]) { assert.match(prompt, new RegExp(custom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))); assert.match(prompt, /fixed JSON shape/i); assert.ok(prompt.length <= 4_000); }
+  assert.equal(core.classificationInstructions(""), core.DEFAULT_CLASSIFICATION_INSTRUCTIONS); assert.equal(core.classificationInstructions("X".repeat(900)).length, core.MAX_CLASSIFICATION_INSTRUCTIONS_LENGTH);
+});
+
 test("analysis prompt groups narratively related facts instead of mapping every sentence", () => {
   assert.match(core.ANALYSIS_PROMPT, /not one object per sentence/i); assert.match(core.ANALYSIS_PROMPT, /subject, category, visibility and knownByCharacterIds/i); assert.doesNotMatch(core.ANALYSIS_PROMPT, /Classify every fact separately/i);
 });
@@ -82,6 +89,31 @@ test("deterministic progressive merge preserves visibility, knowledge and valid 
   const coat = mergedA.facts.find((row) => /brass buttons/.test(row.text)); assert.match(coat.text, /blue coat/i); assert.ok(mergedA.characters.some((row) => row.id === coat.subjectId));
   const secret = mergedA.secrets[0]; assert.equal(secret.knownByCharacterIds.length, 2); assert.ok(mergedA.knowledgeMatrix.find((row) => row.characterId === secret.knownByCharacterIds.find((id) => mergedA.characters.find((character) => character.id === id)?.name === "Warden"))?.knownSecretIds.includes(secret.id));
   for (const beat of mergedA.candidateBeats) { assert.ok(beat.relatedArcIds.every((id) => mergedA.narrativeArcs.some((arc) => arc.id === id))); assert.ok(beat.relatedSecretIds.every((id) => mergedA.secrets.some((row) => row.id === id))); }
+});
+
+test("classification conflicts and private character or world details never reach public resources", () => {
+  const base = { projectType: "character_focus", title: "Contradiction fixture", publicPremise: "Three colleagues begin an ordinary school day.", privateSummary: "Private fixture summary.", privateDocument: "Private fixture document.", mainCharacterId: "damian",
+    characters: [
+      { id: "damian", name: "Damian", role: "guardian", isMain: true, description: "Damian is caring. Damian secretly adopted the protagonist.", appearance: "", personality: "", scenario: "", privateGoal: "Hide the adoption." },
+      { id: "amon", name: "Amon", role: "adviser", isMain: false, description: "Amon is a quiet adviser. Amon secretly commands the hidden order.", appearance: "", personality: "", scenario: "", privateGoal: "Protect the hidden order." },
+      { id: "robert", name: "Robert", role: "teacher", isMain: false, description: "Robert is a professor. Robert will transform into a beast.", appearance: "", personality: "", scenario: "", privateGoal: "Conceal his future transformation." },
+    ], places: [], organizations: [], worldRules: [{ id: "blood_rule", name: "The hidden blood law binds every heir" }], knowledgeMatrix: [],
+    facts: [
+      { id: "damian_private", subjectId: "damian", category: "relationship", text: "Damian secretly adopted the protagonist.", visibility: "private", knownByCharacterIds: ["damian"], evidence: "Private section" },
+      { id: "amon_private", subjectId: "amon", category: "description", text: "Amon secretly commands the hidden order.", visibility: "private", knownByCharacterIds: ["amon"], evidence: "Secret" },
+      { id: "robert_public", subjectId: "robert", category: "description", text: "Robert is a professor.", visibility: "public", knownByCharacterIds: [], evidence: "Opening" },
+      { id: "robert_private", subjectId: "robert", category: "context", text: "Robert will transform into a beast.", visibility: "private", knownByCharacterIds: ["robert"], evidence: "Future" },
+      { id: "rule_private", subjectId: "blood_rule", category: "rule", text: "The hidden blood law binds every heir.", visibility: "private", knownByCharacterIds: [], evidence: "Secret rule" },
+    ],
+    secrets: [{ id: "amon_identity", title: "Amon's secret function", ownerCharacterId: "amon", knownByCharacterIds: ["amon"], layer: "locked", summary: "Amon secretly commands the hidden order.", revealCondition: "Amon openly claims command." }],
+    narrativeArcs: [{ id: "transformation", title: "Robert transforms", status: "inactive", observedState: "Robert has not transformed.", momentum: "low", impossibilityEvidence: "", impossibilityFact: "", confidence: "" }],
+    candidateBeats: [{ id: "beast_change", title: "Robert's transformation", relatedArcIds: ["transformation"], status: "unavailable", hardPrerequisites: [], readinessSignals: [], blockers: [], setupStrategies: ["Robert will transform into a beast."], relatedSecretIds: [] }] };
+  const contradictory = structuredClone(base); contradictory.facts = base.facts.map((fact) => ({ ...fact, id: `${fact.id}_public`, visibility: "public", knownByCharacterIds: [] }));
+  const merged = core.mergeAnalysisPartials([base, contradictory], "character_focus", "# PRIVATE\nDamian secretly adopted the protagonist.\nAmon secretly commands the hidden order.\nThe hidden blood law binds every heir.");
+  for (const text of ["Damian secretly adopted the protagonist.", "Amon secretly commands the hidden order.", "Robert will transform into a beast.", "The hidden blood law binds every heir."]) { const matches = merged.facts.filter((fact) => fact.text === text); assert.ok(matches.length); assert.ok(matches.every((fact) => fact.visibility === "private")); }
+  assert.equal(merged.facts.find((fact) => fact.text === "Robert is a professor.")?.visibility, "public"); assert.match(merged.characters.find((row) => row.name === "Robert").description, /professor/i); assert.doesNotMatch(merged.characters.find((row) => row.name === "Robert").description, /transform/i); assert.doesNotMatch(merged.characters.find((row) => row.name === "Damian").description, /adopt/i); assert.doesNotMatch(merged.characters.find((row) => row.name === "Amon").description, /commands/i);
+  const value = core.createProject({ id: "conflicts", name: "Conflicts", sourceText: "# PRIVATE\nDamian secretly adopted the protagonist.", intermediate: merged, primaryCharacterEntityId: merged.characters.find((row) => row.name === "Damian").id, separateCharacterEntityIds: merged.characters.filter((row) => row.name !== "Damian").map((row) => row.id) }); const output = core.compilePublicResources(value); const publicText = JSON.stringify(output);
+  assert.match(publicText, /Robert is a professor/i); for (const forbidden of ["adopted the protagonist", "commands the hidden order", "transform into a beast", "hidden blood law"]) assert.doesNotMatch(publicText, new RegExp(forbidden, "i"));
 });
 
 test("fixed agent prompts enforce advisory Director and observational Tracker boundaries", () => {
@@ -178,5 +210,6 @@ test("UI exposes review groups, lorebook recovery, and responsive no-overflow ru
   const ui = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8"); const css = readFileSync(new URL("../src/extension.css", import.meta.url), "utf8");
   assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-lorebook/); assert.match(ui, /lorebook-contract-warning/);
   assert.match(ui, /analysis-progress/); assert.match(ui, /cancel-story-analysis/); assert.match(ui, /Characters.*charStart/); assert.match(ui, /subdivided automatically/); assert.match(ui, /Analyzing subdivided block/);
+  assert.match(ui, /Analysis Classification Instructions/); assert.match(ui, /save-classification/); assert.match(ui, /reset-classification/); assert.match(ui, /classificationInstructions: state\.classificationInstructions/);
   assert.match(css, /@media \(max-width: 620px\)/); assert.match(css, /overflow-wrap: anywhere/);
 });
