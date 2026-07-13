@@ -87,6 +87,18 @@
 .nd-initialization-progress span { color: var(--nd-muted); font-size: .75rem; text-align: right; }
 .nd-arc-abandonment { border: 1px solid var(--nd-border); border-radius: 8px; background: var(--nd-panel); }
 .nd-arc-abandonment > summary { padding: 9px 11px; color: var(--nd-muted); font-size: .78rem; font-weight: 700; }
+.nd-tracker-projection { overflow: hidden; border: 1px solid var(--nd-border); border-radius: 9px; background: var(--nd-panel); }
+.nd-tracker-plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.nd-projection-group { min-width: 0; padding: 13px 14px; border-bottom: 1px solid var(--nd-border); }
+.nd-projection-group:nth-child(odd) { border-right: 1px solid var(--nd-border); }
+.nd-projection-group > strong { display: block; margin-bottom: 8px; }
+.nd-projection-group > p { margin: 0; color: var(--nd-muted); }
+.nd-projection-list { display: grid; gap: 6px; }
+.nd-projection-list details { border: 1px solid var(--nd-border); border-radius: 7px; background: var(--nd-bg); }
+.nd-projection-list summary { padding: 8px 9px; color: var(--nd-text); font-size: .76rem; font-weight: 700; cursor: pointer; overflow-wrap: anywhere; }
+.nd-projection-list pre, .nd-runtime-fields pre { margin: 0; padding: 9px; border-top: 1px solid var(--nd-border); color: var(--nd-muted); font: .72rem/1.5 Consolas, Monaco, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.nd-runtime-fields > div { align-items: start; }
+.nd-runtime-fields pre { border-top: 0; padding: 0; color: var(--nd-text); }
 .nd-apply-section { display: grid; gap: 14px; padding: 16px; border: 1px solid var(--nd-border); border-radius: 9px; background: var(--nd-panel); }
 .nd-apply-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .nd-apply-heading > div { display: grid; gap: 3px; }
@@ -201,6 +213,8 @@
   .nd-initialization-toolbar .nd-button { width: 100%; }
   .nd-initialization-actions, .nd-initialization-progress { display: grid; }
   .nd-initialization-progress span { text-align: left; }
+  .nd-tracker-plan { grid-template-columns: 1fr; }
+  .nd-projection-group:nth-child(odd) { border-right: 0; }
   .nd-apply-heading { display: grid; gap: 5px; }
   .nd-resource-state { max-width: none; text-align: left; }
   .nd-choice-row { display: grid; grid-template-columns: 1fr; }

@@ -58,7 +58,11 @@ const NarrativeDirectorCore = (() => {
     "}",
     "PUBLIC means only information {{user}} and characters present can know at the beginning of the story.",
     "Worldbuilding is NOT automatically public.",
+    "Classify facts individually, never whole paragraphs. If one passage mixes public and private facts, extract only independently safe public facts without copying, summarizing or paraphrasing the private part.",
+    "Public facts may include visible appearance, demonstrated personality, observable habits, public occupation/function, known apparent relationships, the known initial situation and ordinary facts that reveal no hidden cause.",
     "Keep secrets, spoilers, future plans, limited knowledge, hidden identities/relationships/powers and unknown worldbuilding out of all public/card/lorebook fields.",
+    "Unknown causes, secret goals, restricted knowledge, future conditions and unrevealed abilities remain private.",
+    "Put useful public character facts in characterInformation/cardAdditions. lorebookEntries is only reusable public knowledge about world, places, organizations, rules or context; do not duplicate character personality there.",
     "It is valid to return empty publicPremise/card fields or an empty lorebookEntries array when nothing is safely public.",
     "Use short stable readable IDs. Separate every secret; ownerCharacterId is ownership, knownByCharacterIds is knowledge.",
     "Secret status: locked|foreshadowed|suspected|partially_revealed|confirmed. Private-source presence alone is locked.",
@@ -424,7 +428,7 @@ const NarrativeDirectorCore = (() => {
       }
       return normalizeStringList(value[key]).slice(0, 500);
     };
-    const blockedSecrets = Array.isArray(value.blockedSecrets) ? value.blockedSecrets.flatMap((item, index) => {
+    const blockedSecretRows = Array.isArray(value.blockedSecrets) ? value.blockedSecrets.flatMap((item, index) => {
       if (!isRecord(item)) {
         errors.push(`blockedSecrets[${index}] must be an object.`);
         return [];
@@ -434,7 +438,7 @@ const NarrativeDirectorCore = (() => {
       if (!id || !label) errors.push(`blockedSecrets[${index}] needs a valid id and label.`);
       return id && label ? [{ id, label }] : [];
     }) : (errors.push("blockedSecrets must be an array."), []);
-    const characterStates = Array.isArray(value.characterStates) ? value.characterStates.flatMap((item, index) => {
+    const characterStateRows = Array.isArray(value.characterStates) ? value.characterStates.flatMap((item, index) => {
       if (!isRecord(item)) {
         errors.push(`characterStates[${index}] must be an object.`);
         return [];
@@ -444,6 +448,8 @@ const NarrativeDirectorCore = (() => {
       if (!name || !state) errors.push(`characterStates[${index}] needs name and state.`);
       return name && state ? [{ name, state }] : [];
     }) : (errors.push("characterStates must be an array."), []);
+    const blockedSecrets = Array.from(new Map(blockedSecretRows.map((item) => [item.id, item])).values());
+    const characterStates = Array.from(new Map(characterStateRows.map((item) => [item.name.toLocaleLowerCase(), item])).values());
     const result = {
       happenedSummary: required("happenedSummary"),
       currentPoint: required("currentPoint"),
@@ -493,80 +499,78 @@ const NarrativeDirectorCore = (() => {
     return { input, messageCount: activeMessages.length };
   }
 
-  function buildInitializationChunks(story, messages, maxLength = INITIALIZATION_ROUTE_BUDGET) {
+  function normalizeInitializationMessages(messages) {
     if (!Array.isArray(messages) || messages.length === 0) throw new Error("The selected chat has no messages to analyze.");
-    const activeMessages = messages.flatMap((message, sourceIndex) => {
+    const active = messages.flatMap((message, sourceIndex) => {
       if (!isRecord(message) || typeof message.content !== "string" || !message.content.trim()) return [];
-      return [{
-        id: cleanId(message.id) || `message_${sourceIndex + 1}`,
-        sourceIndex,
+      return [{ id: cleanId(message.id) || `message_${sourceIndex + 1}`, sourceIndex,
         role: ["user", "assistant", "system", "narrator"].includes(message.role) ? message.role : "unknown",
-        activeSwipeIndex: normalizeInteger(message.activeSwipeIndex, 0, 0, 100_000),
-        content: message.content,
-      }];
+        activeSwipeIndex: normalizeInteger(message.activeSwipeIndex, 0, 0, 100_000), content: message.content }];
     });
-    if (!activeMessages.length) throw new Error("The selected chat has no active message content to analyze.");
-    const envelopeSize = (items, partial = null) => JSON.stringify({
-      privateStoryPlan: story.privateDocument,
-      previousConfirmedState: story.confirmedInitialState,
-      previousPartialState: partial,
-      activeChatMessages: items,
-    }).length;
-    if (envelopeSize([]) >= maxLength) throw new Error("The private story plan is too large for the public initialization route.");
-    const parts = [];
-    for (const message of activeMessages) {
-      if (envelopeSize([message]) < maxLength) {
-        parts.push({ ...message, part: 1, partCount: 1 });
-        continue;
-      }
-      const slices = [];
-      let offset = 0;
-      while (offset < message.content.length) {
-        let low = 1;
-        let high = message.content.length - offset;
-        let accepted = 0;
-        while (low <= high) {
-          const size = Math.floor((low + high) / 2);
-          const candidate = { ...message, content: message.content.slice(offset, offset + size), part: 1, partCount: 1 };
-          if (envelopeSize([candidate]) < maxLength) { accepted = size; low = size + 1; } else high = size - 1;
-        }
-        if (!accepted) throw new Error(`Message ${message.sourceIndex + 1} cannot fit in the public initialization route.`);
-        slices.push(message.content.slice(offset, offset + accepted));
-        offset += accepted;
-      }
-      slices.forEach((content, index) => parts.push({ ...message, content, part: index + 1, partCount: slices.length }));
-    }
-    const groups = [];
-    let current = [];
-    for (const part of parts) {
-      if (current.length && envelopeSize([...current, part]) >= maxLength) {
-        groups.push(current);
-        current = [];
-      }
-      current.push(part);
-    }
-    if (current.length) groups.push(current);
-    return {
-      messageCount: activeMessages.length,
-      chunks: groups.map((items, index) => ({
-        index,
-        messageStart: Math.min(...items.map((item) => item.sourceIndex)) + 1,
-        messageEnd: Math.max(...items.map((item) => item.sourceIndex)) + 1,
-        splitMessageParts: items.filter((item) => item.partCount > 1).map((item) => ({ message: item.sourceIndex + 1, part: item.part, total: item.partCount })),
-        messages: items,
-      })),
-    };
+    if (!active.length) throw new Error("The selected chat has no active message content to analyze.");
+    return active;
   }
 
-  function buildInitializationChunkInput(story, chunk, previousPartialState) {
-    const input = JSON.stringify({
-      privateStoryPlan: story.privateDocument,
-      previousConfirmedState: story.confirmedInitialState,
-      previousPartialState: previousPartialState || null,
-      activeChatMessages: chunk.messages,
-    });
-    if (input.length >= MAX_INITIALIZATION_INPUT_LENGTH) throw new Error("The progressive state and current block exceed the public route limit.");
-    return input;
+  function consolidateInitializationState(value) {
+    if (!value) return null;
+    return normalizeInitialState(value, true);
+  }
+
+  function buildNextInitializationBlock(story, messages, cursor = {}, previousPartialState = null, options = {}) {
+    const active = normalizeInitializationMessages(messages);
+    const instruction = cleanText(options.instruction || INITIALIZATION_PROMPT, 4_000);
+    const routeBudget = normalizeInteger(options.routeBudget, INITIALIZATION_ROUTE_BUDGET, 1_000, MAX_INITIALIZATION_INPUT_LENGTH);
+    const safetyMargin = normalizeInteger(options.safetyMargin, 1_000, 256, 10_000);
+    const partial = consolidateInitializationState(previousPartialState);
+    const envelope = (items) => JSON.stringify({ privateStoryPlan: story.privateDocument,
+      previousConfirmedState: story.confirmedInitialState, previousPartialState: partial, activeChatMessages: items });
+    const requestSize = (items) => instruction.length + envelope(items).length + safetyMargin;
+    const emptyEnvelope = requestSize([]);
+    if (emptyEnvelope >= routeBudget) {
+      const privateSize = JSON.stringify(story.privateDocument || "").length;
+      const confirmedSize = JSON.stringify(story.confirmedInitialState || null).length;
+      const partialSize = JSON.stringify(partial).length;
+      const largest = [["private story plan", privateSize], ["confirmed state", confirmedSize], ["consolidated partial state", partialSize]].sort((a, b) => b[1] - a[1])[0];
+      throw new Error(`Initialization cannot continue: ${largest[0]} leaves no room for a new message block.`);
+    }
+    let messagePosition = normalizeInteger(cursor.messagePosition, 0, 0, active.length);
+    let offset = normalizeInteger(cursor.offset, 0, 0, active[messagePosition]?.content.length || 0);
+    let part = normalizeInteger(cursor.part, 1, 1, 1_000_000);
+    if (messagePosition >= active.length) return { done: true, messageCount: active.length, cursor: { messagePosition, offset: 0, part } };
+    const items = [];
+    let next = { messagePosition, offset, part };
+    while (next.messagePosition < active.length) {
+      const message = active[next.messagePosition];
+      const remaining = message.content.slice(next.offset);
+      const candidate = { ...message, content: remaining, part: next.part, continued: next.offset > 0 };
+      if (requestSize([...items, candidate]) < routeBudget) {
+        items.push(candidate);
+        next = { messagePosition: next.messagePosition + 1, offset: 0, part: 1 };
+        continue;
+      }
+      let low = 1;
+      let high = remaining.length;
+      let accepted = 0;
+      while (low <= high) {
+        const size = Math.floor((low + high) / 2);
+        if (requestSize([...items, { ...candidate, content: remaining.slice(0, size) }]) < routeBudget) { accepted = size; low = size + 1; }
+        else high = size - 1;
+      }
+      if (!accepted) {
+        if (items.length) break;
+        throw new Error(`Initialization cannot continue: consolidated envelope leaves no room for message ${message.sourceIndex + 1}.`);
+      }
+      items.push({ ...candidate, content: remaining.slice(0, accepted), continued: true });
+      next = accepted === remaining.length
+        ? { messagePosition: next.messagePosition + 1, offset: 0, part: 1 }
+        : { messagePosition: next.messagePosition, offset: next.offset + accepted, part: next.part + 1 };
+      break;
+    }
+    const selectedText = envelope(items);
+    return { done: false, selectedText, requestSize: instruction.length + selectedText.length + safetyMargin,
+      messageCount: active.length, messageStart: items[0].sourceIndex + 1,
+      messageEnd: items[items.length - 1].sourceIndex + 1, messages: items, cursor, nextCursor: next,
+      splitMessageParts: items.filter((item) => item.continued).map((item) => ({ message: item.sourceIndex + 1, part: item.part })) };
   }
 
   function validateStory(input) {
@@ -826,11 +830,30 @@ const NarrativeDirectorCore = (() => {
       if (!isRecord(field) || !TRACKER_FIELD_NAMES.includes(field.name) || typeof field.value !== "string") continue;
       let value = field.value;
       if (field.name !== "nd_confidence") {
-        try { value = JSON.parse(field.value); } catch { continue; }
+        try { value = JSON.parse(field.value); } catch { value = field.value; }
       }
       result[field.name] = value;
     }
     return result;
+  }
+
+  function formatTrackerRuntimeValue(value) {
+    if (typeof value !== "string") return value == null ? "" : JSON.stringify(value, null, 2);
+    try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+  }
+
+  function buildTrackerProjection(story, gameState = null, agents = [], chatMetadata = {}) {
+    const plan = buildAdaptiveTrackingPlan(story);
+    const runtime = extractAdaptiveTrackerState(gameState);
+    const type = storyTypes(story).tracker;
+    const created = agents.some((agent) => agent?.type === type || (story.tracker.agentId && agent?.id === story.tracker.agentId));
+    const active = activeAgentTypes(chatMetadata).includes(type);
+    return {
+      plan,
+      fields: TRACKER_FIELD_NAMES.map((name) => ({ name, value: formatTrackerRuntimeValue(runtime[name]) })),
+      agentStatus: active ? "active" : created ? "inactive" : "not_created",
+      anchor: gameState?.messageId ? { messageId: gameState.messageId, swipeIndex: gameState.swipeIndex ?? 0 } : null,
+    };
   }
 
   function buildDirectorPayload(story) {
@@ -974,6 +997,8 @@ const NarrativeDirectorCore = (() => {
     TYPE_PREFIX,
     DEFAULT_DIRECTOR_PROMPT,
     DEFAULT_TRACKER_PROMPT,
+    DIRECTOR_ADAPTIVE_POLICY,
+    TRACKER_OBSERVATION_POLICY,
     ANALYSIS_PROMPT,
     INITIALIZATION_PROMPT,
     MAX_ANALYSIS_SOURCE_LENGTH,
@@ -985,11 +1010,14 @@ const NarrativeDirectorCore = (() => {
     parseAnalysisResponse,
     parseInitializationResponse,
     buildInitializationInput,
-    buildInitializationChunks,
-    buildInitializationChunkInput,
+    normalizeInitializationMessages,
+    consolidateInitializationState,
+    buildNextInitializationBlock,
     normalizeNarrativeStructure,
     buildAdaptiveTrackingPlan,
     extractAdaptiveTrackerState,
+    formatTrackerRuntimeValue,
+    buildTrackerProjection,
     applyAnalysis,
     parseLorebookProposals,
     buildPublicResourcePreview,

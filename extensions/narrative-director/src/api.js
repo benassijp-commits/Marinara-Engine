@@ -135,24 +135,27 @@ const NarrativeDirectorApi = (() => {
       } catch (error) {
         if (!/exceed|too large/i.test(error.message || "")) throw error;
       }
-      const prepared = core.buildInitializationChunks(story, messages);
       const resume = options.resume && options.resume.storyId === story.id && options.resume.chatId === story.chatId
-        ? options.resume : { storyId: story.id, chatId: story.chatId, nextBlock: 0, partialState: null };
-      for (let index = resume.nextBlock; index < prepared.chunks.length; index++) {
+        ? options.resume : { storyId: story.id, chatId: story.chatId, cursor: { messagePosition: 0, offset: 0, part: 1 }, partialState: null, completedBlocks: 0, splits: [] };
+      while (true) {
         if (options.signal?.aborted) {
           const error = new Error("Initialization cancelled. No partial state was saved.");
           error.name = "AbortError";
           throw error;
         }
-        const chunk = prepared.chunks[index];
-        options.onProgress?.({ block: index + 1, blockCount: prepared.chunks.length, messageStart: chunk.messageStart, messageEnd: chunk.messageEnd, splits: chunk.splitMessageParts });
+        const block = core.buildNextInitializationBlock(story, messages, resume.cursor, resume.partialState, {
+          instruction: core.INITIALIZATION_PROMPT,
+        });
+        if (block.done) break;
+        const blockNumber = resume.completedBlocks + 1;
+        options.onProgress?.({ block: blockNumber, blockCount: null, messageStart: block.messageStart, messageEnd: block.messageEnd, splits: block.splitMessageParts });
         try {
           const response = await postRewrite({
             connectionId,
-            selectedText: core.buildInitializationChunkInput(story, chunk, resume.partialState),
+            selectedText: block.selectedText,
             instruction: core.INITIALIZATION_PROMPT,
             agentName: "Narrative Director Existing Chat Initializer",
-            dataLabel: `Private story plan and active chat history block ${index + 1} of ${prepared.chunks.length}`,
+            dataLabel: `Private story plan and active chat history block ${blockNumber}`,
           }, "Initialization");
           if (options.signal?.aborted) {
             const cancelled = new Error("Initialization cancelled. No partial state was saved.");
@@ -160,20 +163,22 @@ const NarrativeDirectorApi = (() => {
             throw cancelled;
           }
           if (typeof response?.rewrittenText !== "string") throw new Error("The initialization connection returned no usable text.");
-          resume.partialState = core.parseInitializationResponse(response.rewrittenText);
-          resume.nextBlock = index + 1;
+          resume.partialState = core.consolidateInitializationState(core.parseInitializationResponse(response.rewrittenText));
+          resume.cursor = block.nextCursor;
+          resume.completedBlocks = blockNumber;
+          resume.splits.push(...block.splitMessageParts);
         } catch (cause) {
           if (cause.name === "AbortError") throw cause;
-          const error = new Error(`Initialization block ${index + 1} of ${prepared.chunks.length} failed: ${cause.message || "unknown error"}`);
+          const error = new Error(`Initialization block ${blockNumber} failed: ${cause.message || "unknown error"}`);
           error.initializationCheckpoint = resume;
-          error.block = index + 1;
-          error.blockCount = prepared.chunks.length;
+          error.block = blockNumber;
+          error.blockCount = null;
           throw error;
         }
       }
       return {
-        initialState: resume.partialState, messageCount: prepared.messageCount, blockCount: prepared.chunks.length,
-        splits: prepared.chunks.flatMap((chunk) => chunk.splitMessageParts),
+        initialState: resume.partialState, messageCount: core.normalizeInitializationMessages(messages).length,
+        blockCount: resume.completedBlocks, splits: resume.splits,
       };
     }
 

@@ -212,6 +212,21 @@ test("long-chat initialization uses chronological blocks and carries partial sta
   assert.equal(allParts.filter((item) => item.sourceIndex === 1).map((item) => item.content).join(""), messages[1].content);
 });
 
+test("eight or more progressive blocks stay below the route limit without omissions", async () => {
+  const messages = Array.from({ length: 9 }, (_value, index) => ({
+    id: `long-${index}`, role: index % 2 ? "assistant" : "user", content: String(index).repeat(45_000), activeSwipeIndex: 0,
+  }));
+  const { api, calls } = createHarness({}, { initializationResponse });
+  const result = await api.initializeFromChat("analysis-connection", story, messages);
+  const rewrites = calls.filter((call) => call.path === "/agents/suite/rewrite");
+  assert.ok(result.blockCount >= 8);
+  assert.ok(rewrites.every((call) => call.body.selectedText.length <= 50_000));
+  const parts = rewrites.flatMap((call) => JSON.parse(call.body.selectedText).activeChatMessages);
+  messages.forEach((message, index) => {
+    assert.equal(parts.filter((part) => part.sourceIndex === index).map((part) => part.content).join(""), message.content);
+  });
+});
+
 test("cancelled long-chat initialization does not return a partial proposal", async () => {
   const messages = [{ id: "m1", role: "user", content: "A".repeat(60_000) }];
   const controller = new AbortController();
@@ -233,11 +248,13 @@ test("a failed long-chat block can resume from its in-memory checkpoint", async 
     try { await api.initializeFromChat("analysis-connection", story, messages); }
     catch (error) { checkpoint = error.initializationCheckpoint; throw error; }
   }, /block 2/i);
-  assert.equal(checkpoint.nextBlock, 1);
+  assert.equal(checkpoint.completedBlocks, 1);
+  const failedSelectedText = calls.filter((call) => call.path === "/agents/suite/rewrite").at(-1).body.selectedText;
   const callsBeforeRetry = calls.filter((call) => call.path === "/agents/suite/rewrite").length;
   const result = await api.initializeFromChat("analysis-connection", story, messages, { resume: checkpoint });
   assert.ok(result.initialState);
   assert.equal(calls.filter((call) => call.path === "/agents/suite/rewrite").length, callsBeforeRetry + 1);
+  assert.equal(calls.filter((call) => call.path === "/agents/suite/rewrite")[callsBeforeRetry].body.selectedText, failedSelectedText);
 });
 
 test("invalid initialization response fails without changing the existing story", async () => {

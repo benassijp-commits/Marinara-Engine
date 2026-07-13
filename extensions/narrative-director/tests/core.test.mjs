@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 await import("../src/core.js");
 const core = globalThis.__NarrativeDirectorCore;
+const uiSource = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8");
 
 function validStory(overrides = {}) {
   return core.createStory({
@@ -137,6 +139,56 @@ test("all rewrite instructions stay within the Marinara limit", () => {
   assert.ok(core.ANALYSIS_PROMPT.length <= 4_000, `analysis prompt is ${core.ANALYSIS_PROMPT.length} characters`);
   assert.ok(core.ANALYSIS_PROMPT.length <= 3_800, `analysis prompt exceeds the 3,800-character safety target`);
   assert.ok(core.INITIALIZATION_PROMPT.length <= 4_000, `initialization prompt is ${core.INITIALIZATION_PROMPT.length} characters`);
+});
+
+test("production prompts remain universal and contain no fixture literals", () => {
+  const prompts = [core.ANALYSIS_PROMPT, core.INITIALIZATION_PROMPT, core.DEFAULT_DIRECTOR_PROMPT,
+    core.DEFAULT_TRACKER_PROMPT, core.DIRECTOR_ADAPTIVE_POLICY, core.TRACKER_OBSERVATION_POLICY].join("\n");
+  for (const fixtureLiteral of ["Mara", "Ivo", "Brass Key", "Old Quarter", "sealed archive", "Tovan", "violet scarf", "hidden signal"]) {
+    assert.doesNotMatch(prompts, new RegExp(fixtureLiteral, "i"));
+  }
+});
+
+test("mixed passages keep only independently safe public facts", () => {
+  const hidden = "The private signal identifies a concealed destination.";
+  const response = {
+    ...validAnalysis,
+    publicPremise: "Tovan arrives at a public market.",
+    characterInformation: "Tovan visibly wears a violet scarf and speaks calmly.",
+    cardAdditions: "Tovan habitually checks the weather before travel.",
+    lorebookEntries: [],
+    privateDirectorDocument: hidden,
+    secrets: [{ ...validAnalysis.secrets[0], id: "hidden_signal", title: "Private signal", summary: hidden }],
+    narrativeArcs: [{ ...validAnalysis.narrativeArcs[0], id: "signal_arc" }],
+    candidateBeats: [{ ...validAnalysis.candidateBeats[0], id: "signal_clue", relatedArcIds: ["signal_arc"], relatedSecretIds: ["hidden_signal"] }],
+  };
+  const parsed = core.parseAnalysisResponse(JSON.stringify(response));
+  const publicData = JSON.stringify({ publicPremise: parsed.publicPremise, characterInformation: parsed.characterInformation,
+    cardAdditions: parsed.cardAdditions, lorebookEntries: parsed.lorebookEntries });
+  assert.match(publicData, /violet scarf/);
+  assert.doesNotMatch(publicData, /private signal|concealed destination/i);
+  assert.deepEqual(parsed.lorebookEntries, []);
+});
+
+test("tracker projection derives plan, runtime fields and agent status", () => {
+  const story = validStory(validAnalysis);
+  const type = core.storyTypes(story).tracker;
+  const projection = core.buildTrackerProjection(story, { messageId: "message-1", swipeIndex: 2, playerStats: { customTrackerFields: [
+    { name: "nd_arc_states", value: '[{"id":"archive_arc","status":"active"}]' },
+    { name: "nd_confidence", value: "not-json confidence" },
+  ] } }, [{ id: "tracker-agent", type }], { activeAgentIds: [type] });
+  assert.equal(projection.agentStatus, "active");
+  assert.equal(projection.plan.arcs[0].id, "archive_arc");
+  assert.equal(projection.plan.secrets[0].id, "key_origin");
+  assert.match(projection.fields.find((field) => field.name === "nd_arc_states").value, /\n/);
+  assert.equal(projection.fields.find((field) => field.name === "nd_confidence").value, "not-json confidence");
+});
+
+test("Tracker tab exposes derived plan and runtime nd fields without legacy editors", () => {
+  assert.match(uiSource, /data-slot="tracker-plan"/);
+  assert.match(uiSource, /data-slot="tracker-runtime"/);
+  assert.match(uiSource, /tracker-agent-status/);
+  for (const legacy of ["trackerStages", "trackedSecrets", "progressionProjection"]) assert.doesNotMatch(uiSource, new RegExp(legacy));
 });
 
 test("analysis prompt defines public as initial knowledge and permits empty public output", () => {
@@ -410,30 +462,55 @@ test("tracker records observations only and bridge state is readable next turn",
   assert.equal(state.nd_confidence, "high");
 });
 
-test("splits long chats chronologically without omitting active message content", () => {
+test("dynamically splits long chats chronologically without omitting content", () => {
   const messages = [
     { id: "m1", role: "user", content: "A".repeat(40_000), activeSwipeIndex: 0 },
     { id: "m2", role: "assistant", content: "B".repeat(24_000), activeSwipeIndex: 2 },
     { id: "m3", role: "user", content: "C".repeat(24_000), activeSwipeIndex: 0 },
   ];
-  const prepared = core.buildInitializationChunks(validStory(), messages, 30_000);
-  assert.ok(prepared.chunks.length > 1);
-  const flattened = prepared.chunks.flatMap((chunk) => chunk.messages);
+  const flattened = [];
+  let cursor = { messagePosition: 0, offset: 0, part: 1 };
+  while (true) {
+    const block = core.buildNextInitializationBlock(validStory(), messages, cursor, null, { routeBudget: 30_000, safetyMargin: 1_000 });
+    if (block.done) break;
+    flattened.push(...block.messages);
+    cursor = block.nextCursor;
+    assert.ok(block.requestSize < 30_000);
+  }
   assert.deepEqual(flattened.map((item) => item.sourceIndex), [...flattened.map((item) => item.sourceIndex)].sort((a, b) => a - b));
   for (const [index, message] of messages.entries()) {
     assert.equal(flattened.filter((item) => item.sourceIndex === index).map((item) => item.content).join(""), message.content);
   }
-  assert.ok(prepared.chunks.some((chunk) => chunk.splitMessageParts.length > 0));
+  assert.ok(flattened.some((item) => item.continued));
 });
 
-test("passes partial state into the next initialization block", () => {
-  const chunks = core.buildInitializationChunks(validStory(), [
-    { id: "m1", role: "user", content: "A".repeat(30_000) },
-    { id: "m2", role: "assistant", content: "B".repeat(30_000) },
-  ], 35_000).chunks;
-  const partial = { happenedSummary: "First block confirmed" };
-  const input = JSON.parse(core.buildInitializationChunkInput(validStory(), chunks[1], partial));
-  assert.deepEqual(input.previousPartialState, partial);
+test("a large consolidated state dynamically reduces the next block", () => {
+  const messages = [{ id: "m1", role: "user", content: "A".repeat(60_000) }];
+  const first = core.buildNextInitializationBlock(validStory(), messages, {}, null, { routeBudget: 35_000, safetyMargin: 1_000 });
+  const partial = { ...validInitialState, happenedSummary: "Confirmed ".repeat(900) };
+  const second = core.buildNextInitializationBlock(validStory(), messages, first.nextCursor, partial, { routeBudget: 35_000, safetyMargin: 1_000 });
+  assert.ok(second.messages[0].content.length < first.messages[0].content.length);
+  assert.deepEqual(JSON.parse(second.selectedText).previousPartialState, core.consolidateInitializationState(partial));
+  assert.ok(second.requestSize < 35_000);
+});
+
+test("consolidated initialization state deduplicates facts and stable entities", () => {
+  const consolidated = core.consolidateInitializationState({
+    ...validInitialState,
+    occurredEvents: ["door_opened", "door_opened"],
+    blockedSecrets: [{ id: "secret_a", label: "Locked" }, { id: "secret_a", label: "Still locked" }],
+    characterStates: [{ name: "Tovan", state: "Waiting" }, { name: "tovan", state: "Departed" }],
+  });
+  assert.deepEqual(consolidated.occurredEvents, ["door_opened"]);
+  assert.deepEqual(consolidated.blockedSecrets, [{ id: "secret_a", label: "Still locked" }]);
+  assert.deepEqual(consolidated.characterStates, [{ name: "tovan", state: "Departed" }]);
+});
+
+test("reports the fixed component that leaves no room for a message", () => {
+  const story = validStory({ privateDocument: "P".repeat(20_000) });
+  assert.throws(() => core.buildNextInitializationBlock(story, [{ id: "m", role: "user", content: "hello" }], {}, null, {
+    routeBudget: 5_000, safetyMargin: 1_000,
+  }), /private story plan leaves no room/);
 });
 
 test("enforces conservative abandoned arcs while allowing pause and recovery", () => {

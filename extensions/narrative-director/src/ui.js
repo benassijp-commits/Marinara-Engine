@@ -214,6 +214,20 @@
                 <strong>Observable tracker structure</strong>
                 <span>The tracker records evidence, arc/beat IDs and revelation layers. It never receives private explanations or setup strategies.</span>
               </div>
+              <section class="nd-tracker-projection" aria-labelledby="nd-tracker-plan-title">
+                <div class="nd-state-header">
+                  <div><span class="nd-section-label">Derived projection</span><strong id="nd-tracker-plan-title">Observable plan</strong></div>
+                  <span data-slot="tracker-agent-status">Agent not created</span>
+                </div>
+                <div class="nd-tracker-plan" data-slot="tracker-plan"></div>
+              </section>
+              <section class="nd-state-view" aria-labelledby="nd-tracker-runtime-title">
+                <div class="nd-state-header">
+                  <div><span class="nd-section-label">Selected chat</span><strong id="nd-tracker-runtime-title">Runtime nd_* fields</strong></div>
+                  <button class="nd-button nd-button-quiet nd-button-small" type="button" data-action="refresh-tracker-projection">Refresh</button>
+                </div>
+                <div class="nd-state-fields nd-runtime-fields" data-slot="tracker-runtime"></div>
+              </section>
               <div class="nd-form-grid nd-form-grid-three">
                 <label class="nd-field nd-field-wide">
                   <span>Tracker connection</span>
@@ -578,6 +592,7 @@
     fields.trackerContextSize.value = story.tracker.contextSize;
     fields.trackerMaxTokens.value = story.tracker.maxTokens;
     fields.trackerTemperature.value = story.tracker.temperature;
+    renderTrackerProjection(story);
     renderInitializationProposal(
       state.initializationStoryId === story.id ? state.initializationProposal : story.confirmedInitialState,
       story,
@@ -590,6 +605,75 @@
 
   function connectionOption(connection) {
     return { id: connection.id, label: `${connection.name || "Connection"} · ${connection.model || connection.provider}` };
+  }
+
+  function appendProjectionGroup(container, title, items, describe) {
+    const group = document.createElement("section");
+    group.className = "nd-projection-group";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    group.appendChild(heading);
+    if (!items.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "None configured.";
+      group.appendChild(empty);
+    } else {
+      const list = document.createElement("div");
+      list.className = "nd-projection-list";
+      for (const item of items) {
+        const row = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = describe(item).summary;
+        const body = document.createElement("pre");
+        body.textContent = describe(item).details;
+        row.append(summary, body);
+        list.appendChild(row);
+      }
+      group.appendChild(list);
+    }
+    container.appendChild(group);
+  }
+
+  function renderTrackerProjection(story, gameState = null, agents = [], metadata = null) {
+    if (!story) return;
+    const fallbackMetadata = story.activeChatId === story.chatId ? { activeAgentIds: [core.storyTypes(story).tracker] } : {};
+    const knownAgents = agents.length ? agents : story.tracker.agentId ? [{ id: story.tracker.agentId }] : [];
+    const projection = core.buildTrackerProjection(story, gameState, knownAgents, metadata || fallbackMetadata);
+    const plan = $('[data-slot="tracker-plan"]');
+    plan.replaceChildren();
+    appendProjectionGroup(plan, "Secrets", projection.plan.secrets, (item) => ({ summary: `${item.id} · ${item.status}`, details: `ID: ${item.id}\nStatus: ${item.status}` }));
+    appendProjectionGroup(plan, "Arcs", projection.plan.arcs, (item) => ({ summary: `${item.id} · ${item.status} · ${item.momentum}`, details: `Observed state: ${item.observedState}\nMomentum: ${item.momentum}` }));
+    appendProjectionGroup(plan, "Candidate beats", projection.plan.beats, (item) => ({
+      summary: `${item.id} · ${item.status}`,
+      details: `Eligible: ${item.status === "eligible" ? "yes" : "no"}\nReadiness signals:\n${item.readinessSignals.map((value) => `• ${value}`).join("\n") || "None"}\nBlockers:\n${item.blockers.map((value) => `• ${value}`).join("\n") || "None"}`,
+    }));
+    appendProjectionGroup(plan, "Produced fields", projection.plan.outputFieldNames, (name) => ({ summary: name, details: name }));
+    const runtime = $('[data-slot="tracker-runtime"]');
+    runtime.replaceChildren();
+    for (const field of projection.fields) {
+      const row = document.createElement("div");
+      const name = document.createElement("span");
+      const value = document.createElement("pre");
+      name.textContent = field.name;
+      value.textContent = field.value || "Not saved yet";
+      row.append(name, value);
+      runtime.appendChild(row);
+    }
+    const labels = { not_created: "Agent not created", inactive: "Agent created · inactive", active: "Agent active" };
+    $('[data-slot="tracker-agent-status"]').textContent = labels[projection.agentStatus];
+  }
+
+  async function refreshTrackerProjection() {
+    const draft = readDraft();
+    if (!draft) return;
+    try {
+      const [gameState, agents, chat] = draft.chatId
+        ? await Promise.all([api.getGameState(draft.chatId), api.listAgents(), api.get(`/chats/${encodeURIComponent(draft.chatId)}`)])
+        : [null, await api.listAgents(), { metadata: {} }];
+      renderTrackerProjection(draft, gameState, agents, core.parseMetadata(chat?.metadata));
+    } catch (error) {
+      showErrors([error.message || "Could not refresh tracker projection."]);
+    }
   }
 
   function setRowValue(row, selector, value) {
@@ -1065,8 +1149,9 @@
     panel.hidden = !progress;
     cancel.hidden = !progress;
     if (!progress) return;
-    $('[data-slot="initialization-progress-label"]').textContent = `Analyzing block ${progress.block} of ${progress.blockCount}`;
-    const split = progress.splits?.length ? ` · split message parts: ${progress.splits.map((item) => `${item.message}:${item.part}/${item.total}`).join(", ")}` : "";
+    $('[data-slot="initialization-progress-label"]').textContent = progress.blockCount
+      ? `Analyzing block ${progress.block} of ${progress.blockCount}` : `Analyzing block ${progress.block}`;
+    const split = progress.splits?.length ? ` · split message parts: ${progress.splits.map((item) => `${item.message}:${item.part}`).join(", ")}` : "";
     $('[data-slot="initialization-progress-range"]').textContent = `Messages ${progress.messageStart}–${progress.messageEnd}${split}`;
   }
 
@@ -1120,7 +1205,7 @@
       clearInitializationProposal(false);
       if (error.initializationCheckpoint) state.initializationCheckpoint = error.initializationCheckpoint;
       await saveInitializationDiagnostic(original, {
-        operation: "initialize_existing_chat", status: "error", stage: error.block ? `block_${error.block}_of_${error.blockCount}` : "analysis",
+        operation: "initialize_existing_chat", status: "error", stage: error.block ? `block_${error.block}${error.blockCount ? `_of_${error.blockCount}` : ""}` : "analysis",
         chatId: original.chatId, messageCount, error: "Initialization analysis failed.",
       });
       renderInitializationProposal(original.confirmedInitialState, original);
@@ -1505,6 +1590,7 @@
       if (!hasMatchingProposal) renderInitializationProposal(draftBeforeTabChange?.confirmedInitialState, draftBeforeTabChange);
     }
     if (tab === "application") renderApplicationView(draftBeforeTabChange);
+    if (tab === "tracker") void refreshTrackerProjection();
     if (tab === "activation") updateDerivedView();
   }
 
@@ -1592,6 +1678,7 @@
     if (action === "activate") void activateCurrent();
     if (action === "deactivate") void deactivateCurrent();
     if (action === "refresh-state") void refreshTrackerState();
+    if (action === "refresh-tracker-projection") void refreshTrackerProjection();
     if (action === "export") downloadJson();
     if (action === "import") $('[data-slot="import-file"]').click();
   });
