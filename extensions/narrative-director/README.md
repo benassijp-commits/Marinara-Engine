@@ -1,117 +1,104 @@
-# Narrative Director extension, architecture v2
+# Narrative Director v3
 
-Browser extension for extracting a story into atomic facts, reviewing public/private disclosure, compiling safe character cards and lorebook entries, and synchronizing one guarded per-chat lorebook for two fixed custom-agent types.
+Browser extension for turning a story plan into a small editable project with structurally separate public resources, a private Director guide, important secrets, broad storylines, and concise per-chat state.
 
-The extension does not create, patch, or configure agents. It never modifies Marinara core files.
+The extension uses only Marinara's public extension and API surfaces. It does not modify Marinara core files, create agents, or call providers directly.
+
+## Canonical project
+
+Each project has one `story` object:
+
+- `worldCard`: public world or scenario card;
+- `characters`: one entity per person, with aliases, a public profile, and character-specific Director notes;
+- `worldEntries`: public lorebook entries ready for use;
+- `directorGuide`: one readable private guide;
+- `secrets`: only important truths whose revelation needs tracking;
+- `storylines`: broad adaptable directions.
+
+Per-chat confirmed state contains only an accumulated summary, current situation, revealed secret IDs, storyline statuses, and short character states.
+
+## Analyze a story
+
+1. Create a project in **Source**.
+2. Choose Character focus or World / ensemble, a chat, and an analysis connection.
+3. Paste up to 50,000 characters.
+4. Optionally edit **Regras de análise**, then press **Salvar**. The fixed JSON structure cannot be edited.
+5. Press **Analyze story**.
+6. Review and edit the result in **Public** and **Private**.
+
+Analysis makes one `POST /api/agents/suite/rewrite` request. The complete source is sent as `selectedText`; saved user rules are sent separately in `contextSections`. There is no automatic repair, retry, chunking, or second model call. Invalid or truncated output leaves the previous project unchanged and remains visible under **Raw AI response** for the current session.
+
+The default analysis rules are local settings in IndexedDB. Editing them does not require rebuilding the extension.
+
+## Public resources
+
+Public compilation reads only:
+
+- `worldCard`;
+- `characters[].public`;
+- `characters[].aliases`;
+- `worldEntries`.
+
+Character focus creates the selected primary character card. World / ensemble creates the world card. Selected secondary characters become separate cards; other characters with public profiles become lorebook entries. World entries always remain public lorebook entries.
+
+Private notes, the Director guide, secrets, and storylines are never read by the public compiler.
+
+## External JSON import
+
+**Import JSON** accepts exactly two shapes:
+
+1. a complete `marinara.narrative-director-projects` bundle;
+2. one isolated valid v3 `story` object.
+
+An isolated story is applied to the currently open project while preserving its project ID, chat, connections, source text, and operational resource IDs. Review and save the draft afterward.
+
+New exports use bundle schema version 3. Imported v2 bundles and local v2 projects receive a limited deterministic migration and are marked for review. Fragmented facts and obsolete tracking structures are discarded instead of being carried into v3.
 
 ## Fixed agents
 
-Import `presets/marinara-agents.json` through Marinara's **Agents** panel and choose connections there. The preset uses the official `marinara.agent-folder` version 1 import shape.
+Import `presets/marinara-agents.json` through Marinara's **Agents** panel, then configure a connection for each agent.
 
 Director:
 
-- type: `narrative-story-director`
-- phase: `pre_generation`
-- result: `director_event`
-- output: one short editorial instruction, never narration or dialogue
-- suggested temperature: `0.2`
+- type: `narrative-story-director`;
+- phase: `pre_generation`;
+- result: `director_event`;
+- tool: `search_lorebook`;
+- output: one short editorial instruction.
 
 Tracker:
 
-- type: `narrative-story-tracker`
-- phase: `post_processing`
-- result: `custom_tracker_update`
-- capability: `edit_trackers`
-- output: exactly seven `nd_*` fields with JSON-string values
-- suggested temperature: `0.1`
+- type: `narrative-story-tracker`;
+- phase: `post_processing`;
+- result: `custom_tracker_update`;
+- capability: `edit_trackers`;
+- fields: `nd_summary`, `nd_current_situation`, `nd_revealed_secrets`, `nd_storylines`, `nd_character_states`.
 
-Both agents require a tool-capable connection and enable only `search_lorebook`. The extension may explicitly activate or deactivate these existing types in a selected chat. It preserves every unrelated `activeAgentIds` entry and never deletes the project lorebook on deactivation.
+The Director must not decide actions, dialogue, thoughts, feelings, decisions, or consent for `{{user}}`. The Tracker observes events and never directs the story.
 
-## One guarded lorebook for both agents
+## Guarded transport lorebook
 
-Each project/chat uses one agent-transport lorebook shared by both fixed agents. It is separate from the optional public lorebook produced by Apply, so public entries remain usable by normal lorebook and Knowledge Router behavior:
+Each chat uses one technical lorebook with two non-activating entries:
 
-- `__ND_DIRECTOR_PROJECT_V2__`: complete compact private project, retrieved only by the Director;
-- `__ND_TRACKER_PROJECT_V2__`: sanitized observable plan, retrieved only by the tracker.
+- `__ND_DIRECTOR_PROJECT_V3__`: private guide, character notes, secrets, storylines, editorial instructions, and confirmed state;
+- `__ND_TRACKER_PROJECT_V3__`: secret IDs/titles/reveal conditions, storyline IDs/titles, character IDs/names, and current state.
 
-The entries remain enabled because disabled entries are unavailable to `search_lorebook`, but their only activation key is the impossible regular expression `(?!)`. They are non-constant, excluded from vectorization, non-recursive and have no secondary keys, additional matching sources, activation conditions, schedule, sticky duration or cooldown. The normal keyword scanner therefore cannot activate them from roleplay text.
+Both use the impossible activation regex `(?!)`, are excluded from vectorization, and remain outside normal active lorebooks. Do not manually select the transport book as a Knowledge Router source.
 
-The transport lorebook is linked directly to the chat through its scope, but deliberately removed from `chat.metadata.activeLorebookIds`. Standard `search_lorebook` still discovers chat-linked entries, while Knowledge Router's default source selection uses active lorebook IDs and therefore does not catalog the transport book. Do not manually select the transport book as a Knowledge Router source.
-
-This is an application-level guard, not an administrative secrecy boundary. A local administrator can read normal lorebook data, and agent diagnostics can display tool results containing private content. Keep agent debug disabled outside troubleshooting.
-
-## Structured import
-
-1. Create a project and choose **Character focus** or **World / ensemble**.
-2. Paste up to 50,000 characters and choose a connection.
-3. Optionally open **Analysis Classification Instructions** to edit and save the disclosure policy locally. The protected JSON contract is not editable.
-4. Press **Analyze story**. No request happens automatically.
-5. Review compact narrative facts in **Public**, **Private**, and **Uncertain** groups.
-6. Resolve every uncertain fact before Apply.
-7. Review the deterministic card and lorebook preview.
-8. Confirm before creating resources.
-
-Analysis uses `POST /api/agents/suite/rewrite`. Every instruction is below 4,000 characters and every `selectedText` is validated at 50,000 characters. Sources up to 7,000 characters use one compact extraction. Larger sources are split chronologically at logical boundaries into blocks near 6,000 characters. Each call returns only a canonical fragment; the extension merges fragments deterministically without asking the model to regenerate the full project. Repeated entities are merged, references are remapped, character knowledge is unioned, and conflicting visibility resolves conservatively as private, then uncertain, then public. The saved classification policy is added to every analysis block at runtime, so changing it does not require rebuilding the extension.
-
-Plain and fenced JSON are accepted. Structurally incomplete output is reported as truncated and never sent through whole-response repair. One repair attempt remains available only for a structurally complete object with a small syntax defect. Completed blocks and raw responses remain in session memory only. **Analyze story** retries the failed block, while closing or reloading clears the checkpoint. Partial analyses are never written to IndexedDB, exports or logs.
-
-Creative enrichment is deliberately separate and disabled. Extraction works with a raw outline.
-
-## Deterministic public compilation
-
-The compiler uses only facts reviewed as public. It also sanitizes public premise, character description, appearance, personality, scenario and world-rule projection against private facts, secrets, private goals, future arcs, reveal conditions and candidate beats. Mixed public/private text is split at narrative boundaries, and explicitly private source sections override model inference.
-
-Character focus creates a native character card for the primary character. World / ensemble creates a narrator/world card. Selected secondary characters can become separate cards; unselected public characters, places, organizations, and rules can become lorebook entries.
-
-Native character fields used by the proven Marinara schema include:
-
-- `description`
-- `personality`
-- `scenario`
-- `extensions.appearance`
-- required empty/default V2 fields such as `first_mes`, `mes_example`, and `character_book`
-
-The same subject is not automatically duplicated into both a separate card and lorebook. Private and unresolved facts are rejected from public compilation.
-
-## Agent data boundary
-
-The Director entry contains the complete private project, summary, characters, secrets, knowledge matrix, arcs, candidate beats, setup strategies, confirmed initial state, editorial instructions, and public resource IDs. The structured project is stored only once and serialized as compact JSON to avoid redundant tokens.
-
-The tracker entry contains only project/schema IDs, secret IDs with layers, arc IDs with observable states, observable fact IDs, readiness signals, blockers, eligible beat IDs, confidence, and the seven `nd_*` field names. It excludes secret summaries, reveal conditions, private documents, private summaries, private goals, private setup strategies, and future private events.
-
-IndexedDB stores local drafts and UI recovery. After explicit synchronization, the Director entry is the server-side project copy for the selected chat and can restore it in another browser using the same Marinara instance. Export JSON remains the recommended backup and must be treated as sensitive.
+This is an application-level privacy boundary, not protection from a local administrator or agent debug logs.
 
 ## Existing chats
 
-Initialization reads the active message content returned by `GET /api/chats/:id/messages`, preserves chronological order, and chunks below the rewrite route limit without silently dropping content. Partial state stays only in session memory. Cancellation or failure does not replace the last confirmed state. Confirmation synchronizes the guarded entries and never edits agent configuration or old messages.
+Initialization makes one rewrite request. It includes the private project, a chat summary when available, and the newest active messages that fit under the request limit. Selected messages remain chronological. The interface reports when older messages were omitted. Confirmation is required before state is saved and the transport lorebook is synchronized.
 
-## Build and test
+## Build and validation
 
 ```bash
 cd extensions/narrative-director
 npm test
 npm run build
+npm run smoke
 node --check dist/extension.js
 ```
 
-The distributable contains:
-
-```text
-dist/
-  manifest.json
-  extension.js
-  extension.css
-  presets/marinara-agents.json
-```
-
-## Manual verification
-
-- Import the agent preset and choose two configured connections.
-- Confirm both fixed agent statuses as created/inactive, then active in one chat.
-- Analyze a mixed public/private outline and resolve uncertain facts.
-- Create public resources and inspect native card fields and lorebook entries.
-- Synchronize two different chats and confirm their lorebooks remain independent.
-- Open a second browser profile, select the chat, and recover the project from the Director entry.
-- Inspect the assembled main-model prompt and confirm neither technical entry was injected as normal lorebook context.
-- Confirm the tracker emits the exact `fields` array and never Context Injection.
-- Test the modal at desktop width and below 620px.
+The generated `dist/` directory is not committed.

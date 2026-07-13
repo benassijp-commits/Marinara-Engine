@@ -19,8 +19,9 @@ const NarrativeDirectorStorage = (() => {
       });
       return dbPromise;
     }
-    async function listProjects() { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readonly"); const rows = await result(tx.objectStore(STORE_PROJECTS).getAll()); await done(tx); return rows.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))); }
-    async function getProject(id) { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readonly"); const row = await result(tx.objectStore(STORE_PROJECTS).get(id)); await done(tx); return row || null; }
+    function normalize(row) { return row && globalThis.__NarrativeDirectorCore ? globalThis.__NarrativeDirectorCore.createProject(row, row.createdAt) : row; }
+    async function listProjects() { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readonly"); const rows = await result(tx.objectStore(STORE_PROJECTS).getAll()); await done(tx); return rows.map(normalize).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))); }
+    async function getProject(id) { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readonly"); const row = await result(tx.objectStore(STORE_PROJECTS).get(id)); await done(tx); return normalize(row) || null; }
     async function saveProject(project) { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readwrite"); tx.objectStore(STORE_PROJECTS).put(project); await done(tx); return project; }
     async function deleteProject(id) { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readwrite"); tx.objectStore(STORE_PROJECTS).delete(id); await done(tx); }
     async function replaceProjects(projects) { const db = await open(); const tx = db.transaction(STORE_PROJECTS, "readwrite"); const store = tx.objectStore(STORE_PROJECTS); store.clear(); for (const project of projects) store.put(project); await done(tx); }

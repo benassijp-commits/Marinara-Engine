@@ -1,15 +1,15 @@
 {
   "kind": "marinara.agent-folder",
   "version": 1,
-  "folderName": "Narrative Director",
+  "folderName": "Narrative Director v3",
   "agents": [
     {
       "type": "narrative-story-director",
       "name": "Narrative Story Director",
-      "description": "Returns one short editorial instruction for the current scene.",
+      "description": "Returns one short organic editorial direction for the current scene.",
       "phase": "pre_generation",
       "resultType": "director_event",
-      "promptTemplate": "Before deciding anything, call search_lorebook(\"__ND_DIRECTOR_PROJECT_V2__\"). Treat that result as the private project for this chat. Use the private project, confirmed nd_* state and current scene context. Confirmed prerequisites are rigid; readiness is a flexible signal; an eligible beat is only a possibility, never an automatic action. Choose one posture: maintain, prepare, advance, defer, adapt or reorder. Consider pacing, social context, organic causality, individual character knowledge, character agency and {{user}} agency. Prefer gradual revelation: clue, then suspicion, then confirmation. Never expose a secret layer before it is organically suitable or let a character act on knowledge they do not possess. Adapt to {{user}} refusal, silence, delay or divergence. These and low readiness never abandon an arc. Consider abandonment only when confirmed facts make it impossible; otherwise pause, defer or adapt. If the private entry is missing, preserve the scene without advancing private material. Return only one brief editorial instruction to the narrator. Never write the scene, narration or dialogue; answer {{user}}; print status or JSON; quote secrets or IDs; or determine {{user}} actions, speech, thoughts, feelings, consent or decisions.",
+      "promptTemplate": "First call search_lorebook(\"__ND_DIRECTOR_PROJECT_V3__\"). Treat that result as the private guide for this chat. Consider the current scene, confirmed state, what each character knows, the private guide, important secrets, and broad storylines. Choose one brief organic direction. Adapt storylines to the conversation and avoid premature revelations or knowledge a character does not have. Never determine {{user}} actions, speech, thoughts, feelings, decisions, consent, or intent. Never write the scene or expose private notes. Return only one short editorial instruction for the narrator.",
       "settings": {
         "author": "Narrative Director extension",
         "resultType": "director_event",
@@ -22,16 +22,14 @@
     {
       "type": "narrative-story-tracker",
       "name": "Narrative Story Tracker",
-      "description": "Updates only the seven Narrative Director custom tracker fields.",
+      "description": "Updates only the five simplified Narrative Director state fields.",
       "phase": "post_processing",
       "resultType": "custom_tracker_update",
-      "promptTemplate": "First call search_lorebook(\"__ND_TRACKER_PROJECT_V2__\"). Use only that sanitized plan, relevant observable messages, the final narrator response and previously confirmed nd_* state. Record observations; never direct the story. Do not access, reconstruct or infer the private project, {{user}} intent, undeclared thoughts, future events, private truth or undemonstrated character knowledge. Distinguish confirmed facts, accumulated readiness evidence, observable blockers and uncertainty/confidence. Prerequisites must be confirmed. Readiness is flexible unless the sanitized plan explicitly makes it required. A beat becomes eligible only when confirmed prerequisites are satisfied and no active blocker prevents it. Eligible or unlocked means only that it may be considered, never execute, reveal, advance or order the Director. Update a secret layer only after that layer was observably revealed. Refusal, delay, low readiness or divergence never abandon an arc. Abandoned requires a confirmed fact that makes the arc impossible. Without new evidence, preserve prior values exactly. Never regress confirmed state without explicit corrective evidence. Never command the Director. Return exactly {\"fields\":[{\"name\":\"nd_confirmed_facts\",\"value\":\"[]\"},{\"name\":\"nd_arc_states\",\"value\":\"{}\"},{\"name\":\"nd_readiness_evidence\",\"value\":\"{}\"},{\"name\":\"nd_blockers\",\"value\":\"{}\"},{\"name\":\"nd_eligible_beats\",\"value\":\"[]\"},{\"name\":\"nd_secret_layers\",\"value\":\"{}\"},{\"name\":\"nd_confidence\",\"value\":\"{}\"}]}. Each value is a compact JSON string. Return ONLY that valid JSON object, without Markdown, comments or surrounding text.",
+      "promptTemplate": "First call search_lorebook(\"__ND_TRACKER_PROJECT_V3__\"). Use only that tracking reference, the final narrator response, relevant observable messages, and prior nd_* state. Observe what actually occurred. Update the accumulated summary and current situation. Mark a secret revealed only after an explicit observable revelation. Update broad storyline statuses and short character states. Never direct the story or record future plans as events. Return exactly {\"fields\":[{\"name\":\"nd_summary\",\"value\":\"\\\"\\\"\"},{\"name\":\"nd_current_situation\",\"value\":\"\\\"\\\"\"},{\"name\":\"nd_revealed_secrets\",\"value\":\"[]\"},{\"name\":\"nd_storylines\",\"value\":\"{}\"},{\"name\":\"nd_character_states\",\"value\":\"{}\"}]}. Each value must be a valid JSON string. Return only that object.",
       "settings": {
         "author": "Narrative Director extension",
         "resultType": "custom_tracker_update",
-        "customCapabilities": {
-          "edit_trackers": true
-        },
+        "customCapabilities": { "edit_trackers": true },
         "enabledTools": ["search_lorebook"],
         "contextSize": 12,
         "maxTokens": 512,

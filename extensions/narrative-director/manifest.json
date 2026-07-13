@@ -3,7 +3,7 @@
   "version": 1,
   "config": {
     "name": "Narrative Director",
-    "description": "Extract structured story projects, compile safe public resources, and synchronize private per-chat agent memory.",
+    "description": "Build compact public story resources, a private Director guide, and simplified per-chat narrative state.",
     "enabled": false,
     "cssPath": "extension.css",
     "jsPath": "extension.js"
