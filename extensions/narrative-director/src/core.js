@@ -10,6 +10,9 @@ const NarrativeDirectorCore = (() => {
   const MAX_ANALYSIS_SOURCE_LENGTH = 50_000;
   const ANALYSIS_PROGRESSIVE_THRESHOLD = 7_000;
   const ANALYSIS_BLOCK_TARGET = 6_000;
+  const ANALYSIS_MIN_BLOCK_LENGTH = 750;
+  const ANALYSIS_MAX_SUBDIVISION_DEPTH = 4;
+  const ANALYSIS_MAX_SUBDIVISIONS = 12;
   const MAX_INITIALIZATION_INPUT_LENGTH = 50_000;
   const INITIALIZATION_ROUTE_BUDGET = 49_000;
   const VISIBILITIES = ["public", "private", "uncertain"];
@@ -97,6 +100,8 @@ const NarrativeDirectorCore = (() => {
     return `${value.length}:${(hash >>> 0).toString(36)}`;
   }
 
+  function analysisBlockContext(source, start) { const firstLine = source.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || ""; const priorLines = source.slice(0, start).split(/\r?\n/); const heading = priorLines.reverse().find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line) || (line.trim().length <= 160 && /:\s*$/.test(line)))?.trim() || ""; return Array.from(new Set([firstLine, heading].filter(Boolean))).join("\n"); }
+
   function splitAnalysisSource(value, options = {}) {
     const source = text(value, MAX_ANALYSIS_SOURCE_LENGTH); const threshold = numberIn(options.threshold, ANALYSIS_PROGRESSIVE_THRESHOLD, 1_000, MAX_ANALYSIS_SOURCE_LENGTH); const target = numberIn(options.target, ANALYSIS_BLOCK_TARGET, 1_000, threshold);
     if (!source || source.length <= threshold) return [{ index: 0, start: 0, end: source.length, text: source }];
@@ -110,8 +115,16 @@ const NarrativeDirectorCore = (() => {
       if (end <= start) end = Math.min(source.length, start + target);
       blocks.push({ index: blocks.length, start, end, text: source.slice(start, end) }); start = end;
     }
-    const firstLine = source.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 180) || "";
-    return blocks.map((block) => { const priorLines = source.slice(0, block.start).split(/\r?\n/); const heading = priorLines.reverse().find((line) => /^\s{0,3}#{1,6}\s+\S/.test(line) || (line.trim().length <= 160 && /:\s*$/.test(line)))?.trim() || ""; return { ...block, context: Array.from(new Set([firstLine, heading].filter(Boolean))).join("\n") }; });
+    return blocks.map((block) => ({ ...block, path: String(block.index + 1), depth: 0, context: analysisBlockContext(source, block.start) }));
+  }
+
+  function subdivideAnalysisBlock(block, source, options = {}) {
+    const minimum = numberIn(options.minimum, ANALYSIS_MIN_BLOCK_LENGTH, 200, 5_000); const content = text(block?.text, MAX_ANALYSIS_SOURCE_LENGTH); if (content.length < minimum * 2) throw new Error(`Analysis block ${block?.path || ""} cannot be subdivided below ${minimum.toLocaleString()} characters.`);
+    const target = Math.floor(content.length / 2); const lower = minimum, upper = content.length - minimum; const boundaries = [];
+    for (const match of content.matchAll(/\n\n+|\n|[.!?]\s+/g)) { const position = match.index + match[0].length; if (position >= lower && position <= upper) boundaries.push(position); }
+    const splitAt = boundaries.length ? boundaries.reduce((best, position) => Math.abs(position - target) < Math.abs(best - target) ? position : best, boundaries[0]) : Math.max(lower, Math.min(upper, target));
+    const parentPath = text(block?.path, 80) || String(numberIn(block?.index, 0, 0, 1_000_000) + 1); const depth = numberIn(block?.depth, 0, 0, 100) + 1; const start = numberIn(block?.start, 0, 0, MAX_ANALYSIS_SOURCE_LENGTH); const parts = [[start, start + splitAt, content.slice(0, splitAt)], [start + splitAt, start + content.length, content.slice(splitAt)]];
+    return parts.map(([partStart, end, partText], index) => ({ index: numberIn(block?.index, 0, 0, 1_000_000), start: partStart, end, text: partText, path: `${parentPath}.${index + 1}`, depth, context: analysisBlockContext(source, partStart) }));
   }
 
   function classifyJsonResponse(value, finishReason = "") {
@@ -450,7 +463,7 @@ const NarrativeDirectorCore = (() => {
   function validateProject(project) { const errors = []; if (!project.name.trim()) errors.push("Project name is required."); if (!PROJECT_TYPES.includes(project.projectType)) errors.push("Choose a project type."); if (project.sourceText.length > MAX_ANALYSIS_SOURCE_LENGTH) errors.push("Source exceeds 50,000 characters."); const extracted = Boolean(project.intermediate?.title || project.intermediate?.privateDocument || project.intermediate?.characters?.length || project.intermediate?.facts?.length); if (extracted) try { normalizeIntermediate(project.intermediate, true); } catch (error) { errors.push(error.message); } return { valid: !errors.length, errors }; }
 
   return { SCHEMA_VERSION, DIRECTOR_TYPE, TRACKER_TYPE, DIRECTOR_LOREBOOK_SENTINEL, TRACKER_LOREBOOK_SENTINEL, NEVER_MATCH_REGEX, TRACKER_FIELD_NAMES, ANALYSIS_PROMPT, ANALYSIS_PART_PROMPT, INITIALIZATION_PROMPT, REPAIR_PROMPT, DIRECTOR_PROMPT, TRACKER_PROMPT,
-    MAX_ANALYSIS_SOURCE_LENGTH, ANALYSIS_PROGRESSIVE_THRESHOLD, ANALYSIS_BLOCK_TARGET, MAX_INITIALIZATION_INPUT_LENGTH, INITIALIZATION_ROUTE_BUDGET, isRecord, cleanId, analysisInstruction, analysisPartInstruction, sourceSignature, splitAnalysisSource, classifyJsonResponse, createProject, validateProject,
+    MAX_ANALYSIS_SOURCE_LENGTH, ANALYSIS_PROGRESSIVE_THRESHOLD, ANALYSIS_BLOCK_TARGET, ANALYSIS_MIN_BLOCK_LENGTH, ANALYSIS_MAX_SUBDIVISION_DEPTH, ANALYSIS_MAX_SUBDIVISIONS, MAX_INITIALIZATION_INPUT_LENGTH, INITIALIZATION_ROUTE_BUDGET, isRecord, cleanId, analysisInstruction, analysisPartInstruction, sourceSignature, splitAnalysisSource, subdivideAnalysisBlock, classifyJsonResponse, createProject, validateProject,
     normalizeIntermediate, normalizeInitialState, parseAnalysisResponse, parseAnalysisPartialResponse, mergeAnalysisPartials, parseInitializationResponse, extractJsonText, applyAnalysis,
     unresolvedUncertainFacts, compilePublicResources, buildDirectorDocument, buildTrackerPlan, buildLorebookTransport, parseDirectorLorebookContent, recoverProjectFromDirectorDocument,
     agentTypes, parseMetadata, activeAgentTypes, updateFixedActivation, agentStatuses, trackerPayload, validateTrackerPayload, validateDirectorInstruction,

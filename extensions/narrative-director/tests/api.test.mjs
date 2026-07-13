@@ -56,11 +56,19 @@ test("complete JSON inside Markdown is parsed without a repair call", async () =
 
 test("progressive analysis covers every source block and retries only the failed block", async () => {
   const source = ["# Opening\n", "A".repeat(6_500), "\n\n# Secret\n", "B".repeat(6_500)].join(""); const blocks = core.splitAnalysisSource(source); assert.ok(blocks.length > 1);
-  const outputs = blocks.map(() => JSON.stringify(analysis)); outputs[1] = '{"projectType":"character_focus","facts":['; outputs.splice(2, 0, JSON.stringify(analysis));
+  const outputs = blocks.map(() => JSON.stringify(analysis)); outputs[1] = "not json"; outputs.splice(2, 0, JSON.stringify(analysis));
   const shared = harness({ rewrites: outputs }); let checkpoint; await assert.rejects(async () => { try { await shared.api.analyzeStory("conn", source); } catch (error) { checkpoint = error.analysisCheckpoint; throw error; } }, /block 2/i);
   assert.equal(checkpoint.completedBlocks, 1); const callsBeforeRetry = shared.calls.filter((call) => call.path === "/agents/suite/rewrite"); const failedText = callsBeforeRetry.at(-1).body.selectedText;
   const result = await shared.api.analyzeStory("conn", source, "character_focus", { resume: checkpoint }); const retryCalls = shared.calls.filter((call) => call.path === "/agents/suite/rewrite").slice(callsBeforeRetry.length); assert.equal(retryCalls[0].body.selectedText, failedText); assert.equal(result.title, analysis.title);
   const completedTexts = [callsBeforeRetry[0].body.selectedText, ...retryCalls.map((call) => call.body.selectedText)]; assert.equal(completedTexts.join(""), source);
+});
+
+test("block 1 of 2 truncated in candidateBeats is recursively subdivided without repeating its original size", async () => {
+  const source = `# Opening\n${"A".repeat(6_000)}\n\n# Future\n${"B".repeat(5_000)}`; const initialBlocks = core.splitAnalysisSource(source); assert.equal(initialBlocks.length, 2);
+  const truncated = `${JSON.stringify(analysis).split('"candidateBeats"')[0]}"candidateBeats":[{"id":"cut"`; const progress = []; const shared = harness({ rewrites: [{ rewrittenText: truncated, finishReason: "length" }, { rewrittenText: truncated, finishReason: "length" }, JSON.stringify(analysis), JSON.stringify(analysis), JSON.stringify(analysis), JSON.stringify(analysis)] });
+  const result = await shared.api.analyzeStory("conn", source, "character_focus", { onProgress: (event) => progress.push(event) }); const calls = shared.calls.filter((call) => call.path === "/agents/suite/rewrite"); const original = initialBlocks[0].text;
+  assert.equal(calls.length, 6); assert.equal(calls[0].body.selectedText, original); assert.equal(calls.filter((call) => call.body.selectedText === original).length, 1); const firstChild = calls[1].body.selectedText; assert.ok(firstChild.length < original.length); assert.equal(calls.filter((call) => call.body.selectedText === firstChild).length, 1); assert.equal(calls[2].body.selectedText + calls[3].body.selectedText, firstChild); assert.equal(calls[2].body.selectedText + calls[3].body.selectedText + calls[4].body.selectedText, original); assert.equal(calls[5].body.selectedText, initialBlocks[1].text);
+  assert.ok(progress.some((event) => event.subdivided && event.blockPath === "1")); assert.ok(progress.some((event) => event.subdivided && event.blockPath === "1.1")); assert.ok(progress.some((event) => event.autoSubdivided && event.blockPath === "1.1.1")); assert.equal(result.title, analysis.title);
 });
 
 test("large artificial story is extracted progressively without one giant response", async () => {

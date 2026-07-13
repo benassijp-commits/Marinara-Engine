@@ -65,6 +65,12 @@ test("logical source blocks preserve every character and stay chronological", ()
   blocks.forEach((block, index) => { assert.equal(block.index, index); assert.match(block.context, /# Opening/); if (index) assert.equal(block.start, blocks[index - 1].end); }); assert.match(`${blocks.at(-1).context}\n${blocks.at(-1).text}`, /# Future/);
 });
 
+test("truncated source block is divided into smaller chronological logical children", () => {
+  const source = `# Opening\n${"First sentence. ".repeat(220)}\n\n# Turn\n${"Second sentence. ".repeat(220)}`; const parent = { index: 0, start: 0, end: source.length, text: source, path: "1", depth: 0 };
+  const children = core.subdivideAnalysisBlock(parent, source); assert.equal(children.length, 2); assert.deepEqual(children.map((row) => row.path), ["1.1", "1.2"]); assert.equal(children.map((row) => row.text).join(""), source);
+  assert.ok(children.every((row) => row.text.length < source.length && row.depth === 1)); assert.equal(children[0].start, 0); assert.equal(children[0].end, children[1].start); assert.equal(children[1].end, source.length);
+});
+
 test("deterministic progressive merge preserves visibility, knowledge and valid references", () => {
   const first = structuredClone(analysis); first.facts = analysis.facts.slice(0, 2); first.secrets = analysis.secrets; first.narrativeArcs = analysis.narrativeArcs; first.candidateBeats = [];
   const second = structuredClone(analysis); second.characters[0].id = "courier_again"; second.mainCharacterId = "courier_again"; second.facts = [
@@ -171,6 +177,6 @@ test("production source contains no removed architecture", () => {
 test("UI exposes review groups, lorebook recovery, and responsive no-overflow rules", () => {
   const ui = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8"); const css = readFileSync(new URL("../src/extension.css", import.meta.url), "utf8");
   assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-lorebook/); assert.match(ui, /lorebook-contract-warning/);
-  assert.match(ui, /analysis-progress/); assert.match(ui, /cancel-story-analysis/); assert.match(ui, /Characters.*charStart/);
+  assert.match(ui, /analysis-progress/); assert.match(ui, /cancel-story-analysis/); assert.match(ui, /Characters.*charStart/); assert.match(ui, /subdivided automatically/); assert.match(ui, /Analyzing subdivided block/);
   assert.match(css, /@media \(max-width: 620px\)/); assert.match(css, /overflow-wrap: anywhere/);
 });

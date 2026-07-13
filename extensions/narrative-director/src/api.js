@@ -3,6 +3,7 @@ const NarrativeDirectorApi = (() => {
   const core = globalThis.__NarrativeDirectorCore;
   const INSTRUCTION_LIMIT = 4_000;
   const SELECTED_TEXT_LIMIT = 50_000;
+  const ANALYSIS_MAX_ATTEMPTS = 40;
 
   function createApi(marinara) {
     let lastRawResponse = "";
@@ -112,20 +113,39 @@ const NarrativeDirectorApi = (() => {
       if (typeof sourceText !== "string" || !sourceText.trim()) throw new Error("Paste a story before analyzing it.");
       if (sourceText.length > core.MAX_ANALYSIS_SOURCE_LENGTH) throw new Error(`Story analysis supports up to ${core.MAX_ANALYSIS_SOURCE_LENGTH.toLocaleString()} characters.`);
       const blocks = core.splitAnalysisSource(sourceText); const signature = core.sourceSignature(sourceText);
-      const resumable = options.resume && options.resume.sourceSignature === signature && options.resume.projectType === projectType && Array.isArray(options.resume.partials) && Number.isInteger(options.resume.completedBlocks) && options.resume.completedBlocks >= 0 && options.resume.completedBlocks <= blocks.length;
-      if (blocks.length === 1) { lastRawResponse = ""; options.onProgress?.({ block: 1, blockCount: 1, charStart: 1, charEnd: sourceText.length }); return rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: core.parseAnalysisResponse, keepRaw: true }); }
-      const checkpoint = resumable ? options.resume : { sourceSignature: signature, projectType, completedBlocks: 0, partials: [], rawResponse: "" };
+      const resumable = options.resume && options.resume.sourceSignature === signature && options.resume.projectType === projectType && Array.isArray(options.resume.partials) && Array.isArray(options.resume.queue) && Number.isInteger(options.resume.completedBlocks) && options.resume.completedBlocks >= 0;
+      if (blocks.length === 1 && !resumable) {
+        lastRawResponse = ""; options.onProgress?.({ block: 1, blockCount: 1, blockPath: "1", subdivisionDepth: 0, charStart: 1, charEnd: sourceText.length });
+        try { return await rewriteAndParse({ connectionId, selectedText: sourceText, instruction: core.analysisInstruction(projectType), label: "Analysis", agentName: "Narrative Director Structured Extractor", dataLabel: "Fictional source", parse: core.parseAnalysisResponse, keepRaw: true }); }
+        catch (cause) {
+          if (cause.code !== "ND_TRUNCATED_OUTPUT" || sourceText.length < core.ANALYSIS_MIN_BLOCK_LENGTH * 2) throw cause;
+        }
+      }
+      const checkpoint = resumable ? options.resume : { sourceSignature: signature, projectType, completedBlocks: 0, partials: [], queue: blocks.length === 1 ? core.subdivideAnalysisBlock({ ...blocks[0], path: "1", depth: 0 }, sourceText) : blocks, rawResponse: lastRawResponse, subdivisions: blocks.length === 1 ? 1 : 0, attempts: blocks.length === 1 ? 1 : 0 };
       lastRawResponse = checkpoint.rawResponse || "";
-      for (let index = checkpoint.completedBlocks; index < blocks.length; index++) {
+      if (!resumable && blocks.length === 1) options.onProgress?.({ subdivided: true, block: 1, blockCount: checkpoint.queue.length, blockPath: "1", childPaths: checkpoint.queue.map((block) => block.path), subdivisionDepth: 1, charStart: 1, charEnd: sourceText.length });
+      while (checkpoint.queue.length) {
         if (options.signal?.aborted) { const error = new Error("Analysis cancelled. Completed blocks remain available only for retry during this session."); error.name = "AbortError"; error.analysisCheckpoint = checkpoint; throw error; }
-        const block = blocks[index]; options.onProgress?.({ block: index + 1, blockCount: blocks.length, charStart: block.start + 1, charEnd: block.end });
+        if (checkpoint.attempts >= ANALYSIS_MAX_ATTEMPTS) { const error = new Error(`Analysis stopped after the safe limit of ${ANALYSIS_MAX_ATTEMPTS} block attempts.`); error.analysisCheckpoint = checkpoint; throw error; }
+        const block = checkpoint.queue[0]; const blockNumber = checkpoint.completedBlocks + 1; const blockCount = checkpoint.completedBlocks + checkpoint.queue.length;
+        options.onProgress?.({ block: blockNumber, blockCount, blockPath: block.path, subdivisionDepth: block.depth, autoSubdivided: block.depth > 0, charStart: block.start + 1, charEnd: block.end });
+        checkpoint.attempts++;
         try {
-          const partial = await rewriteAndParse({ connectionId, selectedText: block.text, instruction: core.analysisPartInstruction(projectType, index + 1, blocks.length), label: `Analysis block ${index + 1}`, agentName: "Narrative Director Compact Extractor", dataLabel: `Fictional source block ${index + 1} of ${blocks.length}`, contextSections: block.context ? [{ label: "Source structure context", content: block.context }] : [], parse: core.parseAnalysisPartialResponse, keepRaw: true, appendRaw: Boolean(lastRawResponse), rawLabel: `Analysis block ${index + 1} of ${blocks.length}` });
+          const partial = await rewriteAndParse({ connectionId, selectedText: block.text, instruction: core.analysisPartInstruction(projectType, blockNumber, blockCount), label: `Analysis block ${block.path}`, agentName: "Narrative Director Compact Extractor", dataLabel: `Fictional source block ${block.path}`, contextSections: block.context ? [{ label: "Source structure context", content: block.context }] : [], parse: core.parseAnalysisPartialResponse, keepRaw: true, appendRaw: Boolean(lastRawResponse), rawLabel: `Analysis block ${block.path}` });
           if (options.signal?.aborted) { const error = new Error("Analysis cancelled. Completed blocks remain available only for retry during this session."); error.name = "AbortError"; error.analysisCheckpoint = checkpoint; throw error; }
-          checkpoint.partials[index] = partial; checkpoint.completedBlocks = index + 1; checkpoint.rawResponse = lastRawResponse;
+          checkpoint.partials.push(partial); checkpoint.queue.shift(); checkpoint.completedBlocks++; checkpoint.rawResponse = lastRawResponse;
         } catch (cause) {
           if (cause.analysisCheckpoint) throw cause;
-          checkpoint.rawResponse = lastRawResponse; const error = new Error(`Analysis block ${index + 1} of ${blocks.length} failed: ${cause.message || "unknown error"} Retry Analyze story to continue from this block.`); error.analysisCheckpoint = checkpoint; error.block = index + 1; error.blockCount = blocks.length; throw error;
+          checkpoint.rawResponse = lastRawResponse;
+          if (cause.code === "ND_TRUNCATED_OUTPUT" && block.depth < core.ANALYSIS_MAX_SUBDIVISION_DEPTH && checkpoint.subdivisions < core.ANALYSIS_MAX_SUBDIVISIONS && checkpoint.attempts < ANALYSIS_MAX_ATTEMPTS) {
+            try {
+              const children = core.subdivideAnalysisBlock(block, sourceText); checkpoint.queue.splice(0, 1, ...children); checkpoint.subdivisions++;
+              options.onProgress?.({ subdivided: true, block: blockNumber, blockCount: checkpoint.completedBlocks + checkpoint.queue.length, blockPath: block.path, childPaths: children.map((child) => child.path), subdivisionDepth: children[0].depth, charStart: block.start + 1, charEnd: block.end });
+              continue;
+            } catch { /* The bounded error below explains why automatic subdivision stopped. */ }
+          }
+          const bounded = cause.code === "ND_TRUNCATED_OUTPUT" ? " Automatic subdivision reached its safe minimum, depth or attempt limit." : " Retry Analyze story to continue from this block.";
+          const error = new Error(`Analysis block ${block.path} failed: ${cause.message || "unknown error"}${bounded}`); error.analysisCheckpoint = checkpoint; error.block = blockNumber; error.blockCount = blockCount; throw error;
         }
       }
       return core.mergeAnalysisPartials(checkpoint.partials, projectType);
