@@ -1,532 +1,128 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-
 await import("../src/core.js");
 const core = globalThis.__NarrativeDirectorCore;
-const uiSource = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8");
 
-function validStory(overrides = {}) {
-  return core.createStory({
-    id: "story-1",
-    agentKey: "story-1",
-    name: "Test story",
-    characterId: "character-1",
-    chatId: "chat-1",
-    privateDocument: "PRIVATE_SECRET_ALPHA",
-    director: { connectionId: "connection-director" },
-    tracker: { connectionId: "connection-tracker" },
-    ...overrides,
-  });
-}
-
-test("creates a complete story with stable timestamps and agent types", () => {
-  const story = validStory();
-  assert.equal(story.name, "Test story");
-  assert.equal(story.createdAt, story.updatedAt);
-  assert.deepEqual(core.storyTypes(story), {
-    director: "narrative-director-director-story-1",
-    tracker: "narrative-director-tracker-story-1",
-  });
-});
-
-test("validates required activation fields", () => {
-  assert.deepEqual(core.validateStory(validStory()), { valid: true, errors: [] });
-  const invalid = core.validateStory(core.createStory({ name: "Incomplete" }));
-  assert.equal(invalid.valid, false);
-  assert.ok(invalid.errors.includes("Choose a Director connection."));
-  assert.ok(invalid.errors.includes("Private Director document is empty."));
-});
-
-test("builds Director with private document only in Director settings", () => {
-  const story = validStory();
-  const payload = core.buildDirectorPayload(story);
-  assert.equal(payload.phase, "pre_generation");
-  assert.equal(payload.resultType, "director_event");
-  assert.equal(payload.settings.narrative.privateDocument, "PRIVATE_SECRET_ALPHA");
-});
-
-test("prevents accidental private document inclusion in tracker payload", () => {
-  const story = validStory();
-  const payload = core.buildTrackerPayload(story);
-  assert.equal(payload.phase, "post_processing");
-  assert.equal(payload.resultType, "custom_tracker_update");
-  assert.equal(JSON.stringify(payload).includes(story.privateDocument), false);
-
-  assert.deepEqual(payload.settings.narrative.adaptiveTrackingPlan, {
-    arcs: [], beats: [], secrets: [], outputFieldNames: [
-      "nd_confirmed_facts", "nd_arc_states", "nd_readiness_evidence", "nd_blockers",
-      "nd_eligible_beats", "nd_secret_layers", "nd_confidence",
-    ],
-  });
-});
-
-test("activation preserves existing agent types and avoids duplicates", () => {
-  const types = core.storyTypes(validStory());
-  const result = core.activateTypes(["director", "other-extension-agent", types.director], types);
-  assert.deepEqual(result, ["director", "other-extension-agent", types.director, types.tracker]);
-});
-
-test("deactivation removes only extension-owned types for this story", () => {
-  const types = core.storyTypes(validStory());
-  const result = core.deactivateTypes(["director", types.director, "other-extension-agent", types.tracker], types);
-  assert.deepEqual(result, ["director", "other-extension-agent"]);
-});
-
-test("exports and imports a versioned JSON bundle", () => {
-  const bundle = core.exportBundle([validStory()]);
-  const imported = core.importBundle(JSON.parse(JSON.stringify(bundle)));
-  assert.equal(imported.length, 1);
-  assert.equal(imported[0].privateDocument, "PRIVATE_SECRET_ALPHA");
-  assert.throws(() => core.importBundle({ kind: "wrong", schemaVersion: 1, stories: [] }), /not a Narrative/);
-});
-
-const validAnalysis = {
-  suggestedStoryName: "The Brass Key",
-  publicPremise: "Mara has recently arrived in the old quarter and carries an unusual brass key.",
-  storySummary: "A traveler discovers a key linked to a hidden inheritance.",
-  characterInformation: "Mara is observant, guarded and newly arrived in the city.",
-  cardAdditions: "Mara notices small physical details before social cues.",
-  lorebookEntries: [
-    { name: "Old Quarter", description: "Historic district", content: "The oldest district in the city.", keys: ["quarter"] },
+const analysis = {
+  projectType: "character_focus", title: "Harbor Watch", publicPremise: "A courier reaches a public harbor.", privateSummary: "The courier carries a hidden map.", privateDocument: "The map leads to a sealed refuge.", mainCharacterId: "courier",
+  characters: [
+    { id: "courier", name: "Courier", role: "lead", isMain: true, description: "A known courier.", appearance: "Wears a blue coat.", personality: "Careful and courteous.", scenario: "Arrives at the harbor.", privateGoal: "Reach the sealed refuge unseen." },
+    { id: "warden", name: "Warden", role: "secondary", isMain: false, description: "Harbor official.", appearance: "", personality: "Strict but fair.", scenario: "" },
   ],
-  privateDirectorDocument: "The key belongs to Mara's missing sibling and opens a future sealed archive.",
-  privateCharacters: [
-    { id: "mara", name: "Mara", role: "Missing heir", privateGoal: "Find her sibling" },
-    { id: "ivo", name: "Ivo", role: "Archive keeper", privateGoal: "Protect Mara" },
+  places: [{ id: "harbor", name: "Harbor" }], organizations: [{ id: "watch", name: "Harbor Watch" }], worldRules: [{ id: "tide_rule", name: "Tide rule" }],
+  facts: [
+    { id: "blue_coat", subjectId: "courier", category: "appearance", text: "The courier wears a blue coat.", visibility: "public", knownByCharacterIds: ["courier", "warden"], evidence: "Visible in opening." },
+    { id: "hidden_map", subjectId: "courier", category: "context", text: "The coat conceals the refuge map.", visibility: "private", knownByCharacterIds: ["courier"], evidence: "Private outline." },
+    { id: "bell_meaning", subjectId: "harbor", category: "place", text: "The evening bell closes the quay.", visibility: "uncertain", knownByCharacterIds: ["warden"], evidence: "Disclosure unclear." },
+    { id: "watch_role", subjectId: "watch", category: "organization", text: "The Watch manages harbor access.", visibility: "public", knownByCharacterIds: [], evidence: "Common knowledge." },
+    { id: "tides", subjectId: "tide_rule", category: "rule", text: "Low tide exposes the east path.", visibility: "public", knownByCharacterIds: [], evidence: "Common rule." },
   ],
-  secrets: [{
-    id: "key_origin", title: "Origin of the key", ownerCharacterId: "mara",
-    knownByCharacterIds: ["mara", "ivo"], status: "locked", summary: "The key belongs to Mara's sibling.",
-    revealCondition: "The sealed archive opens.",
-  }],
-  narrativeArcs: [{
-    id: "archive_arc", title: "The sealed archive", status: "active",
-    observedState: "Mara has reached the old quarter.", momentum: "medium",
-    impossibilityEvidence: "", impossibilityFact: "", confidence: "",
-  }],
-  candidateBeats: [{
-    id: "archive_threshold", title: "An invitation to the archive", relatedArcIds: ["archive_arc"],
-    status: "eligible", hardPrerequisites: ["Mara has the brass key"],
-    readinessSignals: ["Mara asks about the archive"], blockers: ["Mara explicitly leaves the district"],
-    setupStrategies: ["Ivo can leave a visible archive notice"], relatedSecretIds: ["key_origin"],
-  }],
+  secrets: [{ id: "map_destination", title: "Map destination", ownerCharacterId: "courier", knownByCharacterIds: ["courier"], layer: "locked", summary: "It marks the sealed refuge.", revealCondition: "The map is openly read." }],
+  knowledgeMatrix: [{ characterId: "courier", knownFactIds: ["hidden_map"], knownSecretIds: ["map_destination"] }],
+  narrativeArcs: [{ id: "refuge_arc", title: "Reach the refuge", status: "active", observedState: "Courier reached harbor", momentum: "low", impossibilityEvidence: "", impossibilityFact: "", confidence: "" }],
+  candidateBeats: [{ id: "inspect_map", title: "Map clue", relatedArcIds: ["refuge_arc"], status: "unavailable", hardPrerequisites: ["privacy"], readinessSignals: ["Courier opens the map"], blockers: ["Warden is watching"], setupStrategies: ["Move the Warden through an external duty"], relatedSecretIds: ["map_destination"] }],
 };
 
-test("parses a valid structured analysis", () => {
-  assert.deepEqual(core.parseAnalysisResponse(JSON.stringify(validAnalysis)), validAnalysis);
+function project(overrides = {}) { return core.createProject({ name: "Harbor Watch", chatId: "chat-a", intermediate: analysis, uncertainDecisions: { bell_meaning: "private" }, ...overrides }); }
+
+test("two fixed agent types never vary by project", () => {
+  assert.deepEqual(core.agentTypes(project()), { director: "narrative-story-director", tracker: "narrative-story-tracker" });
+  assert.deepEqual(core.agentTypes(core.createProject({ id: "other" })), core.agentTypes(project()));
 });
 
-test("extracts structured analysis from a Markdown JSON fence", () => {
-  const parsed = core.parseAnalysisResponse(`Here is the result:\n\`\`\`json\n${JSON.stringify(validAnalysis)}\n\`\`\``);
-  assert.equal(parsed.storySummary, validAnalysis.storySummary);
-  assert.equal(parsed.privateDirectorDocument, validAnalysis.privateDirectorDocument);
+test("official import preset configures Director and Tracker without Context Injection", () => {
+  const preset = JSON.parse(readFileSync(new URL("../presets/marinara-agents.json", import.meta.url), "utf8"));
+  assert.equal(preset.kind, "marinara.agent-folder"); assert.equal(preset.version, 1); assert.equal(preset.agents.length, 2);
+  const director = preset.agents.find((row) => row.type === core.DIRECTOR_TYPE); const tracker = preset.agents.find((row) => row.type === core.TRACKER_TYPE);
+  assert.equal(director.phase, "pre_generation"); assert.equal(director.resultType, "director_event");
+  assert.equal(tracker.phase, "post_processing"); assert.equal(tracker.resultType, "custom_tracker_update"); assert.equal(tracker.settings.customCapabilities.edit_trackers, true);
+  assert.doesNotMatch(JSON.stringify(preset), /context_injection/i);
 });
 
-test("reports invalid JSON and invalid response shapes", () => {
-  assert.throws(() => core.parseAnalysisResponse("not json"), /did not contain a JSON object/);
-  assert.throws(
-    () => core.parseAnalysisResponse(JSON.stringify({ storySummary: "Only one field" })),
-    /invalid structure|private narrative structure is invalid/,
-  );
+test("all production rewrite instructions are within 4,000 characters and universal", () => {
+  for (const prompt of [core.analysisInstruction("character_focus"), core.analysisInstruction("world_ensemble"), core.INITIALIZATION_PROMPT, core.REPAIR_PROMPT]) assert.ok(prompt.length <= 4_000, `${prompt.length}`);
+  const prompts = [core.ANALYSIS_PROMPT, core.INITIALIZATION_PROMPT, core.DIRECTOR_PROMPT, core.TRACKER_PROMPT].join("\n");
+  for (const fixture of ["Harbor Watch", "Courier", "blue coat", "refuge", "Warden"]) assert.doesNotMatch(prompts, new RegExp(fixture, "i"));
 });
 
-test("analysis prompt requires the source language", () => {
-  assert.match(core.ANALYSIS_PROMPT, /predominant language of the supplied source text/i);
+test("analysis parses fenced JSON and keeps mixed facts separate", () => {
+  const parsed = core.parseAnalysisResponse(`\`\`\`json\n${JSON.stringify(analysis)}\n\`\`\``);
+  assert.equal(parsed.facts.find((row) => row.id === "blue_coat").visibility, "public");
+  assert.equal(parsed.facts.find((row) => row.id === "hidden_map").visibility, "private");
+  assert.equal(parsed.facts.find((row) => row.id === "bell_meaning").visibility, "uncertain");
 });
 
-test("all rewrite instructions stay within the Marinara limit", () => {
-  assert.ok(core.ANALYSIS_PROMPT.length <= 4_000, `analysis prompt is ${core.ANALYSIS_PROMPT.length} characters`);
-  assert.ok(core.ANALYSIS_PROMPT.length <= 3_800, `analysis prompt exceeds the 3,800-character safety target`);
-  assert.ok(core.INITIALIZATION_PROMPT.length <= 4_000, `initialization prompt is ${core.INITIALIZATION_PROMPT.length} characters`);
+test("Character focus compiler fills native card fields and never leaks private facts", () => {
+  const output = core.compilePublicResources(project()); const card = output.cards[0].data;
+  assert.equal(card.name, "Courier"); assert.match(card.description, /known courier/i); assert.match(card.personality, /courteous/i); assert.match(card.scenario, /harbor/i); assert.match(card.extensions.appearance, /blue coat/i);
+  assert.doesNotMatch(JSON.stringify(output), /sealed refuge|conceals the refuge map|map is openly read/i);
 });
 
-test("production prompts remain universal and contain no fixture literals", () => {
-  const prompts = [core.ANALYSIS_PROMPT, core.INITIALIZATION_PROMPT, core.DEFAULT_DIRECTOR_PROMPT,
-    core.DEFAULT_TRACKER_PROMPT, core.DIRECTOR_ADAPTIVE_POLICY, core.TRACKER_OBSERVATION_POLICY].join("\n");
-  for (const fixtureLiteral of ["Mara", "Ivo", "Brass Key", "Old Quarter", "sealed archive", "Tovan", "violet scarf", "hidden signal"]) {
-    assert.doesNotMatch(prompts, new RegExp(fixtureLiteral, "i"));
-  }
+test("World ensemble retains NPCs and avoids card/lorebook duplication", () => {
+  const value = project({ projectType: "world_ensemble", separateCharacterEntityIds: [] }); const output = core.compilePublicResources(value);
+  assert.equal(output.cards[0].entityId, "world_narrator"); assert.ok(output.lorebookEntries.some((entry) => entry.entityId === "warden"));
+  const selected = core.compilePublicResources(core.createProject({ ...value, separateCharacterEntityIds: ["warden"] }, value.createdAt));
+  assert.ok(selected.cards.some((card) => card.entityId === "warden")); assert.ok(!selected.lorebookEntries.some((entry) => entry.entityId === "warden"));
 });
 
-test("mixed passages keep only independently safe public facts", () => {
-  const hidden = "The private signal identifies a concealed destination.";
-  const response = {
-    ...validAnalysis,
-    publicPremise: "Tovan arrives at a public market.",
-    characterInformation: "Tovan visibly wears a violet scarf and speaks calmly.",
-    cardAdditions: "Tovan habitually checks the weather before travel.",
-    lorebookEntries: [],
-    privateDirectorDocument: hidden,
-    secrets: [{ ...validAnalysis.secrets[0], id: "hidden_signal", title: "Private signal", summary: hidden }],
-    narrativeArcs: [{ ...validAnalysis.narrativeArcs[0], id: "signal_arc" }],
-    candidateBeats: [{ ...validAnalysis.candidateBeats[0], id: "signal_clue", relatedArcIds: ["signal_arc"], relatedSecretIds: ["hidden_signal"] }],
-  };
-  const parsed = core.parseAnalysisResponse(JSON.stringify(response));
-  const publicData = JSON.stringify({ publicPremise: parsed.publicPremise, characterInformation: parsed.characterInformation,
-    cardAdditions: parsed.cardAdditions, lorebookEntries: parsed.lorebookEntries });
-  assert.match(publicData, /violet scarf/);
-  assert.doesNotMatch(publicData, /private signal|concealed destination/i);
-  assert.deepEqual(parsed.lorebookEntries, []);
+test("Apply is blocked while an uncertain fact has no decision", () => {
+  assert.throws(() => core.compilePublicResources(project({ uncertainDecisions: {} })), /Resolve 1 uncertain fact/);
 });
 
-test("tracker projection derives plan, runtime fields and agent status", () => {
-  const story = validStory(validAnalysis);
-  const type = core.storyTypes(story).tracker;
-  const projection = core.buildTrackerProjection(story, { messageId: "message-1", swipeIndex: 2, playerStats: { customTrackerFields: [
-    { name: "nd_arc_states", value: '[{"id":"archive_arc","status":"active"}]' },
-    { name: "nd_confidence", value: "not-json confidence" },
-  ] } }, [{ id: "tracker-agent", type }], { activeAgentIds: [type] });
-  assert.equal(projection.agentStatus, "active");
-  assert.equal(projection.plan.arcs[0].id, "archive_arc");
-  assert.equal(projection.plan.secrets[0].id, "key_origin");
-  assert.match(projection.fields.find((field) => field.name === "nd_arc_states").value, /\n/);
-  assert.equal(projection.fields.find((field) => field.name === "nd_confidence").value, "not-json confidence");
+test("Director memory is complete while Tracker memory cannot reconstruct secrets", () => {
+  const value = project(); const director = core.buildDirectorMemory(value); const tracker = core.buildTrackerMemory(value); const trackerText = JSON.stringify(tracker);
+  assert.equal(director.privateDocument, analysis.privateDocument); assert.equal(director.secrets[0].summary, analysis.secrets[0].summary); assert.equal(director.knowledgeMatrix[0].characterId, "courier");
+  for (const forbidden of [analysis.privateDocument, analysis.privateSummary, analysis.characters[0].privateGoal, analysis.secrets[0].summary, analysis.secrets[0].revealCondition, analysis.candidateBeats[0].setupStrategies[0]]) assert.ok(!trackerText.includes(forbidden));
+  assert.deepEqual(tracker.secretLayers, { map_destination: "locked" }); assert.deepEqual(tracker.fieldNames, core.TRACKER_FIELD_NAMES);
 });
 
-test("Tracker tab exposes derived plan and runtime nd fields without legacy editors", () => {
-  assert.match(uiSource, /data-slot="tracker-plan"/);
-  assert.match(uiSource, /data-slot="tracker-runtime"/);
-  assert.match(uiSource, /tracker-agent-status/);
-  for (const legacy of ["trackerStages", "trackedSecrets", "progressionProjection"]) assert.doesNotMatch(uiSource, new RegExp(legacy));
+test("different chats can recover the same project from independent Director memory", () => {
+  const memory = core.buildDirectorMemory(project()); const a = core.recoverProjectFromDirectorMemory(memory, { chatId: "chat-a" }); const b = core.recoverProjectFromDirectorMemory(memory, { chatId: "chat-b" });
+  assert.equal(a.id, b.id); assert.notEqual(a.chatId, b.chatId); assert.equal(b.intermediate.privateDocument, analysis.privateDocument);
 });
 
-test("analysis prompt defines public as initial knowledge and permits empty public output", () => {
-  assert.match(core.ANALYSIS_PROMPT, /PUBLIC means only information \{\{user\}\} and characters present can know at the beginning/i);
-  assert.match(core.ANALYSIS_PROMPT, /Worldbuilding is NOT automatically public/i);
-  assert.match(core.ANALYSIS_PROMPT, /empty publicPremise\/card fields or an empty lorebookEntries array/i);
+test("agent status distinguishes missing, inactive and active", () => {
+  assert.equal(core.agentStatuses([], {}).director.status, "missing");
+  assert.equal(core.agentStatuses([{ type: core.DIRECTOR_TYPE }], {}).director.status, "inactive");
+  assert.equal(core.agentStatuses([{ type: core.DIRECTOR_TYPE }], { activeAgentIds: [core.DIRECTOR_TYPE] }).director.status, "active");
 });
 
-test("analysis contract ends with adaptive structures and contains no legacy fields", () => {
-  for (const field of ["narrativeStages", "currentStageId", "trackerStages", "trackedSecrets", "trackerProjection"]) {
-    assert.doesNotMatch(core.ANALYSIS_PROMPT, new RegExp(field));
-  }
-  const shapeEnd = core.ANALYSIS_PROMPT.indexOf("PUBLIC means");
-  const shape = core.ANALYSIS_PROMPT.slice(0, shapeEnd);
-  assert.ok(shape.lastIndexOf('"candidateBeats"') > shape.lastIndexOf('"narrativeArcs"'));
-  assert.doesNotMatch(shape.slice(shape.lastIndexOf('"candidateBeats"')), /tracker|stage/i);
+test("activation preserves unrelated agents", () => {
+  assert.deepEqual(core.updateFixedActivation(["other"], true), ["other", core.DIRECTOR_TYPE, core.TRACKER_TYPE]);
+  assert.deepEqual(core.updateFixedActivation(["other", core.DIRECTOR_TYPE, core.TRACKER_TYPE], false), ["other"]);
 });
 
-test("discarded legacy input fields are neither stored nor exported", () => {
-  const story = core.createStory({
-    ...validStory(), progressionProjection: "old", narrativeStages: [{ id: "old" }], currentStageId: "old",
-    trackerStages: [{ id: "old" }], trackedSecrets: [{ id: "old" }],
-  });
-  const serialized = JSON.stringify(core.exportBundle([story]));
-  for (const field of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
-    assert.equal(Object.hasOwn(story, field), false);
-    assert.equal(serialized.includes(`"${field}"`), false);
-  }
+test("Tracker payload is the minimum exact Custom Tracker fields array", () => {
+  const payload = core.trackerPayload(core.buildTrackerMemory(project())); assert.equal(payload.fields.length, 7); assert.deepEqual(payload.fields.map((row) => row.name), core.TRACKER_FIELD_NAMES); assert.ok(core.validateTrackerPayload(payload));
+  assert.equal(core.validateTrackerPayload({ fields: payload.fields.slice(1) }), false);
 });
 
-test("validates private narrative relationships and stable IDs", () => {
-  const parsed = core.parseAnalysisResponse(JSON.stringify(validAnalysis));
-  assert.equal(parsed.secrets[0].ownerCharacterId, "mara");
-  assert.deepEqual(parsed.secrets[0].knownByCharacterIds, ["mara", "ivo"]);
-  assert.equal(parsed.secrets[0].status, "locked");
-  assert.equal(core.parseAnalysisResponse(JSON.stringify(parsed)).secrets[0].id, "key_origin");
-  for (const status of ["locked", "foreshadowed", "suspected", "partially_revealed", "confirmed"]) {
-    assert.equal(core.parseAnalysisResponse(JSON.stringify({ ...validAnalysis, secrets: [{ ...validAnalysis.secrets[0], status }] })).secrets[0].status, status);
-  }
+test("Director validator accepts editorial direction and rejects evident narration", () => {
+  assert.equal(core.validateDirectorInstruction("Let the harbor bell create pressure while the Warden remains observant."), true);
+  assert.equal(core.validateDirectorInstruction('The Warden walked to the gate and said, "Stop."'), false);
+  assert.equal(core.validateDirectorInstruction("```json\n{}\n```"), false);
 });
 
-test("rejects secret content copied into public card or lorebook fields", () => {
-  assert.throws(
-    () => core.parseAnalysisResponse(JSON.stringify({ ...validAnalysis, cardAdditions: validAnalysis.secrets[0].summary })),
-    /unrevealed private information/,
-  );
-  assert.throws(
-    () => core.parseAnalysisResponse(JSON.stringify({
-      ...validAnalysis,
-      lorebookEntries: [{ name: "Leak", description: "", content: validAnalysis.secrets[0].revealCondition, keys: [] }],
-    })),
-    /unrevealed private information/,
-  );
+test("chronological chunking omits no content and preserves exact cursor", () => {
+  const messages = [{ id: "a", role: "user", content: "A".repeat(40_000) }, { id: "b", role: "assistant", content: "B".repeat(40_000) }]; const parts = []; let cursor = {};
+  while (true) { const block = core.buildNextInitializationBlock(project(), messages, cursor, null, { routeBudget: 30_000 }); if (block.done) break; parts.push(...block.messages); cursor = block.nextCursor; assert.ok(block.selectedText.length < 50_000); }
+  for (const [index, message] of messages.entries()) assert.equal(parts.filter((row) => row.sourceIndex === index).map((row) => row.content).join(""), message.content);
 });
 
-test("allows empty public premise, card fields and lorebook entries", () => {
-  const parsed = core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis, publicPremise: "", characterInformation: "", cardAdditions: "", lorebookEntries: [],
-  }));
-  assert.equal(parsed.publicPremise, "");
-  assert.deepEqual(parsed.lorebookEntries, []);
+test("export and import use only schema v2", () => {
+  const bundle = core.exportBundle([project()]); const restored = core.importBundle(JSON.parse(JSON.stringify(bundle))); assert.equal(restored[0].schemaVersion, 2); assert.equal(restored[0].intermediate.facts.length, analysis.facts.length);
+  assert.throws(() => core.importBundle({ kind: bundle.kind, schemaVersion: 1, projects: [] }), /Unsupported/);
 });
 
-test("applies analysis without creating redundant tracker structures", () => {
-  const original = validStory({ sourceText: "ORIGINAL SOURCE" });
-  const analyzed = core.applyAnalysis(original, validAnalysis, "2030-01-01T00:00:00.000Z");
-  assert.equal(analyzed.sourceText, "ORIGINAL SOURCE");
-  assert.equal(analyzed.storySummary, validAnalysis.storySummary);
-  assert.equal(analyzed.characterInformation, validAnalysis.characterInformation);
-  assert.equal(analyzed.privateDocument, validAnalysis.privateDirectorDocument);
-  for (const key of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
-    assert.equal(Object.hasOwn(analyzed, key), false);
-  }
-  assert.equal(JSON.parse(analyzed.lorebookEntries)[0].name, "Old Quarter");
+test("production source contains no removed architecture", () => {
+  const source = ["core.js", "api.js", "ui.js"].map((name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8")).join("\n");
+  for (const removed of ["agentKey", "ensureAgents", "upsertAgent", "buildDirectorPayload", "buildTrackerPayload", "settings.narrative", "directorConnectionId", "trackerConnectionId", "progressionProjection", "trackerStages", "trackedSecrets", "currentStageId", "narrativeStages"]) assert.doesNotMatch(source, new RegExp(removed));
+  assert.doesNotMatch(source, /post\(["']\/agents["']/); assert.doesNotMatch(source, /patch\(["']\/agents\//);
 });
 
-test("builds a selected public preview without the private Director document", () => {
-  const story = validStory({
-    publicPremise: "Public premise",
-    storySummary: "COMPLETE PRIVATE SUMMARY",
-    characterInformation: "Public character details",
-    cardAdditions: "Public permanent fact",
-    lorebookEntries: JSON.stringify([
-      { name: "Included", description: "One", content: "Public lore one", keys: ["one"] },
-      { name: "Excluded", description: "Two", content: "Public lore two", keys: ["two"] },
-    ]),
-    applicationCharacterName: "Mara",
-    applicationLorebookName: "Mara's World",
-    applicationCardSections: ["publicPremise", "characterInformation", "cardAdditions", "storySummary"],
-    applicationLorebookSelection: [0],
-  });
-  const preview = core.buildPublicResourcePreview(story);
-  assert.equal(preview.character.data.name, "Mara");
-  assert.match(preview.character.data.description, /Public character details/);
-  assert.match(preview.character.data.description, /Public premise/);
-  assert.doesNotMatch(preview.character.data.description, /COMPLETE PRIVATE SUMMARY/);
-  assert.equal(preview.lorebook.description, "Public premise");
-  assert.deepEqual(preview.lorebookEntries.map((entry) => entry.name), ["Included"]);
-  assert.equal(JSON.stringify(preview).includes(story.privateDocument), false);
-});
-
-test("rejects private Director content in public resources and sanitizes diagnostics", () => {
-  const contaminated = validStory({
-    cardAdditions: "PRIVATE_SECRET_ALPHA",
-    lorebookEntries: "[]",
-    applicationCardSections: ["cardAdditions"],
-    applicationLorebookSelection: [],
-  });
-  assert.throws(() => core.buildPublicResourcePreview(contaminated), /cannot be included/);
-  const log = core.applicationLogEntry({
-    operation: "create_character",
-    status: "error",
-    stage: "character",
-    error: new Error("Provider echoed PRIVATE_SECRET_ALPHA"),
-    privateDocument: "PRIVATE_SECRET_ALPHA",
-    now: "2030-01-01T00:00:00.000Z",
-  });
-  assert.equal(JSON.stringify(log).includes("PRIVATE_SECRET_ALPHA"), false);
-  assert.match(log.error, /private content removed/);
-});
-
-test("repeated application skips completed resources and retries only failed entries", () => {
-  const partial = validStory({
-    createdCharacterId: "character-created",
-    createdLorebookId: "lorebook-created",
-    createdLorebookEntryIds: { 0: "entry-zero", 2: "entry-two" },
-    characterAssociatedChatId: "chat-1",
-    lorebookAssociatedChatId: "chat-1",
-  });
-  assert.deepEqual(core.pendingPublicOperations(partial, [0, 1, 2]), {
-    character: false,
-    lorebook: false,
-    entryIndexes: [1],
-    characterAssociation: false,
-    lorebookAssociation: false,
-  });
-  const complete = core.createStory({ ...partial, createdLorebookEntryIds: { 0: "entry-zero", 1: "entry-one", 2: "entry-two" } });
-  assert.deepEqual(core.pendingPublicOperations(complete, [0, 1, 2]).entryIndexes, []);
-});
-
-test("public writes require an explicit reviewed-preview confirmation", () => {
-  assert.throws(() => core.requireApplicationConfirmation(false), /Confirm that you reviewed/);
-  assert.equal(core.requireApplicationConfirmation(true), true);
-});
-
-const validInitialState = {
-  happenedSummary: "Mara arrived and found the brass key.",
-  currentPoint: "Mara is deciding whether to enter the archive.",
-  occurredEvents: ["arrival", "key_found"],
-  pendingEvents: ["archive_opens"],
-  revealedSecrets: ["The key bears Mara's family crest."],
-  blockedSecrets: [{ id: "sibling_archive", label: "Sibling archive secret remains locked" }],
-  characterStates: [{ name: "Mara", state: "Alert, holding the key, trusts Ivo cautiously." }],
-};
-
-test("parses and validates a reviewable existing-chat state", () => {
-  const parsed = core.parseInitializationResponse(`\`\`\`json\n${JSON.stringify(validInitialState)}\n\`\`\``);
-  assert.deepEqual(parsed, validInitialState);
-  assert.throws(
-    () => core.parseInitializationResponse(JSON.stringify({ ...validInitialState, currentPoint: "" })),
-    /invalid structure/,
-  );
-});
-
-test("builds read-only active-swipe input without mutating past messages", () => {
-  const messages = [
-    { id: "message-1", role: "user", content: "Open the door", activeSwipeIndex: 0 },
-    { id: "message-2", role: "assistant", content: "The active swipe response", activeSwipeIndex: 2, swipeCount: 3 },
-  ];
-  const before = structuredClone(messages);
-  const prepared = core.buildInitializationInput(validStory(), messages);
-  const decoded = JSON.parse(prepared.input);
-  assert.equal(prepared.messageCount, 2);
-  assert.equal(decoded.activeChatMessages[1].content, "The active swipe response");
-  assert.equal(decoded.activeChatMessages[1].activeSwipeIndex, 2);
-  assert.deepEqual(messages, before);
-});
-
-test("Director receives complete private structure while tracker receives only IDs and states", () => {
-  const story = validStory({ ...validAnalysis, confirmedInitialState: validInitialState });
-  const director = core.buildDirectorPayload(story);
-  const tracker = core.buildTrackerPayload(story);
-  assert.deepEqual(director.settings.narrative.currentState, validInitialState);
-  assert.equal(director.settings.narrative.completeStorySummary, validAnalysis.storySummary);
-  assert.deepEqual(director.settings.narrative.privateStructure.secrets, validAnalysis.secrets);
-  assert.match(director.promptTemplate, /narrative\.currentState/);
-  assert.match(director.promptTemplate, /narrative\.privateStructure/);
-  assert.match(director.promptTemplate, /narrative\.completeStorySummary/);
-  assert.equal(JSON.stringify(tracker).includes(story.privateDocument), false);
-  assert.equal(JSON.stringify(tracker).includes(validAnalysis.secrets[0].summary), false);
-  assert.equal(JSON.stringify(tracker).includes(validAnalysis.secrets[0].revealCondition), false);
-  assert.equal(JSON.stringify(tracker).includes(validAnalysis.privateCharacters[0].privateGoal), false);
-  assert.equal(JSON.stringify(tracker).includes(validAnalysis.storySummary), false);
-  assert.equal(tracker.settings.narrative.adaptiveTrackingPlan.arcs[0].id, "archive_arc");
-  assert.equal(tracker.settings.narrative.adaptiveTrackingPlan.beats[0].id, "archive_threshold");
-  assert.deepEqual(tracker.settings.narrative.adaptiveTrackingPlan.secrets, [{ id: "key_origin", status: "locked" }]);
-  assert.equal(JSON.stringify(tracker.settings.narrative.adaptiveTrackingPlan).includes("Ivo can leave"), false);
-  assert.match(tracker.promptTemplate, /narrative\.adaptiveTrackingPlan/);
-  const serializedPayloads = JSON.stringify({ director, tracker });
-  for (const field of ["progressionProjection", "narrativeStages", "currentStageId", "trackerStages", "trackedSecrets"]) {
-    assert.equal(serializedPayloads.includes(field), false);
-  }
-  const contaminated = core.createStory({
-    ...story,
-    tracker: { ...story.tracker, promptTemplate: `Track this: ${validAnalysis.secrets[0].summary}` },
-  });
-  assert.throws(() => core.buildTrackerPayload(contaminated), /Private narrative details/);
-});
-
-test("exports structured narrative data but never session-only raw responses", () => {
-  const story = validStory(validAnalysis);
-  const exported = core.exportBundle([story]);
-  assert.equal(exported.stories[0].secrets[0].id, "key_origin");
-  assert.equal(JSON.stringify(exported).includes("rawAnalysisResponse"), false);
-  assert.equal(JSON.stringify(exported).includes("rewrittenText"), false);
-});
-
-test("existing-chat diagnostics contain counts and update flags, never chat content", () => {
-  const entry = core.applicationLogEntry({
-    operation: "confirm_existing_chat_state",
-    status: "success",
-    stage: "agents_updated",
-    chatId: "chat-1",
-    messageCount: 42,
-    directorUpdated: true,
-    trackerUpdated: true,
-  });
-  assert.equal(entry.chatId, "chat-1");
-  assert.equal(entry.messageCount, 42);
-  assert.equal(entry.directorUpdated, true);
-  assert.equal(entry.trackerUpdated, true);
-  assert.equal(JSON.stringify(entry).includes("The active swipe response"), false);
-});
-
-test("validates adaptive arc, beat and secret references", () => {
-  const parsed = core.parseAnalysisResponse(JSON.stringify(validAnalysis));
-  assert.equal(parsed.narrativeArcs[0].momentum, "medium");
-  assert.deepEqual(parsed.candidateBeats[0].relatedArcIds, ["archive_arc"]);
-  assert.deepEqual(parsed.candidateBeats[0].relatedSecretIds, ["key_origin"]);
-  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis,
-    candidateBeats: [{ ...validAnalysis.candidateBeats[0], relatedArcIds: ["missing_arc"] }],
-  })), /unknown arc/);
-  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis,
-    narrativeArcs: [...validAnalysis.narrativeArcs, { ...validAnalysis.narrativeArcs[0] }],
-  })), /Duplicate narrative arc id/);
-});
-
-test("Director protects player agency and receives complete adaptive planning", () => {
-  const payload = core.buildDirectorPayload(validStory(validAnalysis));
-  assert.match(payload.promptTemplate, /Never control, prescribe or assume \{\{user\}\} actions/i);
-  assert.match(payload.promptTemplate, /ignore, refuse, delay or diverge/i);
-  assert.match(payload.promptTemplate, /current_game_state/i);
-  assert.deepEqual(payload.settings.narrative.adaptivePlan.candidateBeats, validAnalysis.candidateBeats);
-  assert.deepEqual(payload.settings.narrative.privateStructure.narrativeArcs, validAnalysis.narrativeArcs);
-});
-
-test("tracker records observations only and bridge state is readable next turn", () => {
-  const payload = core.buildTrackerPayload(validStory(validAnalysis));
-  assert.match(payload.promptTemplate, /insufficient evidence, preserve the previous value/i);
-  assert.match(payload.promptTemplate, /Eligibility never means execution/i);
-  assert.doesNotMatch(JSON.stringify(payload), /Ivo can leave a visible archive notice/);
-  const state = core.extractAdaptiveTrackerState({ playerStats: { customTrackerFields: [
-    { name: "nd_confirmed_facts", value: '["Mara refused the invitation"]' },
-    { name: "nd_eligible_beats", value: "[]" },
-    { name: "nd_confidence", value: "high" },
-  ] } });
-  assert.deepEqual(state.nd_confirmed_facts, ["Mara refused the invitation"]);
-  assert.deepEqual(state.nd_eligible_beats, []);
-  assert.equal(state.nd_confidence, "high");
-});
-
-test("dynamically splits long chats chronologically without omitting content", () => {
-  const messages = [
-    { id: "m1", role: "user", content: "A".repeat(40_000), activeSwipeIndex: 0 },
-    { id: "m2", role: "assistant", content: "B".repeat(24_000), activeSwipeIndex: 2 },
-    { id: "m3", role: "user", content: "C".repeat(24_000), activeSwipeIndex: 0 },
-  ];
-  const flattened = [];
-  let cursor = { messagePosition: 0, offset: 0, part: 1 };
-  while (true) {
-    const block = core.buildNextInitializationBlock(validStory(), messages, cursor, null, { routeBudget: 30_000, safetyMargin: 1_000 });
-    if (block.done) break;
-    flattened.push(...block.messages);
-    cursor = block.nextCursor;
-    assert.ok(block.requestSize < 30_000);
-  }
-  assert.deepEqual(flattened.map((item) => item.sourceIndex), [...flattened.map((item) => item.sourceIndex)].sort((a, b) => a - b));
-  for (const [index, message] of messages.entries()) {
-    assert.equal(flattened.filter((item) => item.sourceIndex === index).map((item) => item.content).join(""), message.content);
-  }
-  assert.ok(flattened.some((item) => item.continued));
-});
-
-test("a large consolidated state dynamically reduces the next block", () => {
-  const messages = [{ id: "m1", role: "user", content: "A".repeat(60_000) }];
-  const first = core.buildNextInitializationBlock(validStory(), messages, {}, null, { routeBudget: 35_000, safetyMargin: 1_000 });
-  const partial = { ...validInitialState, happenedSummary: "Confirmed ".repeat(900) };
-  const second = core.buildNextInitializationBlock(validStory(), messages, first.nextCursor, partial, { routeBudget: 35_000, safetyMargin: 1_000 });
-  assert.ok(second.messages[0].content.length < first.messages[0].content.length);
-  assert.deepEqual(JSON.parse(second.selectedText).previousPartialState, core.consolidateInitializationState(partial));
-  assert.ok(second.requestSize < 35_000);
-});
-
-test("consolidated initialization state deduplicates facts and stable entities", () => {
-  const consolidated = core.consolidateInitializationState({
-    ...validInitialState,
-    occurredEvents: ["door_opened", "door_opened"],
-    blockedSecrets: [{ id: "secret_a", label: "Locked" }, { id: "secret_a", label: "Still locked" }],
-    characterStates: [{ name: "Tovan", state: "Waiting" }, { name: "tovan", state: "Departed" }],
-  });
-  assert.deepEqual(consolidated.occurredEvents, ["door_opened"]);
-  assert.deepEqual(consolidated.blockedSecrets, [{ id: "secret_a", label: "Still locked" }]);
-  assert.deepEqual(consolidated.characterStates, [{ name: "tovan", state: "Departed" }]);
-});
-
-test("reports the fixed component that leaves no room for a message", () => {
-  const story = validStory({ privateDocument: "P".repeat(20_000) });
-  assert.throws(() => core.buildNextInitializationBlock(story, [{ id: "m", role: "user", content: "hello" }], {}, null, {
-    routeBudget: 5_000, safetyMargin: 1_000,
-  }), /private story plan leaves no room/);
-});
-
-test("enforces conservative abandoned arcs while allowing pause and recovery", () => {
-  const baseArc = validAnalysis.narrativeArcs[0];
-  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "paused", momentum: "low" }],
-  })));
-  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "active", momentum: "medium" }],
-  })));
-  assert.throws(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis, narrativeArcs: [{ ...baseArc, status: "abandoned" }],
-  })), /impossibilityEvidence/);
-  assert.doesNotThrow(() => core.parseAnalysisResponse(JSON.stringify({
-    ...validAnalysis,
-    narrativeArcs: [{ ...baseArc, status: "abandoned", impossibilityEvidence: "The indispensable keeper died on screen", impossibilityFact: "The keeper is definitively dead and has no coherent replacement", confidence: "high" }],
-  })));
-  assert.match(core.DEFAULT_TRACKER_PROMPT, /Refusal, delay, low readiness/i);
+test("UI exposes review groups, server memory recovery, and responsive no-overflow rules", () => {
+  const ui = readFileSync(new URL("../src/ui.js", import.meta.url), "utf8"); const css = readFileSync(new URL("../src/extension.css", import.meta.url), "utf8");
+  assert.match(ui, /facts-public/); assert.match(ui, /facts-private/); assert.match(ui, /facts-uncertain/); assert.match(ui, /load-memory/); assert.match(ui, /memory-contract-warning/);
+  assert.match(css, /@media \(max-width: 620px\)/); assert.match(css, /overflow-wrap: anywhere/);
 });

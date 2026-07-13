@@ -1,106 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeIndexedDB } from "./fake-indexeddb.mjs";
-
-await import("../src/core.js");
-await import("../src/storage.js");
+await import("../src/core.js"); await import("../src/storage.js");
 const core = globalThis.__NarrativeDirectorCore;
+const storageFactory = globalThis.__NarrativeDirectorStorage;
 
-test("IndexedDB store creates, edits, lists and deletes stories", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  const story = core.createStory({ id: "indexed-story", name: "Indexed story" });
-  await store.saveStory(story);
-  assert.equal((await store.getStory(story.id)).name, "Indexed story");
-  assert.equal((await store.listStories()).length, 1);
-
-  await store.saveStory({ ...story, name: "Edited story", updatedAt: "2099-01-01T00:00:00.000Z" });
-  assert.equal((await store.getStory(story.id)).name, "Edited story");
-
-  await store.setMeta("lastStoryId", story.id);
-  assert.equal(await store.getMeta("lastStoryId"), story.id);
-
-  await store.deleteStory(story.id);
-  assert.equal(await store.getStory(story.id), null);
-  assert.deepEqual(await store.listStories(), []);
+test("IndexedDB v2 creates, edits, lists and deletes local project drafts", async () => {
+  const store = storageFactory.createStore(createFakeIndexedDB()); const project = core.createProject({ id: "project-a", name: "Project A" });
+  await store.saveProject(project); assert.equal((await store.getProject(project.id)).name, "Project A"); assert.equal((await store.listProjects()).length, 1);
+  await store.saveProject({ ...project, name: "Edited", updatedAt: "2099-01-01T00:00:00.000Z" }); assert.equal((await store.getProject(project.id)).name, "Edited");
+  await store.setMeta("lastProjectId", project.id); assert.equal(await store.getMeta("lastProjectId"), project.id);
+  await store.deleteProject(project.id); assert.equal(await store.getProject(project.id), null);
 });
 
-test("IndexedDB store atomically replaces imported stories", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  await store.saveStory(core.createStory({ id: "old", name: "Old" }));
-  await store.replaceStories([
-    core.createStory({ id: "new-1", name: "New one" }),
-    core.createStory({ id: "new-2", name: "New two" }),
-  ]);
-  const rows = await store.listStories();
-  assert.deepEqual(rows.map((row) => row.id).sort(), ["new-1", "new-2"]);
+test("replaceProjects atomically replaces imported v2 drafts", async () => {
+  const store = storageFactory.createStore(createFakeIndexedDB()); await store.saveProject(core.createProject({ id: "old" }));
+  await store.replaceProjects([core.createProject({ id: "new-a" }), core.createProject({ id: "new-b" })]); assert.deepEqual((await store.listProjects()).map((row) => row.id).sort(), ["new-a", "new-b"]);
 });
 
-test("analyzed result is saved and remains manually editable", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  const original = core.createStory({ id: "analysis-story", name: "Before", sourceText: "Original source" });
-  const analyzed = core.applyAnalysis(original, {
-    suggestedStoryName: "After analysis",
-    storySummary: "Generated summary",
-    characterInformation: "Generated character information",
-    cardAdditions: "Generated card proposal",
-    lorebookEntries: [],
-    privateDirectorDocument: "Private plan",
-    publicPremise: "Safe premise",
-    privateCharacters: [],
-    secrets: [],
-    narrativeArcs: [],
-    candidateBeats: [],
-  });
-  await store.saveStory(analyzed);
-  const loaded = await store.getStory(original.id);
-  assert.equal(loaded.sourceText, "Original source");
-  assert.equal(loaded.storySummary, "Generated summary");
-  await store.saveStory({ ...loaded, storySummary: "Manually edited summary" });
-  assert.equal((await store.getStory(original.id)).storySummary, "Manually edited summary");
+test("confirmed state and public resource IDs survive local persistence", async () => {
+  const store = storageFactory.createStore(createFakeIndexedDB()); const confirmedInitialState = { happenedSummary: "Started", currentPoint: "Gate", occurredEvents: [], pendingEventIds: [], revealedSecretIds: [], blockedSecretIds: [], characterStates: [], confirmedFacts: [] };
+  const project = core.createProject({ id: "stateful", confirmedInitialState, publicResourceIds: { characterIds: { lead: "char-a" }, lorebookId: "book-a", entryIds: { harbor: "entry-a" } } });
+  await store.saveProject(project); const loaded = core.createProject(await store.getProject(project.id)); assert.equal(loaded.confirmedInitialState.currentPoint, "Gate"); assert.deepEqual(loaded.publicResourceIds.characterIds, { lead: "char-a" });
 });
 
-test("public resource IDs and partial entry progress survive local persistence", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  const story = core.createStory({
-    id: "application-story",
-    name: "Applied story",
-    createdCharacterId: "character-created",
-    createdLorebookId: "lorebook-created",
-    createdLorebookEntryIds: { 0: "entry-created" },
-    applicationLog: [core.applicationLogEntry({
-      operation: "create_lorebook_entry",
-      status: "error",
-      stage: "entry_2",
-      error: "Temporary failure",
-    })],
-  });
-  await store.saveStory(story);
-  const loaded = core.createStory(await store.getStory(story.id));
-  assert.equal(loaded.createdCharacterId, "character-created");
-  assert.equal(loaded.createdLorebookId, "lorebook-created");
-  assert.deepEqual(loaded.createdLorebookEntryIds, { 0: "entry-created" });
-  assert.equal(loaded.applicationLog[0].stage, "entry_2");
-});
-
-test("an initialization proposal is not persisted until explicit confirmation", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  const original = core.createStory({ id: "existing-chat-story", name: "Existing chat", privateDocument: "Private" });
-  await store.saveStory(original);
-  const proposal = {
-    happenedSummary: "Occurred",
-    currentPoint: "Current",
-    occurredEvents: [], pendingEvents: [], revealedSecrets: [], blockedSecrets: [], characterStates: [],
-  };
-  assert.equal((await store.getStory(original.id)).confirmedInitialState, null, "cancel/no confirmation leaves storage unchanged");
-  await store.saveStory(core.createStory({ ...original, confirmedInitialState: proposal, initializedChatId: "chat-1" }));
-  assert.equal((await store.getStory(original.id)).confirmedInitialState.currentPoint, "Current");
-});
-
-test("session-only raw AI response is stripped before persistence", async () => {
-  const store = globalThis.__NarrativeDirectorStorage.createStore(createFakeIndexedDB());
-  const story = core.createStory({ id: "raw-story", name: "Raw", rawAnalysisResponse: "PRIVATE RAW RESPONSE" });
-  await store.saveStory(story);
-  const loaded = await store.getStory(story.id);
-  assert.equal(Object.hasOwn(story, "rawAnalysisResponse"), false);
-  assert.equal(JSON.stringify(loaded).includes("PRIVATE RAW RESPONSE"), false);
+test("raw responses and removed agent configuration fields are never persisted", async () => {
+  const store = storageFactory.createStore(createFakeIndexedDB()); const project = core.createProject({ id: "clean", rawAnalysisResponse: "RAW PRIVATE", director: { connectionId: "secret" }, tracker: { promptTemplate: "old" } });
+  await store.saveProject(project); const serialized = JSON.stringify(await store.getProject(project.id)); assert.ok(!serialized.includes("RAW PRIVATE")); assert.ok(!serialized.includes("connectionId\":\"secret")); assert.ok(!serialized.includes("promptTemplate"));
 });

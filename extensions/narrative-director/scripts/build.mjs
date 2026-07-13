@@ -19,5 +19,11 @@ await writeFile(
   await readFile(resolve(root, "manifest.json"), "utf8"),
   "utf8",
 );
+await mkdir(resolve(root, "dist", "presets"), { recursive: true });
+await writeFile(
+  resolve(root, "dist", "presets", "marinara-agents.json"),
+  await readFile(resolve(root, "presets", "marinara-agents.json"), "utf8"),
+  "utf8",
+);
 
 process.stdout.write(`Built ${sourceFiles.length} modules into dist/extension.js\n`);

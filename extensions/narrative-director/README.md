@@ -1,94 +1,87 @@
-# Narrative Director extension
+# Narrative Director extension, architecture v2
 
-Browser-only Marinara Engine extension for managing private narrative plans with custom pre-generation Director and post-processing tracker agents.
+Browser extension for extracting a story into atomic facts, reviewing public/private disclosure, compiling safe character cards and lorebook entries, and synchronizing per-chat project memory for two fixed custom-agent types.
 
-It can analyze a pasted story, strictly separate initial public knowledge from private truth, edit adaptive private structures, create reviewed public resources, and initialize Director/tracker state from an existing chat through explicit, separate actions. It never edits past messages or existing cards.
+The extension does not create, patch, or configure agents. It never modifies Marinara core files.
 
-## Build
+## Fixed agents
 
-Requirements: Node.js 24+ and npm. No package installation is required.
+Import `presets/marinara-agents.json` through Marinara's **Agents** panel and choose connections there. The preset uses the official `marinara.agent-folder` version 1 import shape.
 
-```bash
-cd extensions/narrative-director
-npm run build
-```
+Director:
 
-The distributable folder is `dist/`:
+- type: `narrative-story-director`
+- phase: `pre_generation`
+- result: `director_event`
+- output: one short editorial instruction, never narration or dialogue
+- suggested temperature: `0.2`
 
-```text
-dist/
-  manifest.json
-  extension.js
-  extension.css
-```
+Tracker:
 
-## Install
+- type: `narrative-story-tracker`
+- phase: `post_processing`
+- result: `custom_tracker_update`
+- capability: `edit_trackers`
+- output: exactly seven `nd_*` fields with JSON-string values
+- suggested temperature: `0.1`
 
-1. Build the extension.
-2. Open Marinara Engine.
-3. Go to **Settings → Addons → Extension Library**.
-4. Choose **Import Extension Folder**.
-5. Select the `extensions/narrative-director/dist` folder. Your browser may show the files rather than the folder itself; select the folder using the directory picker.
-6. Review the imported extension and enable **Narrative Director**.
-7. A **Narrative Director** button appears near the lower-right edge of the app.
+The extension may explicitly activate or deactivate these existing types in a selected chat. It preserves every unrelated `activeAgentIds` entry and never deletes memory on deactivation.
 
-The manifest defaults to disabled so the user explicitly reviews and enables its JavaScript.
+## Important upstream limitation
 
-## Use
+Marinara exposes public per-agent, per-chat memory routes and the extension uses them for synchronization, backup and recovery:
 
-1. Open **Narrative Director**.
-2. Create a story and paste the original text in the Story tab.
-3. Select an analysis connection and press **Analyze story**. No request is made until this button is pressed.
-4. Review and edit the public premise, private complete summary, initially safe character/card fields, lorebook entries, private Director document, characters, secrets, adaptive arcs and candidate beats.
-5. Select a chat, open **Apply**, choose the public card sections and lorebook entries, and review the previews.
-6. Check the confirmation box and press **Create or retry public resources**. Successful resource IDs are saved immediately; retry skips completed work.
-7. Select a connection used only by the Director. Select a different connection for the tracker.
-8. Save the story locally.
-9. Open **Activation** and choose **Create agents and activate**.
+- `GET /api/agents/memory/:agentType/:chatId`
+- `PATCH /api/agents/memory/:agentType/:chatId`
+- `DELETE /api/agents/memory/:agentType/:chatId` is supported but is never called automatically
 
-For a story already in progress:
+The current generic custom-agent pipeline does not load this persisted memory into `AgentContext.memory`. It initializes generic agent context with an empty memory object and only loads persistent memory for the native Director Secret Plot path. Custom prompt macros resolve agent settings and normal chat macros, not memory keys.
 
-1. Select the story, existing chat and an initialization connection.
-2. Open **Initialize** and press **Initialize from existing chat**. No history is read before this action.
-3. Review the unsaved proposal: confirmed history, current point, occurred/pending events, revealed/blocked secrets and character states.
-4. Choose **Cancel proposal** to discard it without saving, or **Confirm state and update agents** to persist it and upsert the existing agent types.
+Consequently, v2 can safely synchronize and recover projects server-side, but the two fixed custom agents cannot consume those memories during normal roleplay without upstream generic memory injection support. The extension displays this limitation and does not claim otherwise or work around it by changing the core.
 
-Confirmation does not activate agents and does not patch chat metadata. Activation remains a separate action in the Activation tab.
+## Structured import
 
-Analysis uses Marinara's public `POST /api/agents/suite/rewrite` route. The model is instructed to return JSON in the source text's predominant language; plain JSON and JSON inside a Markdown code fence are accepted. The contract ends with `narrativeArcs` and `candidateBeats`; observable tracker configuration is derived locally from secrets, arcs and beats. A valid result is saved to IndexedDB and remains editable. Connection and parsing failures leave the original pasted text and current draft intact. Re-analysis is always manual.
+1. Create a project and choose **Character focus** or **World / ensemble**.
+2. Paste up to 50,000 characters and choose a connection.
+3. Press **Analyze story**. No request happens automatically.
+4. Review atomic facts in **Public**, **Private**, and **Uncertain** groups.
+5. Resolve every uncertain fact before Apply.
+6. Review the deterministic card and lorebook preview.
+7. Confirm before creating resources.
 
-Public means only knowledge available to the user and present characters at the initial story point. The complete summary is Director-only and is never used for card or lorebook construction. Empty public card fields and an empty lorebook are valid when the source provides no safe initial knowledge.
+Analysis uses `POST /api/agents/suite/rewrite`. Every instruction is below 4,000 characters and every `selectedText` is validated at 50,000 characters. Plain and fenced JSON are accepted. Invalid JSON receives at most one repair attempt using the same connection. Raw responses remain in session memory only and are cleared when the panel closes.
 
-The latest raw analysis response is available in the collapsible **Raw AI response** section after success or parsing failure. It can contain the entire story and private data, exists only in memory, and is cleared when the panel closes or the extension reloads. It is never persisted, exported or added to diagnostics.
+Creative enrichment is deliberately separate and disabled. Extraction works with a raw outline.
 
-Public application uses the character, lorebook, lorebook-entry, chat and chat-metadata APIs. The new character is added to the selected chat without removing existing participants. The new lorebook is scoped to and pinned in that chat. Creating or updating Director and tracker agents remains a separate explicit action.
+## Deterministic public compilation
 
-Existing-chat initialization reads `GET /api/chats/:id/messages`. Marinara returns the content of the active swipe in each message, so the extension does not fetch, select or manage alternate swipes. The private plan and active history are sent only to the selected initialization connection through `POST /api/agents/suite/rewrite`.
+The compiler uses only facts reviewed as public.
 
-Activation creates or updates two custom agents and adds their `type` values to `chat.metadata.activeAgentIds`. Existing agent types are preserved. Deactivation removes only the two types owned by that story.
+Character focus creates a native character card for the primary character. World / ensemble creates a narrator/world card. Selected secondary characters can become separate cards; unselected public characters, places, organizations, and rules can become lorebook entries.
 
-Only one Narrative Director story may be active in a chat at a time in this MVP.
+Native character fields used by the proven Marinara schema include:
 
-## Private-data boundary
+- `description`
+- `personality`
+- `scenario`
+- `extensions.appearance`
+- required empty/default V2 fields such as `first_mes`, `mes_example`, and `character_book`
 
-- The complete private document is stored only in `settings.narrative.privateDocument` of the Director agent.
-- Structured private characters, secrets, reveal conditions, adaptive arcs and candidate beats are stored only in the Director configuration.
-- Tracker settings are derived from secret IDs/statuses, observable arc state, beat prerequisites, readiness signals and blockers. Private setup strategies are excluded.
-- The build rejects a tracker payload if it contains the complete private document.
-- The build also rejects blocked-secret summaries/conditions, private character goals and beat setup strategies in tracker configuration.
-- Private settings are protected from the main narrator prompt, but remain readable by the local Marinara administrator and Agents UI/API.
-- Agent debug logs can expose the private Director prompt. Keep agent debug disabled when using secrets.
-- Pre-generation agents sharing a connection/model can be batched. Give the Director an exclusive connection that no other pre-generation agent uses.
+The same subject is not automatically duplicated into both a separate card and lorebook. Private and unresolved facts are rejected from public compilation.
 
-Do not put secrets in proposed card additions, proposed lorebook entries, chat metadata or tracker fields.
+## Memory boundary
 
-## Import and export
+Director memory contains the complete private project, summary, characters, secrets, knowledge matrix, arcs, candidate beats, setup strategies, confirmed initial state, editorial instructions, and public resource IDs.
 
-**Export JSON** downloads all locally saved extension stories, including private documents. Treat the file as sensitive.
+Tracker memory contains only project/schema IDs, secret IDs with layers, arc IDs with observable states, observable fact IDs, readiness signals, blockers, eligible beat IDs, confidence, and the seven `nd_*` field names. It excludes secret summaries, reveal conditions, private documents, private summaries, private goals, private setup strategies, and future private events.
 
-**Import JSON** merges stories by ID. Imports accept only the versioned `marinara.narrative-director-stories` format produced by this extension.
+IndexedDB stores local drafts and UI recovery. After explicit synchronization, Director memory is the server-side project copy for the selected chat. Export JSON remains the recommended backup and must be treated as sensitive.
 
-## Test
+## Existing chats
+
+Initialization reads the active message content returned by `GET /api/chats/:id/messages`, preserves chronological order, and chunks below the rewrite route limit without silently dropping content. Partial state stays in memory. Cancellation or failure does not replace the last confirmed state. Confirmation synchronizes memories and never edits agent configuration or old messages.
+
+## Build and test
 
 ```bash
 cd extensions/narrative-director
@@ -97,45 +90,23 @@ npm run build
 node --check dist/extension.js
 ```
 
-The tests cover:
+The distributable contains:
 
-- IndexedDB create, read, edit, replace and delete;
-- story construction and validation;
-- Director/tracker payloads;
-- prevention of complete private-document duplication into tracker settings;
-- activation and deactivation;
-- preservation of existing `activeAgentIds`;
-- versioned JSON import/export.
-- explicit-only AI analysis calls;
-- plain and Markdown-fenced JSON parsing;
-- connection and invalid-response errors;
-- persistence and manual editing of analyzed proposals;
-- derivation of observable tracker input without redundant legacy structures.
-- public-resource previews and explicit confirmation;
-- character, lorebook and entry creation payloads;
-- persistence of returned resource IDs;
-- duplicate-click prevention and failed-part retry planning;
-- sanitized diagnostics without private documents.
-- manual, read-only existing-chat initialization;
-- structured state review and cancellation before persistence;
-- filtered adaptive tracker state and complete confirmed Director state;
-- agent upsert without duplication or automatic activation;
-- message-count and agent-update diagnostics without message content.
+```text
+dist/
+  manifest.json
+  extension.js
+  extension.css
+  presets/marinara-agents.json
+```
 
-## Known limitations
+## Manual verification
 
-- Storage is browser-local IndexedDB and does not sync between devices or browser profiles.
-- Deactivation leaves the extension-managed agent configs installed for later reactivation. It does not delete agents.
-- Deleting a local story is blocked while it is active, but its inactive agent configs may remain in Marinara.
-- Current tracker state displays every `playerStats.customTrackerFields` entry in the selected chat, including fields from other trackers.
-- The extension cannot reliably detect the currently open chat through the official extension API, so selection is manual.
-- `director_event` is text output; the extension cannot semantically guarantee that a model-generated instruction never reveals a secret.
-- Manual regeneration reuses cached pre-generation injections according to Marinara's existing pipeline behavior.
-- The analysis route accepts source text up to 50,000 characters and its instruction up to Marinara's 4,000-character route limit.
-- Generated content still requires human review; structural validation cannot establish factual quality or reliably detect every possible secret leaked by a model into a non-private proposal.
-- The extension creates new cards only. It never edits or appends to an existing character card.
-- A lost network response after the server has committed a create request cannot be made perfectly idempotent because the public create APIs do not expose idempotency keys. Once an ID is received, all repeated clicks are safely skipped.
-- Adding a character to an existing chat uses Marinara's normal chat update behavior, which may add a visible system message that the character joined.
-- Existing-chat initialization divides long active histories into chronological blocks below the public rewrite route's 50,000-character limit. A private plan that alone exceeds the available envelope is rejected without truncation.
-- Initialization uses the message `content` currently returned by Marinara and records `activeSwipeIndex` for analysis context. It never calls swipe mutation APIs.
-- Confirming state updates agent configurations but does not write a game-state snapshot. The tracker uses the confirmed initial state on its next normal post-processing run.
+- Import the agent preset and choose two configured connections.
+- Confirm both fixed agent statuses as created/inactive, then active in one chat.
+- Analyze a mixed public/private outline and resolve uncertain facts.
+- Create public resources and inspect native card fields and lorebook entries.
+- Synchronize two different chats and confirm their memories remain independent.
+- Open a second browser profile, select the chat, and recover the project from Director memory.
+- Confirm the tracker emits the exact `fields` array and never Context Injection.
+- Test the modal at desktop width and below 620px.

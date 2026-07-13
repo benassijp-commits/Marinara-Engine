@@ -3,7 +3,7 @@
   "version": 1,
   "config": {
     "name": "Narrative Director",
-    "description": "Manage private narrative plans with custom Director and tracker agents.",
+    "description": "Extract structured story projects, compile safe public resources, and synchronize private per-chat agent memory.",
     "enabled": false,
     "cssPath": "extension.css",
     "jsPath": "extension.js"
