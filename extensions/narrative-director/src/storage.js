@@ -1,6 +1,6 @@
 const NarrativeDirectorStorage = (() => {
   "use strict";
-  const DB_NAME = "marinara-extension-narrative-director-v2";
+  const DB_NAME = "marinara-extension-narrative-curator-v4";
   const DB_VERSION = 1;
   const STORE_PROJECTS = "projects";
   const STORE_META = "meta";
@@ -15,7 +15,7 @@ const NarrativeDirectorStorage = (() => {
       if (!dbPromise) dbPromise = new Promise((resolve, reject) => {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
         request.onupgradeneeded = () => { const db = request.result; if (!db.objectStoreNames.contains(STORE_PROJECTS)) db.createObjectStore(STORE_PROJECTS, { keyPath: "id" }); if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: "key" }); };
-        request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error || new Error("Could not open Narrative Director storage."));
+        request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error || new Error("Could not open Narrative Curator v4 storage."));
       });
       return dbPromise;
     }

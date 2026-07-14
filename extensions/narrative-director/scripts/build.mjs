@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceFiles = ["core.js", "storage.js", "api.js", "ui.js"];
-const banner = `/* Narrative Director v0.1.0 | browser extension build | generated, do not edit */\n`;
+const banner = `/* Narrative Curator v4 | browser extension build | generated, do not edit */\n`;
 const sources = await Promise.all(sourceFiles.map((name) => readFile(resolve(root, "src", name), "utf8")));
 
 await mkdir(resolve(root, "dist"), { recursive: true });

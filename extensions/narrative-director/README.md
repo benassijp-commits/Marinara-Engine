@@ -1,95 +1,61 @@
-# Narrative Director v3
+# Narrative Curator v4
 
-Browser extension for turning a story plan into a small editable project with structurally separate public resources, a private Director guide, important secrets, broad storylines, and concise per-chat state.
+Browser extension for importing or extracting one structured story project, creating its public character/lorebook resources, and synchronizing one private Curator lorebook entry for one fixed pre-generation agent.
 
-The extension uses only Marinara's public extension and API surfaces. It does not modify Marinara core files, create agents, or call providers directly.
+V4 is a clean format. It does not read, convert, merge, or migrate V2/V3 projects, tracker fields, Director entries, or Tracker entries. Its IndexedDB database and bundle kind are separate, so old local data remains untouched.
 
-## Canonical project
+## Canonical story
 
-Each project has one `story` object:
+Each project contains one `story` object with:
 
 - `worldCard`: public world or scenario card;
-- `characters`: one entity per person, with aliases, a public profile, and character-specific Director notes;
-- `worldEntries`: public lorebook entries ready for use;
-- `directorGuide`: one readable private guide;
-- `secrets`: only important truths whose revelation needs tracking;
+- `characters`: public profiles plus private `curatorNotes`;
+- `relationships`: character IDs with separate public and private summaries;
+- `worldEntries`: public lorebook entries;
+- `curatorGuide`: the private overall guide;
+- `secrets`: important truths, knowledge holders, reveal conditions and status;
 - `storylines`: broad adaptable directions.
 
-Per-chat confirmed state contains only an accumulated summary, current situation, revealed secret IDs, storyline statuses, and short character states.
+`confirmedState` is optional. It is useful only when attaching the project to a story already in progress. New stories should use `null`.
 
-## Analyze a story
+## Existing Import JSON flow
 
-1. Create a project in **Source**.
-2. Choose Character focus or World / ensemble, a chat, and an analysis connection.
-3. Paste up to 50,000 characters.
-4. Optionally edit **Regras de análise**, then press **Salvar**. The fixed JSON structure cannot be edited.
-5. Press **Analyze story**.
-6. Review and edit the result in **Public** and **Private**.
+The existing **Import JSON** button accepts:
 
-Analysis makes one `POST /api/agents/suite/rewrite` request. The complete source is sent as `selectedText`; saved user rules are sent separately in `contextSections`. There is no automatic repair, retry, chunking, or second model call. Invalid or truncated output leaves the previous project unchanged and remains visible under **Raw AI response** for the current session.
+1. a complete `marinara.narrative-curator-projects` bundle with `schemaVersion: 4`;
+2. one isolated valid V4 `story` object, applied to the currently open project.
 
-The default analysis rules are local settings in IndexedDB. Editing them does not require rebuilding the extension.
+The bundle form is the most convenient external-AI format because it creates the local project directly. See `narrative-curator-v4-import-template.json` in this directory.
 
-## Public resources
+V2 and V3 bundles are rejected explicitly. There is no automatic migration.
 
-Public compilation reads only:
+After importing a bundle:
 
-- `worldCard`;
-- `characters[].public`;
-- `characters[].aliases`;
-- `worldEntries`.
+1. open the imported project;
+2. select its Marinara chat;
+3. optionally create the reviewed public character and lorebook resources;
+4. import `presets/marinara-agents.json` once through Marinara's Agents panel;
+5. configure a connection for `narrative-story-curator`;
+6. press **Synchronize Curator lorebook**;
+7. activate the Curator for the chat.
 
-Character focus creates the selected primary character card. World / ensemble creates the world card. Selected secondary characters become separate cards; other characters with public profiles become lorebook entries. World entries always remain public lorebook entries.
+Before activating V4, deactivate the old V3 `narrative-story-director` and `narrative-story-tracker` agents for that chat.
 
-Private notes, the Director guide, secrets, and storylines are never read by the public compiler.
+## One fixed Curator
 
-## External JSON import
-
-**Import JSON** accepts exactly two shapes:
-
-1. a complete `marinara.narrative-director-projects` bundle;
-2. one isolated valid v3 `story` object.
-
-An isolated story is applied to the currently open project while preserving its project ID, chat, connections, source text, and operational resource IDs. Review and save the draft afterward.
-
-New exports use bundle schema version 3. Imported v2 bundles and local v2 projects receive a limited deterministic migration and are marked for review. Fragmented facts and obsolete tracking structures are discarded instead of being carried into v3.
-
-## Fixed agents
-
-Import `presets/marinara-agents.json` through Marinara's **Agents** panel, then configure a connection for each agent.
-
-Director:
-
-- type: `narrative-story-director`;
+- type: `narrative-story-curator`;
 - phase: `pre_generation`;
-- result: `director_event`;
+- technical Marinara result type: `director_event` (used only to inject its short instruction into the narrator);
 - tool: `search_lorebook`;
-- output: one short editorial instruction.
+- context: chat summary plus the ten most recent active messages;
+- output: one short narrator instruction;
+- no Tracker and no `custom_tracker_update` fields.
 
-Tracker:
+The private transport uses one non-activating entry named `__ND_CURATOR_PROJECT_V4__`. It is excluded from vectorization and must not be selected manually as a Knowledge Router source.
 
-- type: `narrative-story-tracker`;
-- phase: `post_processing`;
-- result: `custom_tracker_update`;
-- capability: `edit_trackers`;
-- fields: `nd_summary`, `nd_current_situation`, `nd_revealed_secrets`, `nd_storylines`, `nd_character_states`.
+## Existing-chat initialization
 
-The Director must not decide actions, dialogue, thoughts, feelings, decisions, or consent for `{{user}}`. The Tracker observes events and never directs the story.
-
-## Guarded transport lorebook
-
-Each chat uses one technical lorebook with two non-activating entries:
-
-- `__ND_DIRECTOR_PROJECT_V3__`: private guide, character notes, secrets, storylines, editorial instructions, and confirmed state;
-- `__ND_TRACKER_PROJECT_V3__`: secret IDs/titles/reveal conditions, storyline IDs/titles, character IDs/names, and current state.
-
-Both use the impossible activation regex `(?!)`, are excluded from vectorization, and remain outside normal active lorebooks. Do not manually select the transport book as a Knowledge Router source.
-
-This is an application-level privacy boundary, not protection from a local administrator or agent debug logs.
-
-## Existing chats
-
-Initialization makes one rewrite request. It includes the private project, a chat summary when available, and the newest active messages that fit under the request limit. Selected messages remain chronological. The interface reports when older messages were omitted. Confirmation is required before state is saved and the transport lorebook is synchronized.
+Initialization remains optional. It makes one rewrite request with the private project, a chat summary when available, and the newest active messages that fit. The result is reviewable before being saved as `confirmedState` and synchronized into the private Curator entry.
 
 ## Build and validation
 

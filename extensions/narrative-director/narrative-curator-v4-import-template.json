@@ -1,0 +1,97 @@
+{
+  "kind": "marinara.narrative-curator-projects",
+  "schemaVersion": 4,
+  "exportedAt": "2026-07-14T00:00:00.000Z",
+  "projects": [
+    {
+      "id": "minha_historia_v4",
+      "schemaVersion": 4,
+      "name": "Título da história",
+      "projectType": "character_focus",
+      "story": {
+        "title": "Título da história",
+        "mainCharacterId": "protagonista",
+        "worldCard": {
+          "name": "Nome público do cenário",
+          "description": "Descrição pública e imediatamente segura do mundo ou da premissa.",
+          "personality": "Tom, gênero e atmosfera da narrativa.",
+          "scenario": "Situação pública no começo da história. Não inclua segredos ou acontecimentos futuros."
+        },
+        "characters": [
+          {
+            "id": "protagonista",
+            "name": "Nome do protagonista",
+            "aliases": [],
+            "isMain": true,
+            "public": {
+              "role": "Papel publicamente conhecido.",
+              "description": "Informações públicas e observáveis.",
+              "appearance": "Aparência conhecida ou visível.",
+              "personality": "Traços publicamente demonstráveis.",
+              "scenario": "Situação inicial pública deste personagem."
+            },
+            "curatorNotes": "Conhecimento, motivações, conflitos e contexto privados deste personagem."
+          },
+          {
+            "id": "personagem_secundario",
+            "name": "Nome do personagem secundário",
+            "aliases": [],
+            "isMain": false,
+            "public": {
+              "role": "Papel publicamente conhecido.",
+              "description": "Informações públicas e observáveis.",
+              "appearance": "Aparência conhecida ou visível.",
+              "personality": "Traços publicamente demonstráveis.",
+              "scenario": "Situação inicial pública deste personagem."
+            },
+            "curatorNotes": "Conhecimento, motivações, conflitos e contexto privados deste personagem."
+          }
+        ],
+        "relationships": [
+          {
+            "id": "relacao_protagonista_secundario",
+            "characterIds": [
+              "protagonista",
+              "personagem_secundario"
+            ],
+            "publicSummary": "O que a história pode declarar publicamente sobre a relação no início.",
+            "privateSummary": "Vínculos, sentimentos, história compartilhada ou conflitos ainda ocultos."
+          }
+        ],
+        "worldEntries": [
+          {
+            "id": "local_publico",
+            "name": "Nome da entrada pública",
+            "keys": [
+              "palavra-chave",
+              "sinônimo"
+            ],
+            "content": "Informação pública que pode ser usada normalmente pelo narrador."
+          }
+        ],
+        "curatorGuide": "Princípios privados para preservar a lógica da história. Inclua limites, causalidade, temas e fatos que o Curador precisa considerar, sem transformar a trama numa sequência obrigatória.",
+        "secrets": [
+          {
+            "id": "segredo_principal",
+            "title": "Título curto do segredo",
+            "truth": "A verdade completa que ainda não deve ser exposta automaticamente.",
+            "knownByCharacterIds": [
+              "personagem_secundario"
+            ],
+            "revealCondition": "Condição observável e natural que permite revelar ou usar diretamente este segredo.",
+            "status": "locked"
+          }
+        ],
+        "storylines": [
+          {
+            "id": "linha_principal",
+            "title": "Título curto da linha narrativa",
+            "direction": "Possível direção ampla e adaptável, sem determinar ações de {{user}} nem exigir acontecimentos específicos.",
+            "status": "inactive"
+          }
+        ]
+      },
+      "confirmedState": null
+    }
+  ]
+}

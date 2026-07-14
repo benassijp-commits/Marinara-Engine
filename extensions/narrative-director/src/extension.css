@@ -62,7 +62,6 @@ details > summary { cursor: pointer; overflow-wrap: anywhere; }
 .nd-agent-statuses { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
 .nd-agent-statuses section { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--nd-border); border-radius: 9px; background: var(--nd-panel); }
 .nd-progress { display: flex; justify-content: space-between; gap: 12px; padding: 10px 12px; border-radius: 8px; background: var(--nd-input); }
-.nd-runtime [data-slot="tracker-runtime"] { display: grid; gap: 7px; }
 .nd-footer { display: flex; justify-content: space-between; gap: 12px; padding: 16px 22px 22px; }
 .nd-errors { margin: 0 22px; padding: 12px 14px; border: 1px solid color-mix(in srgb,var(--nd-danger) 45%,transparent); border-radius: 8px; color: var(--nd-danger); }
 .nd-errors p { margin: 3px 0; }

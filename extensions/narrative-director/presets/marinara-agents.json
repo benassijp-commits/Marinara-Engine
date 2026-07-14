@@ -1,39 +1,22 @@
 {
   "kind": "marinara.agent-folder",
   "version": 1,
-  "folderName": "Narrative Director v3",
+  "folderName": "Narrative Curator v4",
   "agents": [
     {
-      "type": "narrative-story-director",
-      "name": "Narrative Story Director",
-      "description": "Returns one short organic editorial direction for the current scene.",
+      "type": "narrative-story-curator",
+      "name": "Narrative Story Curator",
+      "description": "Analyzes the structured private project, chat summary and recent context, then gives the narrator one safe editorial instruction.",
       "phase": "pre_generation",
       "resultType": "director_event",
-      "promptTemplate": "First call search_lorebook(\"__ND_DIRECTOR_PROJECT_V3__\"). Treat that result as the private guide for this chat. Consider the current scene, confirmed state, what each character knows, the private guide, important secrets, and broad storylines. Choose one brief organic direction. Adapt storylines to the conversation and avoid premature revelations or knowledge a character does not have. Never determine {{user}} actions, speech, thoughts, feelings, decisions, consent, or intent. Never write the scene or expose private notes. Return only one short editorial instruction for the narrator.",
+      "promptTemplate": "First call search_lorebook(\"__ND_CURATOR_PROJECT_V4__\"). Treat that result as the private structured Curator project for this chat. Use the available <chat_summary>, the ten most recent active messages, and any confirmed initial state in the project to determine what has actually happened, what has been revealed, what remains hidden, which characters know each fact, and which broad storylines are currently relevant. Internally distinguish confirmed events from suspicions, hints, possibilities, plans, and character beliefs. Never treat a planned event as something that occurred. A hidden fact may influence the narrator only when it was already revealed in the story, when a character present in the scene is explicitly listed as knowing it and can naturally act on that knowledge, or when its reveal condition is now observably satisfied. Otherwise do not mention, imply, foreshadow, contradict, or invent details from it. Give the narrator one brief, organic instruction that preserves continuity and character agency. Do not force a beat, write the scene, expose private notes or identifiers, or decide {{user}} actions, speech, thoughts, feelings, decisions, consent, or intent. Return only the short instruction for the main narrator, without a label, JSON, analysis, categories, or commentary.",
       "settings": {
-        "author": "Narrative Director extension",
+        "author": "Narrative Curator extension",
         "resultType": "director_event",
         "enabledTools": ["search_lorebook"],
-        "contextSize": 8,
-        "maxTokens": 256,
+        "contextSize": 10,
+        "maxTokens": 320,
         "temperature": 0.2
-      }
-    },
-    {
-      "type": "narrative-story-tracker",
-      "name": "Narrative Story Tracker",
-      "description": "Updates only the five simplified Narrative Director state fields.",
-      "phase": "post_processing",
-      "resultType": "custom_tracker_update",
-      "promptTemplate": "First call search_lorebook(\"__ND_TRACKER_PROJECT_V3__\"). Use only that tracking reference, the final narrator response, relevant observable messages, and prior nd_* state. Observe what actually occurred. Update the accumulated summary and current situation. Mark a secret revealed only after an explicit observable revelation. Update broad storyline statuses and short character states. Never direct the story or record future plans as events. Return exactly {\"fields\":[{\"name\":\"nd_summary\",\"value\":\"\\\"\\\"\"},{\"name\":\"nd_current_situation\",\"value\":\"\\\"\\\"\"},{\"name\":\"nd_revealed_secrets\",\"value\":\"[]\"},{\"name\":\"nd_storylines\",\"value\":\"{}\"},{\"name\":\"nd_character_states\",\"value\":\"{}\"}]}. Each value must be a valid JSON string. Return only that object.",
-      "settings": {
-        "author": "Narrative Director extension",
-        "resultType": "custom_tracker_update",
-        "customCapabilities": { "edit_trackers": true },
-        "enabledTools": ["search_lorebook"],
-        "contextSize": 12,
-        "maxTokens": 512,
-        "temperature": 0.1
       }
     }
   ]

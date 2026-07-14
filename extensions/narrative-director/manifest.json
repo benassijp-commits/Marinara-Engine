@@ -2,8 +2,8 @@
   "kind": "marinara.extension",
   "version": 1,
   "config": {
-    "name": "Narrative Director",
-    "description": "Build compact public story resources, a private Director guide, and simplified per-chat narrative state.",
+    "name": "Narrative Curator v4",
+    "description": "Import structured story projects, create public resources, and guide narration with one private Curator.",
     "enabled": false,
     "cssPath": "extension.css",
     "jsPath": "extension.js"
