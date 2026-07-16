@@ -3,6 +3,7 @@ import type { PresentCharacter } from "@marinara-engine/shared";
 import { cn } from "../../../../lib/utils";
 import { visibleText } from "../../lib/tracker-display";
 import { InlineEdit } from "../controls/InlineControls";
+import { AvatarRemoveButton } from "./AvatarRemoveButton";
 
 const AVATAR_BOTTOM_GLINT_CLASS =
   "pointer-events-none absolute -inset-[2px] z-[3] rounded-full bg-[conic-gradient(from_0deg_at_50%_50%,transparent_0deg,transparent_104deg,color-mix(in_srgb,var(--tracker-profile-dialogue-border)_58%,transparent)_148deg,color-mix(in_srgb,var(--tracker-profile-accent-solid)_46%,transparent)_192deg,transparent_226deg,transparent_360deg)] opacity-90 shadow-[0_1px_4px_color-mix(in_srgb,var(--tracker-profile-accent-solid)_28%,transparent)] [mask:radial-gradient(farthest-side,transparent_calc(100%-3px),black_calc(100%-2px),black_100%)] [transform:rotate(-8deg)]";
@@ -14,6 +15,8 @@ export function CharacterTrackerAvatar({
   avatarMedia,
   avatarSize,
   onUploadAvatar,
+  onRemoveAvatar,
+  avatarRemovalPending = false,
   onSaveEmoji,
   emojiLocked = false,
   lockMode = false,
@@ -23,6 +26,8 @@ export function CharacterTrackerAvatar({
   avatarMedia: string | null;
   avatarSize: string;
   onUploadAvatar?: () => void;
+  onRemoveAvatar?: () => void;
+  avatarRemovalPending?: boolean;
   onSaveEmoji?: (emoji: string) => void;
   emojiLocked?: boolean;
   lockMode?: boolean;
@@ -30,17 +35,13 @@ export function CharacterTrackerAvatar({
 }) {
   const characterName = visibleText(character.name, "character");
   return (
-    <div className={cn("relative shrink-0", avatarSize)}>
+    <div className={cn("group/avatar-shell relative shrink-0", avatarSize)}>
       <button
         type="button"
         onClick={onUploadAvatar}
         disabled={!onUploadAvatar}
         title={avatarMedia ? "Change avatar" : "Upload avatar"}
-        aria-label={
-          avatarMedia
-            ? `Change ${characterName} avatar`
-            : `Upload ${characterName} avatar`
-        }
+        aria-label={avatarMedia ? `Change ${characterName} avatar` : `Upload ${characterName} avatar`}
         className={cn(
           "group/avatar relative z-[1] flex aspect-square w-full shrink-0 items-center justify-center overflow-hidden rounded-full border border-[color-mix(in_srgb,var(--tracker-profile-nameplate-rule)_34%,transparent)] bg-[var(--muted)] text-xs text-[var(--foreground)] shadow-[0_4px_10px_rgba(0,0,0,0.24)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)]",
           onUploadAvatar && "cursor-pointer hover:ring-[var(--foreground)]/24 active:scale-95",
@@ -59,6 +60,14 @@ export function CharacterTrackerAvatar({
         )}
         <span aria-hidden="true" className={AVATAR_SOFT_INNER_GLOW_CLASS} />
       </button>
+      {onRemoveAvatar && (
+        <AvatarRemoveButton
+          characterName={characterName}
+          pending={avatarRemovalPending}
+          onRemove={onRemoveAvatar}
+          className="-right-2 -top-2"
+        />
+      )}
       {onSaveEmoji && (
         <span className="absolute -bottom-0.5 -right-0.5 z-[4]">
           <InlineEdit

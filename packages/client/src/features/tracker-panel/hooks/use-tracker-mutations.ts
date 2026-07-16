@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState, type ChangeEvent } from "react";
+import { toast } from "sonner";
 import type {
   CharacterStat,
   CustomTrackerField,
@@ -18,6 +19,7 @@ import {
   renameTrackerFieldLockPrefix,
 } from "@marinara-engine/shared";
 import { api } from "../../../lib/api-client";
+import { showConfirmDialog } from "../../../lib/app-dialogs";
 import { useGameStateStore } from "../../../stores/game-state.store";
 import type { GameStatePatchField } from "../../../hooks/use-game-state-patcher";
 import { getCharacterFeatureKey, resolveCharacterTargetIndex } from "../lib/character-tracker-data";
@@ -63,11 +65,7 @@ function findUniqueNamedIndex<T extends { name?: string }>(items: T[], item: T |
   return matches.length === 1 ? matches[0]!.index : -1;
 }
 
-function resolveIndexedMutationTarget<T extends { name?: string }>(
-  liveItems: T[],
-  renderedItems: T[],
-  index: number,
-) {
+function resolveIndexedMutationTarget<T extends { name?: string }>(liveItems: T[], renderedItems: T[], index: number) {
   const renderedItem = renderedItems[index];
   const namedIndex = findUniqueNamedIndex(liveItems, renderedItem);
   const targetIndex = namedIndex >= 0 ? namedIndex : index;
@@ -83,7 +81,9 @@ function reconcileListUpdate<T extends { name?: string }>(liveItems: T[], render
   }
 
   if (updatedItems.length === renderedItems.length - 1) {
-    const removedIndex = renderedItems.findIndex((renderedItem, index) => !shallowRecordEqual(renderedItem, updatedItems[index]));
+    const removedIndex = renderedItems.findIndex(
+      (renderedItem, index) => !shallowRecordEqual(renderedItem, updatedItems[index]),
+    );
     const fallbackIndex = removedIndex >= 0 ? removedIndex : renderedItems.length - 1;
     const { targetIndex } = resolveIndexedMutationTarget(liveItems, renderedItems, fallbackIndex);
     if (targetIndex < 0) return liveItems;
@@ -91,7 +91,9 @@ function reconcileListUpdate<T extends { name?: string }>(liveItems: T[], render
   }
 
   if (updatedItems.length === renderedItems.length) {
-    const changedIndex = updatedItems.findIndex((updatedItem, index) => !shallowRecordEqual(updatedItem, renderedItems[index]));
+    const changedIndex = updatedItems.findIndex(
+      (updatedItem, index) => !shallowRecordEqual(updatedItem, renderedItems[index]),
+    );
     if (changedIndex < 0) return liveItems;
     const { renderedItem, targetIndex } = resolveIndexedMutationTarget(liveItems, renderedItems, changedIndex);
     if (targetIndex < 0) return updatedItems;
@@ -116,6 +118,7 @@ export function useTrackerMutations({
   quests,
   patchField,
   patchPlayerStats,
+  flushPatch,
   removeFeaturedCharacterCard,
 }: {
   activeChatId: string | null;
@@ -126,12 +129,14 @@ export function useTrackerMutations({
   quests: QuestProgress[];
   patchField: (field: GameStatePatchField, value: unknown) => void;
   patchPlayerStats: (field: keyof PlayerStats, value: unknown) => void;
+  flushPatch: () => Promise<void>;
   removeFeaturedCharacterCard: (key: string) => void;
 }) {
   const [avatarUpload, setAvatarUpload] = useState<{ characterId: string; index: number } | null>(null);
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
   const avatarUploadSerialRef = useRef(0);
   const avatarUploadTokenByCharacterRef = useRef(new Map<string, number>());
+  const [avatarRemovalKey, setAvatarRemovalKey] = useState<string | null>(null);
   const updateFieldLocks = useTrackerFieldLockUpdater({ chatId: activeChatId, patchField });
   const updateHiddenTrackerFields = useCallback(
     (updater: (hiddenFields: TrackerHiddenFields | null | undefined) => TrackerHiddenFields) => {
@@ -160,10 +165,7 @@ export function useTrackerMutations({
     () => readCurrentGameState()?.personaStats ?? personaStats,
     [personaStats, readCurrentGameState],
   );
-  const readCustomFields = useCallback(
-    () => readPlayerStats()?.customTrackerFields ?? [],
-    [readPlayerStats],
-  );
+  const readCustomFields = useCallback(() => readPlayerStats()?.customTrackerFields ?? [], [readPlayerStats]);
 
   const openAvatarUpload = useCallback(
     (index: number) => {
@@ -239,6 +241,54 @@ export function useTrackerMutations({
       event.target.value = "";
     },
     [avatarUpload, handleAvatarUpload],
+  );
+
+  const removeAvatar = useCallback(
+    async (index: number) => {
+      if (!activeChatId) return;
+      const renderedCharacter = presentCharacters[index];
+      const initialCharacters = readPresentCharacters();
+      const initialIndex = resolveCharacterTargetIndex(initialCharacters, renderedCharacter?.characterId, index);
+      const character = initialIndex >= 0 ? initialCharacters[initialIndex] : undefined;
+      if (!character?.avatarPath?.startsWith("/api/avatars/npc/")) return;
+
+      const removalKey = `${character.characterId || "character"}:${index}`;
+      if (avatarRemovalKey) return;
+      const confirmed = await showConfirmDialog({
+        title: "Remove character avatar?",
+        message: `Remove ${character.name.trim() || "this character"}'s tracker avatar? Manually uploaded images are deleted permanently. A new avatar can be generated after the next message when automatic avatar generation is enabled.`,
+        confirmLabel: "Remove avatar",
+        cancelLabel: "Cancel",
+        tone: "destructive",
+      });
+      if (!confirmed) return;
+
+      setAvatarRemovalKey(removalKey);
+      try {
+        const storedFilename = character.avatarPath.split("?", 1)[0]?.split("/").pop();
+        const storedAvatarName = storedFilename?.replace(/\.[^.]+$/, "") || character.name;
+        await api.delete(
+          `/avatars/npc/${encodeURIComponent(activeChatId)}?name=${encodeURIComponent(storedAvatarName)}`,
+        );
+
+        const latestCharacters = readPresentCharacters();
+        const targetIndex = resolveCharacterTargetIndex(latestCharacters, character.characterId, initialIndex);
+        if (targetIndex < 0) {
+          toast.error("The character changed before the avatar could be removed.");
+          return;
+        }
+        const nextCharacters = [...latestCharacters];
+        nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath: null };
+        patchField("presentCharacters", nextCharacters);
+        await flushPatch();
+        toast.success(`${character.name.trim() || "Character"}'s avatar was removed.`);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to remove the character avatar.");
+      } finally {
+        setAvatarRemovalKey(null);
+      }
+    },
+    [activeChatId, avatarRemovalKey, flushPatch, patchField, presentCharacters, readPresentCharacters],
   );
 
   const updateCharacter = useCallback(
@@ -419,7 +469,8 @@ export function useTrackerMutations({
   const savePersonaStatus = useCallback((status: string) => patchPlayerStats("status", status), [patchPlayerStats]);
 
   const updatePersonaStats = useCallback(
-    (stats: CharacterStat[]) => patchField("personaStats", reconcileListUpdate(readPersonaStats(), personaStats, stats)),
+    (stats: CharacterStat[]) =>
+      patchField("personaStats", reconcileListUpdate(readPersonaStats(), personaStats, stats)),
     [patchField, personaStats, readPersonaStats],
   );
 
@@ -444,6 +495,8 @@ export function useTrackerMutations({
     avatarFileInputRef,
     handleAvatarFileInputChange,
     openAvatarUpload,
+    avatarRemovalKey,
+    removeAvatar,
     removeCharacter,
     removeInventoryItem,
     removeQuest,

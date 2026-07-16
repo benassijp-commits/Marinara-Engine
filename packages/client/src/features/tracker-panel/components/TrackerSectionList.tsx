@@ -111,6 +111,8 @@ export function TrackerSectionList({
     avatarFileInputRef,
     handleAvatarFileInputChange,
     openAvatarUpload,
+    avatarRemovalKey,
+    removeAvatar,
     removeCharacter,
     removeInventoryItem,
     removeQuest,
@@ -129,6 +131,7 @@ export function TrackerSectionList({
     quests,
     patchField,
     patchPlayerStats,
+    flushPatch,
     removeFeaturedCharacterCard,
   });
   const isPanelCollapsed = (section: TrackerPanelSection) => trackerPanelCollapsedSections[section] === true;
@@ -242,6 +245,8 @@ export function TrackerSectionList({
             onRemoveCharacter={removeCharacter}
             onAddCharacter={addCharacter}
             onUploadAvatar={openAvatarUpload}
+            onRemoveAvatar={(index) => void removeAvatar(index)}
+            avatarRemovalKey={avatarRemovalKey}
             onToggleFeatured={toggleFeaturedCharacterCard}
             deleteMode={deleteMode}
             addMode={addMode}

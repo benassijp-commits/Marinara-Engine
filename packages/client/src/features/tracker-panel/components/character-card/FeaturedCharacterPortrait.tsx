@@ -14,6 +14,7 @@ import { clampNumber, visibleText } from "../../lib/tracker-display";
 import { getOppositeTrackerProfileSide, type TrackerProfileSide } from "../../lib/tracker-profile-layout";
 import { getCharacterExpressionHint, isSpriteLookupCharacterId, resolveSpriteUrl } from "../../lib/sprite-expressions";
 import { TrackerPortraitStage, type TrackerPortraitStageMediaKind } from "../controls/TrackerPortraitStage";
+import { AvatarRemoveButton } from "./AvatarRemoveButton";
 
 export function FeaturedCharacterPortrait({
   character,
@@ -23,6 +24,8 @@ export function FeaturedCharacterPortrait({
   characterPicture,
   detailsSide,
   onUploadAvatar,
+  onRemoveAvatar,
+  avatarRemovalPending = false,
   onPortraitFocusChange,
 }: {
   character: PresentCharacter;
@@ -32,6 +35,8 @@ export function FeaturedCharacterPortrait({
   characterPicture?: string | null;
   detailsSide: TrackerProfileSide;
   onUploadAvatar?: () => void;
+  onRemoveAvatar?: () => void;
+  avatarRemovalPending?: boolean;
   onPortraitFocusChange?: (focusX: number, focusY: number, zoom: number) => void;
 }) {
   const resolvedSpriteCharacterId =
@@ -72,7 +77,7 @@ export function FeaturedCharacterPortrait({
   const characterName = visibleText(character.name, "character");
 
   return (
-    <div className="relative min-w-0">
+    <div className="group/avatar-shell relative min-w-0">
       <TrackerPortraitStage
         accessibleLabel={media ? `${characterName} portrait` : `${characterName} portrait placeholder`}
         media={media}
@@ -102,6 +107,14 @@ export function FeaturedCharacterPortrait({
             : undefined
         }
       />
+      {onRemoveAvatar && !spriteUrl && !characterPicture && (
+        <AvatarRemoveButton
+          characterName={characterName}
+          pending={avatarRemovalPending}
+          onRemove={onRemoveAvatar}
+          className="right-0 top-0"
+        />
+      )}
     </div>
   );
 }

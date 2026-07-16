@@ -2,7 +2,7 @@
 // Routes: Avatar file serving
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { join, extname } from "path";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, isAllowedImageBuffer } from "../utils/security.js";
@@ -27,6 +27,13 @@ const MIME_MAP: Record<string, string> = {
 
 function isValidFilename(name: string): boolean {
   return !name.includes("..") && !name.includes("/") && !name.includes("\\");
+}
+
+function slugifyCharacterName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
 }
 
 export async function avatarsRoutes(app: FastifyInstance) {
@@ -75,6 +82,35 @@ export async function avatarsRoutes(app: FastifyInstance) {
       .send(stream);
   });
 
+  /** Delete every stored image variant for an NPC avatar in a chat. */
+  app.delete("/npc/:chatId", async (req, reply) => {
+    const { chatId } = req.params as { chatId: string };
+    const { name } = req.query as { name?: unknown };
+
+    if (!isValidFilename(chatId)) {
+      return reply.status(400).send({ error: "Invalid chatId" });
+    }
+    if (typeof name !== "string" || !name.trim()) {
+      return reply.status(400).send({ error: "Missing character name" });
+    }
+
+    const safeName = slugifyCharacterName(name);
+    if (!safeName) {
+      return reply.status(400).send({ error: "Invalid character name" });
+    }
+
+    const npcDir = assertInsideDir(NPC_AVATAR_DIR, join(NPC_AVATAR_DIR, chatId));
+    let deleted = 0;
+    for (const ext of Object.keys(MIME_MAP)) {
+      const filePath = assertInsideDir(npcDir, join(npcDir, `${safeName}${ext}`));
+      if (!existsSync(filePath)) continue;
+      rmSync(filePath, { force: true });
+      deleted += 1;
+    }
+
+    return reply.send({ deleted });
+  });
+
   /** Upload an NPC avatar (base64 data URL). */
   app.post("/npc/:chatId", async (req, reply) => {
     const { chatId } = req.params as { chatId: string };
@@ -93,10 +129,7 @@ export async function avatarsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Invalid avatar format — expected base64 data URL" });
     }
 
-    const safeName = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
+    const safeName = slugifyCharacterName(name);
     if (!safeName) {
       return reply.status(400).send({ error: "Invalid character name" });
     }

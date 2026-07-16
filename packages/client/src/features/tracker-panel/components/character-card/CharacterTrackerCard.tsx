@@ -173,6 +173,8 @@ export function CharacterTrackerCard({
   featured = false,
   onToggleFeatured,
   onUploadAvatar,
+  onRemoveAvatar,
+  avatarRemovalPending = false,
 }: {
   character: PresentCharacter;
   spriteCharacterId?: string | null;
@@ -194,6 +196,8 @@ export function CharacterTrackerCard({
   featured?: boolean;
   onToggleFeatured?: () => void;
   onUploadAvatar?: () => void;
+  onRemoveAvatar?: () => void;
+  avatarRemovalPending?: boolean;
 }) {
   const { fieldLocks, hiddenTrackerFields, lockMode, onToggleFieldLock, onUpdateFieldLocks, onUpdateHiddenFields } =
     useTrackerLockContext();
@@ -219,6 +223,8 @@ export function CharacterTrackerCard({
         hideMode={hideMode}
         onToggleFeatured={onToggleFeatured}
         onUploadAvatar={onUploadAvatar}
+        onRemoveAvatar={onRemoveAvatar}
+        avatarRemovalPending={avatarRemovalPending}
       />
     );
   }
@@ -230,6 +236,8 @@ export function CharacterTrackerCard({
   const hasDeleteAction = !!onRemove && deleteMode;
   const avatarMedia = characterPicture ?? character.avatarPath ?? null;
   const compactAvatarUpload = characterPicture ? undefined : onUploadAvatar;
+  const compactAvatarRemove =
+    !characterPicture && character.avatarPath?.startsWith("/api/avatars/npc/") ? onRemoveAvatar : undefined;
   const hasEditableCustomFieldAdd = !!onUpdate && addMode;
   const characterFieldKey = (field: HideableCharacterField) =>
     characterTrackerLockKey(character, characterIndex, field);
@@ -393,6 +401,8 @@ export function CharacterTrackerCard({
           avatarMedia={avatarMedia}
           avatarSize={avatarSize}
           onUploadAvatar={compactAvatarUpload}
+          onRemoveAvatar={compactAvatarRemove}
+          avatarRemovalPending={avatarRemovalPending}
           onSaveEmoji={onUpdate ? (emoji) => onUpdate({ ...character, emoji }) : undefined}
           emojiLocked={isTrackerFieldLocked(fieldLocks, emojiLockKey)}
           lockMode={lockMode}

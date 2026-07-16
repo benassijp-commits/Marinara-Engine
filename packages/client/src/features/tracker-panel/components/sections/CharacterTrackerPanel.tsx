@@ -36,6 +36,8 @@ export function CharacterTrackerPanel({
   onAddCharacter,
   onToggleFeatured,
   onUploadAvatar,
+  onRemoveAvatar,
+  avatarRemovalKey,
   deleteMode,
   addMode,
   hideMode,
@@ -60,6 +62,8 @@ export function CharacterTrackerPanel({
   onAddCharacter: () => void;
   onToggleFeatured: (key: string) => void;
   onUploadAvatar: (index: number) => void;
+  onRemoveAvatar: (index: number) => void;
+  avatarRemovalKey: string | null;
   deleteMode: boolean;
   addMode: boolean;
   hideMode: boolean;
@@ -126,6 +130,8 @@ export function CharacterTrackerPanel({
         featured={featured}
         onToggleFeatured={() => onToggleFeatured(cardKey)}
         onUploadAvatar={() => onUploadAvatar(index)}
+        onRemoveAvatar={() => onRemoveAvatar(index)}
+        avatarRemovalPending={avatarRemovalKey === `${character.characterId || "character"}:${index}`}
       />
     );
     const useCompactCardColumns = trackerPanelSizeProfile !== "compact";

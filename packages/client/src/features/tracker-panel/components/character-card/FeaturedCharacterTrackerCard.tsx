@@ -100,6 +100,8 @@ export function FeaturedCharacterTrackerCard({
   hideMode,
   onToggleFeatured,
   onUploadAvatar,
+  onRemoveAvatar,
+  avatarRemovalPending = false,
 }: {
   character: PresentCharacter;
   spriteCharacterId?: string | null;
@@ -120,6 +122,8 @@ export function FeaturedCharacterTrackerCard({
   hideMode: boolean;
   onToggleFeatured?: () => void;
   onUploadAvatar?: () => void;
+  onRemoveAvatar?: () => void;
+  avatarRemovalPending?: boolean;
 }) {
   const { fieldLocks, hiddenTrackerFields, lockMode, onToggleFieldLock, onUpdateFieldLocks, onUpdateHiddenFields } =
     useTrackerLockContext();
@@ -335,6 +339,8 @@ export function FeaturedCharacterTrackerCard({
               characterPicture={characterPicture}
               detailsSide={featuredDetailsSide}
               onUploadAvatar={onUploadAvatar}
+              onRemoveAvatar={character.avatarPath?.startsWith("/api/avatars/npc/") ? onRemoveAvatar : undefined}
+              avatarRemovalPending={avatarRemovalPending}
               onPortraitFocusChange={
                 onUpdate
                   ? (portraitFocusX, portraitFocusY, portraitZoom) =>
