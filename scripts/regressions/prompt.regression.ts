@@ -260,6 +260,7 @@ import {
   listPromptOverrideKeys,
 } from "../../packages/server/src/services/prompt-overrides/index.js";
 import { buildElevenLabsTextInput } from "../../packages/server/src/routes/tts.routes.js";
+import { parseCharacterTrackerAvatarTags } from "../../packages/server/src/services/image/character-tracker-avatar-prompt.js";
 import {
   buildCommittedTrackerContextBlock,
   MAX_WORLD_CUSTOM_FIELDS_IN_COMMITTED_CONTEXT,
@@ -2557,6 +2558,64 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
 
       assert.match(taggedAppearance.prompt, /\(sword and shield\)/);
       assert.match(taggedAppearance.prompt, /\bcloak\b/);
+    },
+  },
+  {
+    name: "character tracker portrait identity bypasses destructive profile distillation",
+    run() {
+      const styleProfiles = createDefaultImageStyleProfileSettings();
+      const identity = [
+        "1boy",
+        "mature male",
+        "incredibly muscular",
+        "broad shoulders",
+        "dense pectorals",
+        "thick neck",
+        "beard",
+        "red eyes",
+        "dark circles",
+        "overgrown stubble",
+        "black t-shirt",
+        "torn clothes",
+        "cargo pants",
+        "barefoot",
+        "large penis",
+        "large testicles",
+      ].join(", ");
+
+      for (const styleProfileId of ["off", "danbooru"] as const) {
+        const compiled = compileImagePrompt({
+          kind: "portrait",
+          prompt: "single character, solo, full body, standing, detailed face, high quality",
+          protectedPositive: identity,
+          styleProfiles,
+          styleProfileId,
+        });
+        assert.match(compiled.prompt, /\bbroad shoulders\b/);
+        assert.match(compiled.prompt, /\bdense pectorals\b/);
+        assert.match(compiled.prompt, /\bovergrown stubble\b/);
+        assert.match(compiled.prompt, /\bblack t-shirt\b/);
+        assert.match(compiled.prompt, /\bcargo pants\b/);
+        assert.match(compiled.prompt, /\bbarefoot\b/);
+        assert.match(compiled.prompt, /\blarge penis\b/);
+        assert.match(compiled.prompt, /\blarge testicles\b/);
+      }
+    },
+  },
+  {
+    name: "character tracker tag conversion rejects invalid output and numeric measurements",
+    run() {
+      assert.equal(parseCharacterTrackerAvatarTags("not json"), null);
+      assert.equal(parseCharacterTrackerAvatarTags('{"positiveTags":[],"negativeTags":[]}'), null);
+      assert.deepEqual(
+        parseCharacterTrackerAvatarTags(
+          '```json\n{"positiveTags":["1boy","incredibly muscular","208 cm","large penis","28cm penis","cargo pants"],"negativeTags":["148 kg","bad anatomy"]}\n```',
+        ),
+        {
+          positiveTags: ["1boy", "incredibly muscular", "large penis", "cargo pants"],
+          negativeTags: ["bad anatomy"],
+        },
+      );
     },
   },
   {

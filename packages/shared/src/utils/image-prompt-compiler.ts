@@ -24,6 +24,8 @@ export interface CompileImagePromptInput {
   userPositive?: string | null;
   userNegative?: string | null;
   hardNegative?: string | null;
+  /** High-priority visual identity data that must bypass source-prompt prose distillation. */
+  protectedPositive?: string | null;
   /** Apply the selected grammar to generated prose that is normally preserved for review/readability. */
   applyPromptModeToSourcePrompt?: boolean;
 }
@@ -66,6 +68,7 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
   const positiveParts = compactPrompt
     ? [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
+        { value: input.protectedPositive, sourcePrompt: false, hardPrefix: true },
         { value: sourceCues.join(", "), sourcePrompt: false },
         { value: generatedStyle, sourcePrompt: true },
         { value: input.prompt, sourcePrompt: true },
@@ -75,6 +78,7 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
       ]
     : [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
+        { value: input.protectedPositive, sourcePrompt: false, hardPrefix: true },
         { value: profile.positiveTags, sourcePrompt: false },
         { value: profileSubjectTags, sourcePrompt: false },
         { value: profileStyleText, sourcePrompt: false },

@@ -40,6 +40,7 @@ import {
   normalizeTextForMatch,
   normalizeGameStoryboardKeyframeCount,
   resolveGameSetupArtStylePrompt,
+  findImageStyleProfile,
   type APIProvider,
   type MacroContext,
 } from "@marinara-engine/shared";
@@ -78,6 +79,7 @@ import { createRegexScriptsStorage } from "../services/storage/regex-scripts.sto
 import { createCustomEmojisStorage } from "../services/storage/custom-emojis.storage.js";
 import { createCustomStickersStorage } from "../services/storage/custom-stickers.storage.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
+import { convertCharacterTrackerAvatarToTags } from "../services/image/character-tracker-avatar-prompt.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { buildLorebookSemanticEmbeddingsById, warmLorebookEntryEmbeddings } from "../services/lorebook/embeddings.js";
@@ -7174,7 +7176,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 const charTrackerAgent = resolvedAgents.find((a) => a.type === "character-tracker");
                 const autoGenAvatars = !!charTrackerAgent?.settings?.autoGenerateAvatars;
                 const npcImgConnId = (charTrackerAgent?.settings?.imageConnectionId as string) ?? null;
-                if (autoGenAvatars && npcImgConnId) {
+                if (charTrackerAgent && autoGenAvatars && npcImgConnId) {
                   const charsNeedingAvatars = chars.filter(
                     (c: any) =>
                       !c.avatarPath &&
@@ -7203,6 +7205,7 @@ export async function generateRoutes(app: FastifyInstance) {
                             | undefined) ??
                           (chatMeta.imageStyleProfileId as string | undefined) ??
                           null;
+                        const styleProfile = findImageStyleProfile(imageSettings.styleProfiles, styleProfileId);
                         const generatedAvatarPaths = new Map<string, string>();
                         const avatarMatchKey = (character: Record<string, unknown>) =>
                           String(character.characterId ?? character.name ?? "")
@@ -7214,18 +7217,52 @@ export async function generateRoutes(app: FastifyInstance) {
                             const npcName = npc.name as string;
                             const appearance = (npc.appearance as string) || "";
                             const outfit = (npc.outfit as string) || "";
-                            const prompt =
-                              `Portrait of ${npcName}, ${appearance}${outfit ? `, wearing ${outfit}` : ""}. Character portrait, head and shoulders, detailed face, high quality`.slice(
-                                0,
-                                1000,
-                              );
+                            const tagPromptMode =
+                              styleProfile.promptMode === "danbooru" || styleProfile.promptMode === "tagged"
+                                ? styleProfile.promptMode
+                                : null;
+                            const converted = tagPromptMode
+                              ? await convertCharacterTrackerAvatarToTags({
+                                  provider: charTrackerAgent.provider,
+                                  model: charTrackerAgent.model,
+                                  promptMode: tagPromptMode,
+                                  characterName: npcName,
+                                  appearance,
+                                  outfit,
+                                  sceneContext: combinedResponse,
+                                  debugMode: input.debugMode,
+                                })
+                              : null;
+                            if (tagPromptMode && !converted) {
+                              throw new Error("Character appearance tag conversion returned no valid tags");
+                            }
+                            const protectedPositive = converted
+                              ? converted.positiveTags.join(", ")
+                              : [appearance, outfit].filter(Boolean).join(", ");
+                            const prompt = "single character, solo, full body, standing, detailed face, high quality";
+                            logger.debug(
+                              "[character-tracker] Avatar identity for %s (profile=%s): source appearance=%s; source outfit=%s; protected=%s",
+                              npcName,
+                              styleProfile.id,
+                              appearance,
+                              outfit,
+                              protectedPositive,
+                            );
                             const compiledPrompt = compileImagePrompt({
                               kind: "portrait",
                               prompt,
+                              negativePrompt: converted?.negativeTags.join(", ") || undefined,
+                              protectedPositive,
                               styleProfiles: imageSettings.styleProfiles,
                               styleProfileId,
                               imageDefaults,
                             });
+                            logger.debug(
+                              "[character-tracker] Final avatar prompt for %s: positive=%s; negative=%s",
+                              npcName,
+                              compiledPrompt.prompt,
+                              compiledPrompt.negativePrompt,
+                            );
 
                             const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
                               prompt: compiledPrompt.prompt,

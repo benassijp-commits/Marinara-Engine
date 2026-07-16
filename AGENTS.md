@@ -75,6 +75,21 @@ Android-specific rule:
 - Client code (`packages/client/`) should keep using `console.*` — the browser has no Pino, and production builds strip `console.log` automatically.
 - See `CONTRIBUTING.md § Logging` for full guidelines and `docs/CONFIGURATION.md § Logging Levels` for the user-facing reference.
 
+## Local Character Tracker / NoobAI Patch
+
+This checkout carries a local model-aware Character Tracker avatar prompt fix. Before every Engine update:
+
+1. Check `upstream/main` and `upstream/staging` for an equivalent fix covering flattened Appearance/Outfit data, portrait compaction under the Off profile, structured identity preservation, and Image Style Profile-aware conversion.
+2. Create a dated backup branch before merging or rebasing. The original rollback branch is `backup/pre-update-v2.1.1-20260716`.
+3. Keep the fix as one isolated commit. If upstream has an equivalent fix, compare behavior and regression coverage before dropping the local commit; never leave both converters active.
+4. If upstream has not fixed it, preserve or adapt the patch without restoring the old portrait prose distiller.
+5. Do not edit downloaded Character Tracker package artifacts under `DATA_DIR/capability-packages`; package updates replace them.
+6. NoobAI is expected to use the **Danbooru / Illustrious** profile. Remove an existing generated NPC avatar before manually testing regeneration.
+7. Check the local `MARINARA_AGENT_CATALOG_URL` override. Keep it only while the live catalog fails Engine schema validation; remove it once the unpinned `/api/capability-packages/catalog` returns HTTP 200 with a valid catalog.
+8. After updating, reinstall dependencies, rebuild, restart, run prompt regressions and Narrative Curator tests, check `/api/health`, and manually confirm that two visually distinct tracker characters produce distinct final ComfyUI prompts.
+
+The sanitized regression fixture should retain uncommon traits such as `aqua hair`, `vitiligo`, `chartreuse miniskirt`, `cropped cardigan`, and `platform loafers`, so a return of destructive tag loss is obvious.
+
 ## Frontend Changes
 
 - **Read `packages/client/.instructions.md` before editing any client code.** It is the authoritative reference for architecture, patterns, conventions, and common-mistake avoidance.
