@@ -2,23 +2,24 @@ import { ExternalLink } from "lucide-react";
 import { Modal } from "../ui/Modal";
 
 const CONTRIBUTORS = [
-  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 1080 },
+  { login: "SpicyMarinara", url: "https://github.com/SpicyMarinara", contributions: 1463 },
   { login: "cha1latte", url: "https://github.com/cha1latte", contributions: 319 },
-  { login: "Romuromylus", url: "https://github.com/Romuromylus", contributions: 175 },
-  { login: "kolacheee", url: "https://github.com/kolacheee", contributions: 143 },
+  { login: "kolacheee", url: "https://github.com/kolacheee", contributions: 213 },
+  { login: "Romuromylus", url: "https://github.com/Romuromylus", contributions: 202 },
+  { login: "thetopham", url: "https://github.com/thetopham", contributions: 116 },
   { login: "LukaTheHero", url: "https://github.com/LukaTheHero", contributions: 86 },
-  { login: "Xelvanis", url: "https://github.com/Xelvanis", contributions: 70 },
+  { login: "Gunterlie", url: "https://github.com/Gunterlie", contributions: 81 },
+  { login: "Xelvanis", url: "https://github.com/Xelvanis", contributions: 74 },
   { login: "TheLonelyDevil9", url: "https://github.com/TheLonelyDevil9", contributions: 69 },
   { login: "Promansis", url: "https://github.com/Promansis", contributions: 64 },
   { login: "coxde", url: "https://github.com/coxde", contributions: 60 },
-  { login: "thetopham", url: "https://github.com/thetopham", contributions: 49 },
-  { login: "Gunterlie", url: "https://github.com/Gunterlie", contributions: 48 },
-  { login: "munimunigamer", url: "https://github.com/munimunigamer", contributions: 30 },
+  { login: "munimunigamer", url: "https://github.com/munimunigamer", contributions: 31 },
   { login: "Minsklatte", url: "https://github.com/Minsklatte", contributions: 16 },
   { login: "aeriondyseti", url: "https://github.com/aeriondyseti", contributions: 15 },
   { login: "JorgeLTE", url: "https://github.com/JorgeLTE", contributions: 11 },
   { login: "Sulphuratum", url: "https://github.com/Sulphuratum", contributions: 10 },
   { login: "loungemeister", url: "https://github.com/loungemeister", contributions: 9 },
+  { login: "kaldigo", url: "https://github.com/kaldigo", contributions: 8 },
   { login: "NeoKazuya", url: "https://github.com/NeoKazuya", contributions: 7 },
   { login: "felorhik", url: "https://github.com/felorhik", contributions: 6 },
   { login: "bignast", url: "https://github.com/bignast", contributions: 6 },
@@ -26,6 +27,7 @@ const CONTRIBUTORS = [
   { login: "mm14141", url: "https://github.com/mm14141", contributions: 5 },
   { login: "amauragis", url: "https://github.com/amauragis", contributions: 5 },
   { login: "marysia", url: "https://github.com/marysia", contributions: 4 },
+  { login: "myaiexp", url: "https://github.com/myaiexp", contributions: 3 },
   { login: "LightD31", url: "https://github.com/LightD31", contributions: 3 },
   { login: "Lochalan", url: "https://github.com/Lochalan", contributions: 2 },
   { login: "ailthrim", url: "https://github.com/ailthrim", contributions: 2 },
@@ -34,6 +36,7 @@ const CONTRIBUTORS = [
   { login: "RaynoldVanHeyningen", url: "https://github.com/RaynoldVanHeyningen", contributions: 2 },
   { login: "OnlyJimmy", url: "https://github.com/OnlyJimmy", contributions: 2 },
   { login: "MagicGoddess", url: "https://github.com/MagicGoddess", contributions: 2 },
+  { login: "JurijPietrowicz", url: "https://github.com/JurijPietrowicz", contributions: 2 },
   { login: "Javedz678", url: "https://github.com/Javedz678", contributions: 2 },
   { login: "Morgul", url: "https://github.com/Morgul", contributions: 2 },
   { login: "BahamutRU", url: "https://github.com/BahamutRU", contributions: 2 },
@@ -132,6 +135,33 @@ export function HomeCreditsModal({ open, onClose }: { open: boolean; onClose: ()
             Special Thanks
           </h3>
           <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">{SPECIAL_THANKS.join(", ")}.</p>
+        </section>
+
+        <section className="space-y-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+            Third-Party Assets
+          </h3>
+          <p className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+            The tracker panel d20 icon uses the path geometry from{" "}
+            <a
+              href="https://github.com/FortAwesome/Font-Awesome/blob/5.15.4/svgs/solid/dice-d20.svg"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
+            >
+              Font Awesome Free 5.15.4 dice-d20
+            </a>{" "}
+            by Fonticons, Inc., licensed under{" "}
+            <a
+              href="https://creativecommons.org/licenses/by/4.0/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-[var(--primary)] underline-offset-2 hover:underline"
+            >
+              CC BY 4.0
+            </a>
+            {". The path formatting was adapted for React; the geometry is unchanged."}
+          </p>
         </section>
       </div>
     </Modal>

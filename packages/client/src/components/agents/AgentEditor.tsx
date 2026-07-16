@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useUIStore } from "../../stores/ui.store";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { api } from "../../lib/api-client";
 import {
   agentKeys,
   useAgentConfigs,
@@ -898,7 +899,7 @@ export function AgentEditor() {
     };
   }, [isMusicAgent, dbConfig?.id]);
 
-  // Fetch YouTube key-configured status when viewing Music DJ or a legacy YouTube agent.
+  // Fetch YouTube key-configured status when viewing Music DJ (Spotify); the legacy YouTube-agent path is unreachable.
   useEffect(() => {
     if (!showsYoutubeSettings || !dbConfig?.id) {
       setYoutubeConfigured(false);
@@ -928,7 +929,6 @@ export function AgentEditor() {
 
   // Whether the prompt textarea shows the default or a custom override
   const isUsingDefaultPrompt = !localPrompt.trim();
-  const _displayPrompt = isUsingDefaultPrompt ? defaultPrompt : localPrompt;
 
   const allConnections =
     (connections as
@@ -1344,14 +1344,8 @@ export function AgentEditor() {
 
   const handleSelectCustomMusicFolder = useCallback(async () => {
     try {
-      const res = await fetch("/api/game-assets/pick-local-music-folder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const data = (await res.json().catch(() => ({}))) as { success?: boolean; path?: string; error?: string };
-      if (!res.ok || data.success !== true || !data.path) {
-        throw new Error(data.error ?? "No folder selected.");
-      }
+      const data = await api.post<{ success: boolean; path: string }>("/game-assets/pick-local-music-folder");
+      if (data.success !== true || !data.path) throw new Error("No folder selected.");
       setLocalCustomMusicExternalFolder(data.path);
       setLocalCustomMusicSource("folder");
       setDirty(true);
@@ -1537,7 +1531,7 @@ export function AgentEditor() {
           {isCustomAgent && dbConfig && (
             <button
               onClick={handleDelete}
-              className="mari-editor-action mari-editor-action--danger inline-flex"
+              className="mari-editor-action inline-flex"
               title="Delete agent"
               aria-label="Delete agent"
             >
@@ -1864,7 +1858,7 @@ export function AgentEditor() {
             <FieldGroup
               label="Image Generation Connection Override"
               icon={<ImageIcon size="0.875rem" className="text-[var(--primary)]" />}
-              help="The connection used to generate images. This should point to an image generation API (e.g. DALL-E, NovelAI, Stable Diffusion). The Connection Override above is used for the LLM that decides when and what to illustrate. Leave this empty to use the default Illustrator image connection from Settings → Connections."
+              help="The connection used to generate images. This should point to an image generation API (e.g. DALL-E, NovelAI, Stable Diffusion). The Connection Override above is used for the LLM that decides when and what to illustrate. Leave this empty to use the default Images connection from Settings → Connections."
             >
               <select
                 value={localImageConnectionId}
@@ -1888,7 +1882,7 @@ export function AgentEditor() {
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 The Illustrator uses two connections: the LLM above analyzes the scene and writes an image prompt, then
                 this connection generates the actual image from that prompt. Leave this empty to use the default
-                Illustrator image connection from Settings → Connections, if one is configured.
+                Images connection from Settings → Connections, if one is configured.
               </p>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
@@ -2044,7 +2038,7 @@ export function AgentEditor() {
                   </p>
                   {!localImageConnectionId && !defaultAgentImageConn && (
                     <p className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-[0.625rem] text-amber-300">
-                      Add an image generation connection here or mark one as the default for Illustrator in Connections.
+                      Add an image generation connection here or choose one under Defaults → Images in Connections.
                     </p>
                   )}
                 </div>
@@ -3277,7 +3271,7 @@ export function AgentEditor() {
                                     },
                                   });
                                 }}
-                                className="shrink-0 p-1 rounded text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                className="shrink-0 rounded p-1 text-white/20 transition-colors hover:bg-white/10 hover:text-white/70"
                                 title="Delete file"
                               >
                                 <Trash2 size="0.75rem" />
@@ -3481,7 +3475,7 @@ export function AgentEditor() {
                           <button
                             type="button"
                             onClick={() => handleRemovePromptTemplate(option.id)}
-                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+	                            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                             title="Remove prompt option"
                           >
                             <Trash2 size="0.75rem" />
@@ -3570,7 +3564,7 @@ export function AgentEditor() {
                   ))}
                 </div>
                 <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
-                  Tool-use must also be enabled per chat via Chat Settings → "Enable Function Calling".
+                  Tool-use must also be enabled per chat via Chat Settings → Function Calling → "Enable Tool Use".
                 </p>
               </>
             )}

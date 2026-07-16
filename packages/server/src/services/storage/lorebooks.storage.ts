@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Storage: Lorebooks
 // ──────────────────────────────────────────────
-import { eq, desc, and, like, inArray, asc, or } from "drizzle-orm";
+import { eq, desc, and, like, inArray, asc, or } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import {
   characters,
@@ -15,10 +15,12 @@ import {
 import { newId, now } from "../../utils/id-generator.js";
 import {
   LIMITS,
+  normalizeLorebookCategory,
   type CreateLorebookInput,
   type UpdateLorebookInput,
   type CreateLorebookEntryInput,
   type UpdateLorebookEntryInput,
+  type BulkUpdateLorebookEntriesInput,
   type CreateLorebookFolderInput,
   type UpdateLorebookFolderInput,
 } from "@marinara-engine/shared";
@@ -30,10 +32,19 @@ import { toPaginatedList } from "../../utils/list-pagination.js";
 function normalizeLorebookEntryLimit(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) return LIMITS.LOREBOOK_ENTRY_LIMIT_DEFAULT;
-  return Math.max(
-    LIMITS.LOREBOOK_ENTRY_LIMIT_MIN,
-    Math.min(LIMITS.LOREBOOK_ENTRY_LIMIT_MAX, Math.trunc(parsed)),
-  );
+  return Math.max(LIMITS.LOREBOOK_ENTRY_LIMIT_MIN, Math.min(LIMITS.LOREBOOK_ENTRY_LIMIT_MAX, Math.trunc(parsed)));
+}
+
+function normalizeNonNegativeLorebookInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function normalizeLorebookMaxRecursionDepth(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 3;
+  return Math.max(1, Math.min(10, Math.trunc(parsed)));
 }
 
 function normalizeLorebookVectorQueryDepth(value: unknown): number {
@@ -143,9 +154,12 @@ function parseLorebookRow(row: Record<string, unknown>) {
   const personaIds = resolveLinkIds(row.personaIds, row.personaId);
   return {
     ...row,
+    category: normalizeLorebookCategory(row.category),
+    scanDepth: normalizeNonNegativeLorebookInteger(row.scanDepth, 2),
+    tokenBudget: normalizeNonNegativeLorebookInteger(row.tokenBudget, 2048),
     recursiveScanning: row.recursiveScanning === "true",
     entryLimit: normalizeLorebookEntryLimit(row.entryLimit),
-    maxRecursionDepth: typeof row.maxRecursionDepth === "number" ? row.maxRecursionDepth : 3,
+    maxRecursionDepth: normalizeLorebookMaxRecursionDepth(row.maxRecursionDepth),
     excludeFromVectorization: row.excludeFromVectorization === "true",
     vectorQueryDepth: normalizeLorebookVectorQueryDepth(row.vectorQueryDepth),
     vectorScoreThreshold: normalizeLorebookVectorScoreThreshold(row.vectorScoreThreshold),
@@ -166,7 +180,11 @@ function parseLorebookRow(row: Record<string, unknown>) {
 }
 
 function parseStringArray(value: unknown): string[] {
-  const normalize = (items: unknown[]) => items.map(String).map((item) => item.trim()).filter(Boolean);
+  const normalize = (items: unknown[]) =>
+    items
+      .map(String)
+      .map((item) => item.trim())
+      .filter(Boolean);
   if (Array.isArray(value)) return normalize(value);
   if (typeof value !== "string" || !value.trim()) return [];
   try {
@@ -588,6 +606,73 @@ export function createLorebooksStorage(db: DB) {
     },
 
     /**
+     * Resolve explicitly attached entries without requiring normal character/persona/global scope.
+     * Disabled books, entries, folders, chat exclusions, and excluded agent sources still win.
+     */
+    async listEligibleEntriesByIds(
+      entryIds: string[],
+      filters?: { excludedLorebookIds?: string[]; excludedSourceAgentIds?: string[] },
+    ) {
+      const requestedIds = uniqueStrings(entryIds).slice(0, LIMITS.MAX_LOREBOOK_ENTRIES);
+      if (requestedIds.length === 0) return [];
+
+      const entryRows = await db
+        .select()
+        .from(lorebookEntries)
+        .where(and(inArray(lorebookEntries.id, requestedIds), eq(lorebookEntries.enabled, "true")));
+      if (entryRows.length === 0) return [];
+
+      const candidateBookIds = uniqueStrings(entryRows.map((row) => row.lorebookId));
+      const enabledBookRows = await db
+        .select()
+        .from(lorebooks)
+        .where(and(inArray(lorebooks.id, candidateBookIds), eq(lorebooks.enabled, "true")));
+      const enabledBooks = (await hydrateLorebookRows(db, enabledBookRows)) as unknown as Array<{
+        id: string;
+        sourceAgentId?: string | null;
+      }>;
+      const excludedLorebookIds = new Set(filters?.excludedLorebookIds ?? []);
+      const excludedSourceAgentIds = new Set(filters?.excludedSourceAgentIds ?? []);
+      const allowedBookIds = new Set(
+        enabledBooks
+          .filter(
+            (book) =>
+              !excludedLorebookIds.has(book.id) &&
+              !(book.sourceAgentId && excludedSourceAgentIds.has(book.sourceAgentId)),
+          )
+          .map((book) => book.id),
+      );
+      if (allowedBookIds.size === 0) return [];
+
+      const folderRows = await db
+        .select({
+          id: lorebookFolders.id,
+          parentFolderId: lorebookFolders.parentFolderId,
+          enabled: lorebookFolders.enabled,
+        })
+        .from(lorebookFolders)
+        .where(inArray(lorebookFolders.lorebookId, Array.from(allowedBookIds)));
+      const disabledFolderIds = collectEffectivelyDisabledFolderIds(
+        folderRows.map((row) => ({
+          id: row.id,
+          parentFolderId: row.parentFolderId,
+          enabled: row.enabled === "true",
+        })),
+      );
+      const requestedOrder = new Map(requestedIds.map((id, index) => [id, index]));
+      const parsedEntries = entryRows.map((row) => parseEntryRow(row as Record<string, unknown>)) as Array<
+        ReturnType<typeof parseEntryRow> & { id: string; lorebookId: string; folderId: string | null }
+      >;
+      return parsedEntries
+        .filter(
+          (entry) =>
+            allowedBookIds.has(entry.lorebookId) &&
+            (!entry.folderId || !disabledFolderIds.has(entry.folderId as string)),
+        )
+        .sort((left, right) => (requestedOrder.get(left.id) ?? 0) - (requestedOrder.get(right.id) ?? 0));
+    },
+
+    /**
      * Get all enabled entries from lorebooks that are relevant for a given context.
      * A lorebook is relevant if it's enabled AND one of:
      *  - `isGlobal` is true
@@ -822,14 +907,40 @@ export function createLorebooksStorage(db: DB) {
       if (input.locked !== undefined) updates.locked = String(input.locked);
       if (input.preventRecursion !== undefined) updates.preventRecursion = String(input.preventRecursion);
       if (input.excludeRecursion !== undefined) updates.excludeRecursion = String(input.excludeRecursion);
-      if (input.delayUntilRecursion !== undefined)
-        updates.delayUntilRecursion = String(input.delayUntilRecursion);
+      if (input.delayUntilRecursion !== undefined) updates.delayUntilRecursion = String(input.delayUntilRecursion);
       if (input.excludeFromVectorization !== undefined)
         updates.excludeFromVectorization = String(input.excludeFromVectorization);
       if (shouldClearEmbedding) updates.embedding = null;
 
       await db.update(lorebookEntries).set(updates).where(eq(lorebookEntries.id, id));
       return this.getEntry(id);
+    },
+
+    async bulkUpdateEntries(
+      lorebookId: string,
+      entryIds: string[],
+      changes: BulkUpdateLorebookEntriesInput["changes"],
+    ) {
+      const uniqueEntryIds = Array.from(new Set(entryIds));
+      const rows = await db
+        .select({ id: lorebookEntries.id })
+        .from(lorebookEntries)
+        .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, uniqueEntryIds)));
+      if (rows.length !== uniqueEntryIds.length) {
+        throw new Error("One or more selected entries do not belong to this lorebook");
+      }
+
+      const updates: Record<string, unknown> = { updatedAt: now() };
+      for (const [field, value] of Object.entries(changes)) {
+        if (value !== undefined) updates[field] = String(value);
+      }
+      if (changes.excludeFromVectorization === true) updates.embedding = null;
+
+      await db
+        .update(lorebookEntries)
+        .set(updates)
+        .where(and(eq(lorebookEntries.lorebookId, lorebookId), inArray(lorebookEntries.id, uniqueEntryIds)));
+      return { updated: rows.length };
     },
 
     /** Update just the embedding vector for an entry. */

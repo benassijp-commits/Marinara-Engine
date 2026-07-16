@@ -16,10 +16,12 @@
 import { useEffect } from "react";
 import { normalizeImageStyleProfileSettings, normalizeQuoteFormat } from "@marinara-engine/shared";
 import { api } from "../lib/api-client";
+import { normalizeConversationTimeZone } from "../lib/conversation-time-zone";
 import {
   normalizeTrackerPanelSizeProfile,
   normalizeTrackerTemperatureUnit,
   normalizeTrackerThoughtBubbleDisplay,
+  normalizeScenePromptPreferences,
   pickSyncedSettings,
   useUIStore,
 } from "../stores/ui.store";
@@ -197,6 +199,12 @@ export function useSettingsSync() {
               parsed.settings.quoteFormat = normalizeQuoteFormat(parsed.settings.quoteFormat);
               parsed.settings.imageStyleProfiles = normalizeImageStyleProfileSettings(
                 parsed.settings.imageStyleProfiles,
+              );
+              parsed.settings.scenePromptPreferences = normalizeScenePromptPreferences(
+                parsed.settings.scenePromptPreferences,
+              );
+              parsed.settings.conversationTimeZone = normalizeConversationTimeZone(
+                parsed.settings.conversationTimeZone,
               );
 
               const serverUpdatedAt = parsed.updatedAt;

@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Character Editor — Full-page detail view
 // Replaces the chat area when editing a character.
-// Sections: Metadata, Card, Lorebook, Advanced
+// Sections: Metadata, Card, Convo, Lorebook, Sprites, Gallery, Colors, Stats, Advanced
 // ──────────────────────────────────────────────
 import { useState, useEffect, useRef, useCallback, type ChangeEvent, type ReactNode, type SyntheticEvent } from "react";
 import { toast } from "sonner";
@@ -42,9 +42,11 @@ import {
   type CharacterGalleryImage,
   type SpriteInfo,
 } from "../../hooks/use-characters";
+import { ConvoProfileFields } from "./ConvoProfileFields";
 import { useUIStore } from "../../stores/ui.store";
 import { lorebookKeys, useLorebook } from "../../hooks/use-lorebooks";
 import { useConnections } from "../../hooks/use-connections";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { SpriteGenerationModal } from "../ui/SpriteGenerationModal";
 import { AvatarGenerationModal } from "../ui/AvatarGenerationModal";
@@ -87,6 +89,7 @@ import {
   History,
   RotateCcw,
   Scissors,
+  MessageCircle,
 } from "lucide-react";
 import { cn, generateClientId, getAvatarCropStyle, type AvatarCrop, type LegacyAvatarCrop } from "../../lib/utils";
 import { extractColorsFromImage } from "../../lib/avatar-color-extraction";
@@ -106,9 +109,11 @@ import {
   normalizeSpriteExpressionLabel,
   normalizeRpgStatPools,
   syncRpgHpFromPools,
+  type AboutMeSourceConfig,
   type CharacterCardVersion,
   type CharacterData,
   type ConversationCallCharacterVideoClipKind,
+  type ConvoBehaviorConfig,
   type RPGStatPool,
   type RPGStatsConfig,
 } from "@marinara-engine/shared";
@@ -120,6 +125,7 @@ import { LorebookAssignmentSection } from "../lorebooks/LorebookAssignmentSectio
 const TABS = [
   { id: "metadata", label: "Metadata", icon: User },
   { id: "card", label: "Card", icon: IdCard },
+  { id: "convo", label: "Convo", icon: MessageCircle },
   { id: "lorebook", label: "Lorebook", icon: Library },
   { id: "sprites", label: "Sprites", icon: Image },
   { id: "gallery", label: "Gallery", icon: Camera },
@@ -337,6 +343,14 @@ export function CharacterEditor() {
       markDirty();
     },
     [formatQuotes, markDirty],
+  );
+
+  const updateCharacterComment = useCallback(
+    (value: string) => {
+      setCharacterComment(value);
+      markDirty();
+    },
+    [markDirty],
   );
 
   const setExtensionValue = useCallback((key: string, value: unknown) => {
@@ -865,7 +879,7 @@ export function CharacterEditor() {
       <button
         type="button"
         onClick={handleDelete}
-        className="mari-editor-action mari-editor-action--danger inline-flex"
+        className="mari-editor-action inline-flex"
         title="Delete character"
       >
         <Trash2 size="1rem" />
@@ -957,10 +971,7 @@ export function CharacterEditor() {
             />
             <input
               value={characterComment}
-              onChange={(e) => {
-                setCharacterComment(e.target.value);
-                markDirty();
-              }}
+              onChange={(e) => updateCharacterComment(e.target.value)}
               className="mari-editor-subtitle-input"
               placeholder="Title / comment (e.g. 'Modern AU version')"
             />
@@ -1026,6 +1037,7 @@ export function CharacterEditor() {
                 characterId={characterId}
                 formData={formData}
                 characterComment={characterComment}
+                updateCharacterComment={updateCharacterComment}
                 updateField={updateField}
                 updateExtension={updateExtension}
                 newTag={newTag}
@@ -1040,6 +1052,14 @@ export function CharacterEditor() {
             )}
             {activeTab === "card" && (
               <CharacterCardTab formData={formData} updateField={updateField} updateExtension={updateExtension} />
+            )}
+            {activeTab === "convo" && (
+              <ConvoTab
+                formData={formData}
+                updateExtension={updateExtension}
+                kind="character"
+                characterId={characterId ?? undefined}
+              />
             )}
             {activeTab === "advanced" && (
               <AdvancedTab
@@ -1243,10 +1263,54 @@ function TextareaTab({
   );
 }
 
+function ConvoTab({
+  formData,
+  updateExtension,
+  kind,
+  characterId,
+}: {
+  formData: CharacterData;
+  updateExtension: (key: string, value: unknown) => void;
+  kind: "character" | "persona";
+  characterId?: string;
+}) {
+  const ext = formData.extensions;
+  return (
+    // Key by the edited character so all transient state (revert snapshot, open
+    // panels, connection choice) resets on switch — the editor reuses this instance.
+    <ConvoProfileFields
+      key={characterId ?? "new-character"}
+      kind={kind}
+      entityKey={characterId ?? "new-character"}
+      baseName={formData.name}
+      displayName={(ext.convoDisplayName as string) ?? ""}
+      onDisplayNameChange={(v) => updateExtension("convoDisplayName", v)}
+      displayNameInCard={ext.convoDisplayNameInCard === true}
+      onDisplayNameInCardChange={(v) => updateExtension("convoDisplayNameInCard", v)}
+      characterId={characterId}
+      sources={ext.aboutMeSources as AboutMeSourceConfig | undefined}
+      onSourcesChange={(v) => updateExtension("aboutMeSources", v)}
+      aboutMe={(ext.aboutMe as string) ?? ""}
+      onAboutMeChange={(v) => updateExtension("aboutMe", v)}
+      behavior={ext.convoBehavior as ConvoBehaviorConfig | undefined}
+      onBehaviorChange={(b) => updateExtension("convoBehavior", b)}
+      aiSource={{
+        name: formData.name ?? "",
+        description: formData.description ?? "",
+        personality: formData.personality ?? "",
+        scenario: formData.scenario ?? "",
+        backstory: (ext.backstory as string) ?? "",
+        appearance: (ext.appearance as string) ?? "",
+      }}
+    />
+  );
+}
+
 function MetadataTab({
   characterId,
   formData,
   characterComment,
+  updateCharacterComment,
   updateField,
   updateExtension,
   newTag,
@@ -1261,6 +1325,7 @@ function MetadataTab({
   characterId: string | null;
   formData: CharacterData;
   characterComment: string;
+  updateCharacterComment: (value: string) => void;
   updateField: <K extends keyof CharacterData>(key: K, value: CharacterData[K]) => void;
   updateExtension: (key: string, value: unknown) => void;
   newTag: string;
@@ -1280,7 +1345,7 @@ function MetadataTab({
     <div className="space-y-5">
       <SectionHeader
         title="Metadata"
-        subtitle="Basic character info — name, creator, version, tags."
+        subtitle="Basic character info: name, title, creator, version, tags."
         helpText={CHARACTER_METADATA_HELP}
       />
 
@@ -1320,7 +1385,7 @@ function MetadataTab({
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <label className="space-y-1.5">
+        <label className="space-y-1.5 sm:col-span-2">
           <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--muted-foreground)]">
             Name{" "}
             <HelpTooltip text="The character's display name. This is what appears in chat and is used as {{char}} in prompts." />
@@ -1329,6 +1394,18 @@ function MetadataTab({
             value={formData.name}
             onChange={(e) => updateField("name", e.target.value)}
             className="w-full rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
+          />
+        </label>
+        <label className="space-y-1.5 sm:col-span-2">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-[var(--muted-foreground)]">
+            Title / comment{" "}
+            <HelpTooltip text="A short note shown under the character name in the library, useful for variants or alternate versions." />
+          </span>
+          <input
+            value={characterComment}
+            onChange={(e) => updateCharacterComment(e.target.value)}
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
+            placeholder="Modern AU version"
           />
         </label>
         <label className="space-y-1.5">
@@ -1613,7 +1690,7 @@ function CharacterVersionHistoryPanel({
                 type="button"
                 onClick={() => handleDeleteVersion(version)}
                 disabled={restoreVersion.isPending || deleteVersion.isPending}
-                className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] disabled:opacity-50"
+                className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50"
                 title="Delete this saved version"
               >
                 {deleteVersion.isPending && deleteVersion.variables?.versionId === version.id ? (
@@ -1779,7 +1856,7 @@ function DialogueTab({
           rows={6}
           title="First Message"
           className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 text-sm leading-relaxed outline-none placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
-          placeholder="What does the character say when they first meet someone? Use *asterisks* for actions…"
+          placeholder="What is the character's first message when a new chat starts?"
         />
       </div>
 
@@ -1831,7 +1908,7 @@ function DialogueTab({
                   onClick={() => removeGreeting(i)}
                   className={cn(
                     greetingActionButtonClassName,
-                    "hover:border-[var(--destructive)]/40 hover:text-[var(--destructive)]",
+	                    "hover:border-[var(--border)] hover:text-[var(--foreground)]",
                   )}
                   aria-label={`Remove alternate greeting ${i + 1}`}
                   title="Remove greeting"
@@ -1867,7 +1944,7 @@ function DialogueTab({
           rows={10}
           title="Example Dialogue"
           className="w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--secondary)] p-4 font-mono text-xs leading-relaxed outline-none placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20"
-          placeholder={"<START>\n{{user}}: Hello!\n{{char}}: *waves excitedly* Hey there!"}
+          placeholder={"<START>\n{{user}}: Hello!\n{{char}}: *Waves excitedly.* Hey there!"}
         />
       </div>
     </div>
@@ -1973,7 +2050,7 @@ function AdvancedTab({
   );
 }
 
-// ── Sprites Tab ──
+// ── Gallery Tab ──
 
 type CharacterGalleryMediaTab = "images" | "clips";
 
@@ -2205,7 +2282,7 @@ function CharacterGalleryTab({ characterId, characterName }: { characterId: stri
                       <button
                         type="button"
                         onClick={() => void handleDelete(image)}
-                        className="rounded-lg bg-red-500/35 p-1.5 text-white transition-colors hover:bg-red-500/55"
+                        className="rounded-lg bg-white/15 p-1.5 text-white transition-colors hover:bg-white/25"
                         title="Delete"
                       >
                         <Trash2 size="0.75rem" />
@@ -2979,7 +3056,7 @@ function CharacterClipCard({
                 type="button"
                 onClick={() => void onDelete(clip)}
                 disabled={deleting}
-                className="rounded-lg border border-red-500/25 bg-red-500/10 p-1.5 text-red-400 transition-colors hover:border-red-500/45 hover:bg-red-500/20 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-60"
                 title="Delete"
                 aria-label={`Delete ${clip.label || "clip"}`}
               >
@@ -3043,6 +3120,10 @@ function SpritesTab({
 
   const { data: sprites, isLoading } = useCharacterSprites(characterId);
   const { data: spriteCapabilities } = useSpriteCapabilities();
+  const { data: installedCapabilities = [] } = useInstalledCapabilityPackages(true);
+  const conversationCallsInstalled = installedCapabilities.some(
+    (item) => item.status === "active" && item.manifest.kind.includes("conversation-calls"),
+  );
   const uploadSprite = useUploadSprite();
   const deleteSprite = useDeleteSprite();
   const exportSprites = useExportSprites();
@@ -3089,16 +3170,13 @@ function SpritesTab({
   const spriteGenerationReason = spriteCapabilities?.reason ?? "Sprite generation is unavailable on this platform.";
   const backgroundCleanupUnavailable = spriteCapabilities?.backgroundRemovalAvailable === false;
   const backgroundCleanupReason = spriteCapabilities?.reason ?? "Background cleanup is unavailable on this platform.";
-  const backgroundRemoverUnavailable = spriteCapabilities?.backgroundRemover?.installed === false;
-  const backgroundRemoverReason =
-    spriteCapabilities?.backgroundRemover?.reason ?? "Local backgroundremover is not installed.";
 
   const categoryTabs = (
     <div className="inline-flex rounded-xl bg-[var(--secondary)] p-1 ring-1 ring-[var(--border)]">
       {[
         { id: "expressions" as const, label: "Facial Expressions" },
         { id: "full-body" as const, label: "Full-body" },
-        { id: "clips" as const, label: "Clips" },
+        ...(conversationCallsInstalled ? [{ id: "clips" as const, label: "Clips" }] : []),
       ].map((tab) => (
         <button
           key={tab.id}
@@ -3291,10 +3369,10 @@ function SpritesTab({
         setLastCleanupBackupId(result.backupId ?? null);
         const engineDetails =
           result.backgroundRemoverProcessed && result.builtinProcessed
-            ? ` with backgroundremover and built-in fallback`
+            ? ` with automatic matte cleanup and AI fallback`
             : result.backgroundRemoverProcessed
-              ? ` with backgroundremover`
-              : ` with built-in cleanup`;
+              ? ` with AI fallback`
+              : ` with automatic matte cleanup`;
         toast.success(`Cleaned ${result.processed} saved sprite${result.processed === 1 ? "" : "s"}${engineDetails}.`);
       }
       if (result.failed.length > 0) {
@@ -3524,7 +3602,7 @@ function SpritesTab({
         {cleaningSprites && (
           <div className="flex items-center gap-2 rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs text-[var(--muted-foreground)]">
             <Loader2 size="0.75rem" className="animate-spin text-[var(--primary)]" />
-            Running local backgroundremover on saved sprites…
+            Applying automatic matte cleanup to saved sprites…
           </div>
         )}
         {lastCleanupBackupId && (
@@ -3549,11 +3627,6 @@ function SpritesTab({
         {backgroundCleanupUnavailable && !spriteGenerationUnavailable && (
           <div className="rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs text-[var(--muted-foreground)]">
             {backgroundCleanupReason}
-          </div>
-        )}
-        {backgroundRemoverUnavailable && !backgroundCleanupUnavailable && (
-          <div className="rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs text-[var(--muted-foreground)]">
-            {backgroundRemoverReason}
           </div>
         )}
         <div className="flex gap-2">
@@ -3683,7 +3756,7 @@ function SpritesTab({
                   <button
                     type="button"
                     onClick={() => setDeleteSpriteRequest(sprite)}
-                    className="rounded-lg p-1 text-[var(--muted-foreground)] hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)]"
+                    className="rounded-lg p-1 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                     title="Delete"
                   >
                     <Trash2 size="0.6875rem" />
@@ -3726,7 +3799,7 @@ function SpritesTab({
                   type="button"
                   onClick={() => void handleDeleteVisibleSprites()}
                   disabled={!!deletingSprites}
-                  className="mr-auto inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-xs font-medium text-[var(--destructive)] ring-1 ring-[var(--destructive)]/30 transition-colors hover:bg-[var(--destructive)]/10 disabled:opacity-50 sm:px-3 sm:text-sm"
+	                  className="mr-auto inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-50 sm:px-3 sm:text-sm"
                 >
                   {deletingSprites === "all" ? (
                     <Loader2 size="0.875rem" className="animate-spin" />
@@ -4032,8 +4105,17 @@ function ColorsTab({
       <div className="rounded-xl border border-[var(--border)] bg-black/30 p-4 space-y-3">
         <p className="text-[0.625rem] font-medium uppercase tracking-widest text-[var(--muted-foreground)]">Preview</p>
         <div className="flex gap-3">
-          <div className="mari-chrome-accent-tile mari-accent-animated flex h-10 w-10 shrink-0 items-center justify-center rounded-full ring-2 ring-[var(--marinara-chat-chrome-button-border-active)]">
-            <User size="1rem" className="text-white" />
+          <div className="mari-chrome-accent-tile mari-accent-animated flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full ring-2 ring-[var(--marinara-chat-chrome-button-border-active)]">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={`${formData.name || "Character"} avatar preview`}
+                className="h-full w-full object-cover"
+                style={getAvatarCropStyle(formData.extensions.avatarCrop as AvatarCrop | LegacyAvatarCrop | undefined)}
+              />
+            ) : (
+              <User size="1rem" className="text-white" />
+            )}
           </div>
           <div className="flex-1 space-y-1">
             <span
@@ -4061,9 +4143,9 @@ function ColorsTab({
               className="rounded-2xl rounded-tl-sm px-4 py-3 text-[0.8125rem] leading-[1.8] backdrop-blur-md ring-1 ring-white/8"
               style={boxColor ? { backgroundColor: boxColor } : { backgroundColor: "rgba(255,255,255,0.08)" }}
             >
-              <span className="text-white/90">*She looks at you with a warm smile.* </span>
+              <span className="text-white/90">They jump down, landing behind you, and straighten up. </span>
               <strong style={dialogueColor ? { color: dialogueColor } : { color: "rgb(255, 255, 255)" }}>
-                &ldquo;Hello there! How are you?&rdquo;
+                &ldquo;Hello there.&rdquo;
               </strong>
             </div>
           </div>
@@ -4265,7 +4347,7 @@ function LorebookTab({
             type="button"
             onClick={handleRemoveFromCard}
             disabled={!characterId || removing || importing || embedding}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--destructive)]/10 px-3 py-1.5 text-xs font-medium text-[var(--destructive)] transition-all hover:bg-[var(--destructive)]/20 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-medium text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-50"
             title={
               embedding
                 ? "Wait for the embedded lorebook update to finish."

@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import { useCharacters, useDeleteCharacter } from "../../hooks/use-characters";
 import { useStartChatFromCharacter } from "../../hooks/use-start-chat-from-character";
 import { useUIStore, type ResourcePanelSort } from "../../stores/ui.store";
-import { Search, User, Globe, Wand2, MessageCircle, Trash2, ArrowUpDown } from "lucide-react";
+import { Search, User, Bot, Wand2, MessageCircle, Trash2, ArrowUpDown } from "lucide-react";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { sortBasicPanelItems } from "../../lib/panel-sort";
 import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
@@ -62,7 +62,13 @@ export function BotBrowserPanel() {
   }, [parsed, search]);
 
   const sorted = useMemo(
-    () => sortBasicPanelItems(filtered, sort, (char) => char.name, (char) => char.createdAt || char.updatedAt),
+    () =>
+      sortBasicPanelItems(
+        filtered,
+        sort,
+        (char) => char.name,
+        (char) => char.createdAt || char.updatedAt,
+      ),
     [filtered, sort],
   );
 
@@ -106,7 +112,7 @@ export function BotBrowserPanel() {
 
   return (
     <div className="flex flex-col gap-2 p-3">
-      {/* Browse online button */}
+      {/* Download cards button */}
       <button
         onClick={openBotBrowser}
         className={cn(
@@ -114,8 +120,8 @@ export function BotBrowserPanel() {
           botBrowserOpen && "mari-chrome-control--selected",
         )}
       >
-        <Globe size="0.875rem" />
-        Browse Online
+        <Bot size="0.875rem" />
+        Download Cards
       </button>
 
       {/* Search + Sort */}
@@ -211,7 +217,7 @@ export function BotBrowserPanel() {
                   event.stopPropagation();
                 }}
                 disabled={deletingCharacterId !== null}
-                className="mari-chrome-control mari-chrome-control--small mari-chrome-control--danger mr-1 h-8 w-8 shrink-0 p-0 text-[var(--destructive)] disabled:cursor-wait disabled:opacity-50"
+                className="mari-chrome-control mari-chrome-control--small mr-1 h-8 w-8 shrink-0 p-0 disabled:cursor-wait disabled:opacity-50"
                 title={`Delete ${char.name}`}
                 aria-label={`Delete ${char.name}`}
               >

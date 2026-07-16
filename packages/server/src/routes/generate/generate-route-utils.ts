@@ -8,8 +8,10 @@ import {
   generationParametersSchema,
   localAuthProviderBaseUrl,
   normalizeTextForMatch,
+  normalizeWorldCustomFields,
   normalizeThinkingTagPairs,
   parseTrackerFieldLocks,
+  parseTrackerHiddenFields,
   resolveMacros,
   unwrapConversationInstructions,
   wrapConversationInstructions,
@@ -39,6 +41,24 @@ export type SpeakerPrefixMessage = SimpleMessage & {
   providerMetadata?: Record<string, unknown>;
 };
 export type StoredGenerationParameters = Partial<GenerationParameters>;
+
+/**
+ * Resolve the persona visible to a chat. An explicit chat persona always wins;
+ * non-game chats may fall back to the globally active persona, while Game Mode
+ * deliberately remains persona-less unless setup selected one.
+ */
+export function resolveActivePersonaCandidate<T extends { id: string; isActive?: unknown }>(
+  personas: readonly T[],
+  chatPersonaId: string | null | undefined,
+  chatMode: string | null | undefined,
+): T | null {
+  return (
+    (chatPersonaId ? personas.find((persona) => persona.id === chatPersonaId) : null) ??
+    (chatMode !== "game" ? personas.find((persona) => persona.isActive === "true") : null) ??
+    null
+  );
+}
+
 export type LocalSidecarGenerationConnection = {
   id: typeof LOCAL_SIDECAR_CONNECTION_ID;
   name: string;
@@ -50,11 +70,13 @@ export type LocalSidecarGenerationConnection = {
   imagePath: null;
   maxContext: number;
   isDefault: "false";
+  fallbackForMain: "false";
   useForRandom: "false";
   enableCaching: "false";
   anthropicExtendedCacheTtl: "false";
   cachingAtDepth: number;
   defaultForAgents: "false";
+  fallbackForAgents: "false";
   embeddingModel: string;
   embeddingBaseUrl: string;
   embeddingConnectionId: null;
@@ -137,11 +159,13 @@ export function createLocalSidecarGenerationConnection(): LocalSidecarGeneration
     imagePath: null,
     maxContext: config.contextSize,
     isDefault: "false",
+    fallbackForMain: "false",
     useForRandom: "false",
     enableCaching: "false",
     anthropicExtendedCacheTtl: "false",
     cachingAtDepth: 5,
     defaultForAgents: "false",
+    fallbackForAgents: "false",
     embeddingModel: "",
     embeddingBaseUrl: "",
     embeddingConnectionId: null,
@@ -322,12 +346,8 @@ export function shouldAbortOnPassiveGenerationDisconnect(args: { impersonate?: b
   return args.impersonate === true;
 }
 
-export function resolveProviderTopK(provider: unknown, topK: number): number | undefined {
+export function resolveProviderTopK(topK: number): number | undefined {
   const normalized = Number.isFinite(topK) ? Math.max(0, Math.trunc(topK)) : 0;
-  const providerId = typeof provider === "string" ? provider.toLowerCase() : "";
-  if (providerId === "google" || providerId === "google_vertex") {
-    return normalized > 0 ? normalized : undefined;
-  }
   return normalized > 0 ? normalized : undefined;
 }
 
@@ -908,6 +928,21 @@ export function resolveActiveCharacterIds(
   return characterIds;
 }
 
+export type GroupGenerationMode = "merged" | "individual";
+
+/**
+ * Conversation groups are always generated as one merged provider response so
+ * the model can decide which present characters speak in the turn. Only
+ * roleplay-style chats honor an explicit merged/individual mode.
+ */
+export function resolveGroupGenerationMode(
+  chatMode: string | null | undefined,
+  configuredMode: unknown,
+): GroupGenerationMode {
+  if (chatMode === "conversation") return "merged";
+  return configuredMode === "individual" ? "individual" : "merged";
+}
+
 export function resolvePromptCharacterIdsForTarget(
   characterIds: string[],
   targetCharacterId: string | null | undefined,
@@ -1354,11 +1389,78 @@ export function isManualTrackerCharacterId(value: unknown): boolean {
   return typeof value === "string" && value.trim().startsWith("manual-");
 }
 
-function canUseManualTrackerNameFallback(character: Record<string, unknown>) {
-  const id = trackerCharacterIdKey(character);
-  if (!id || isManualTrackerCharacterId(id)) return true;
-  const name = trackerCharacterNameKey(character);
-  return !!name && id === name;
+function mergeTrackerStats(previous: unknown, next: unknown) {
+  if (!Array.isArray(previous) || previous.length === 0) return next;
+  const nextStats = Array.isArray(next) ? next : [];
+  const nextNames = new Set(
+    nextStats.map((stat) => normalizeTextForMatch(isPlainRecord(stat) ? stat.name : "")).filter(Boolean),
+  );
+  return [
+    ...nextStats,
+    ...previous.filter((stat) => {
+      const name = normalizeTextForMatch(isPlainRecord(stat) ? stat.name : "");
+      return name && !nextNames.has(name);
+    }),
+  ];
+}
+
+const MAX_TRACKER_CHARACTER_HISTORY = 50;
+
+/** Collect the most recently seen distinct tracker characters within a prompt-safe bound. */
+export function collectLatestTrackerCharacterHistory(
+  snapshots: Array<{ presentCharacters?: unknown }>,
+): Array<Record<string, unknown>> {
+  const history: Array<Record<string, unknown>> = [];
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+  for (const snapshot of snapshots) {
+    const characters = parseJsonField<unknown[]>(snapshot.presentCharacters, []);
+    for (const value of characters) {
+      if (!isPlainRecord(value)) continue;
+      const id = trackerCharacterIdKey(value);
+      const name = trackerCharacterNameKey(value);
+      if ((id && seenIds.has(id)) || (!id && name && seenNames.has(name))) continue;
+      history.push(value);
+      if (id) seenIds.add(id);
+      if (name) seenNames.add(name);
+      if (history.length >= MAX_TRACKER_CHARACTER_HISTORY) return history;
+    }
+  }
+  return history;
+}
+
+type TrackerCharacterCardIdentity = {
+  id: string;
+  name: string;
+  avatarPath?: string | null;
+  avatarCrop?: unknown;
+};
+
+export function applyTrackerCharacterCardIdentity(
+  characters: Array<Record<string, unknown>>,
+  cards: TrackerCharacterCardIdentity[],
+): Set<string> {
+  const cardsById = new Map(cards.map((card) => [card.id.trim().toLowerCase(), card]));
+  const cardsByName = new Map<string, TrackerCharacterCardIdentity>();
+  const duplicateNames = new Set<string>();
+  for (const card of cards) {
+    const name = normalizeTextForMatch(card.name);
+    if (!name) continue;
+    if (cardsByName.has(name)) duplicateNames.add(name);
+    else cardsByName.set(name, card);
+  }
+  for (const name of duplicateNames) cardsByName.delete(name);
+
+  const matchedIds = new Set<string>();
+  for (const character of characters) {
+    const card = cardsById.get(trackerCharacterIdKey(character)) ?? cardsByName.get(trackerCharacterNameKey(character));
+    if (!card) continue;
+    character.characterId = card.id;
+    character.avatarPath = card.avatarPath ?? null;
+    character.avatarCrop = card.avatarCrop ?? null;
+    matchedIds.add(card.id);
+  }
+  return matchedIds;
 }
 
 export function preserveTrackerCharacterUiFields(
@@ -1366,16 +1468,14 @@ export function preserveTrackerCharacterUiFields(
   previousCharacters: Array<Record<string, unknown>>,
 ): void {
   const previousByKey = new Map<string, Record<string, unknown>>();
-  const previousManualByName = new Map<string, Record<string, unknown>>();
+  const previousByName = new Map<string, Record<string, unknown>>();
   const previousNameCounts = new Map<string, number>();
   for (const character of previousCharacters) {
     const key = trackerCharacterKey(character);
     if (key) previousByKey.set(key, character);
     const name = trackerCharacterNameKey(character);
     if (name) previousNameCounts.set(name, (previousNameCounts.get(name) ?? 0) + 1);
-    if (name && isManualTrackerCharacterId(character.characterId)) {
-      previousManualByName.set(name, character);
-    }
+    if (name) previousByName.set(name, character);
   }
 
   for (const character of nextCharacters) {
@@ -1383,14 +1483,20 @@ export function preserveTrackerCharacterUiFields(
     const name = trackerCharacterNameKey(character);
     const previous =
       (key ? previousByKey.get(key) : null) ??
-      (name && previousNameCounts.get(name) === 1 && canUseManualTrackerNameFallback(character)
-        ? previousManualByName.get(name)
-        : null);
+      (name && previousNameCounts.get(name) === 1 ? previousByName.get(name) : null);
     const previousPortraitFocusX = previous?.portraitFocusX;
     const previousPortraitFocusY = previous?.portraitFocusY;
     const previousPortraitZoom = previous?.portraitZoom;
     const previousAvatarPath = previous?.avatarPath;
     const previousAvatarCrop = previous?.avatarCrop;
+    const previousCustomFields = isPlainRecord(previous?.customFields) ? previous.customFields : null;
+    const nextCustomFields = isPlainRecord(character.customFields) ? character.customFields : null;
+    if (previousCustomFields) {
+      // Character custom fields are user-defined tracker structure. Merge model
+      // values over it so an omitted field cannot erase the user's configuration.
+      character.customFields = { ...previousCustomFields, ...(nextCustomFields ?? {}) };
+    }
+    character.stats = mergeTrackerStats(previous?.stats, character.stats);
     if (
       (typeof character.avatarPath !== "string" || !character.avatarPath.trim()) &&
       isNpcTrackerAvatarPath(previousAvatarPath)
@@ -1438,6 +1544,7 @@ export function parseJsonField<T>(value: unknown, fallback: T): T {
 export function parseGameStateRow(row: Record<string, unknown>): GameState {
   const manualOverrides = parseJsonField<Record<string, string> | null>(row.manualOverrides, null);
   const fieldLocks = parseTrackerFieldLocks(row.fieldLocks);
+  const hiddenTrackerFields = parseTrackerHiddenFields(row.hiddenTrackerFields);
   return {
     id: row.id as string,
     chatId: row.chatId as string,
@@ -1448,12 +1555,14 @@ export function parseGameStateRow(row: Record<string, unknown>): GameState {
     location: row.location as string | null,
     weather: row.weather as string | null,
     temperature: row.temperature as string | null,
+    worldCustomFields: normalizeWorldCustomFields(parseJsonField<unknown[]>(row.worldCustomFields, [])),
     presentCharacters: parseJsonField<any[]>(row.presentCharacters, []),
     recentEvents: parseJsonField<string[]>(row.recentEvents, []),
     playerStats: parseJsonField<PlayerStats | null>(row.playerStats, null),
     personaStats: parseJsonField<any[] | null>(row.personaStats, null),
     manualOverrides,
     fieldLocks,
+    hiddenTrackerFields,
     createdAt: row.createdAt as string,
   };
 }

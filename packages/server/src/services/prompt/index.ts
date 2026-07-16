@@ -6,9 +6,11 @@ export { wrapContent, wrapGroup } from "./format-engine.js";
 export { expandMarker, type MarkerContext, type ExpandedMarker } from "./marker-expander.js";
 export {
   buildPromptMacroContext,
+  collectCharacterAdvancedPromptEntries,
   collectCharacterDepthPromptEntries,
   collectCharacterPostHistoryEntries,
   resolvePromptMessageMacros,
+  resolveCharacterAdvancedPromptIds,
   resolvePromptIdleDuration,
   resolvePromptLastGenerationType,
   resolveMacrosWithVariableSnapshot,

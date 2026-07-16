@@ -1,11 +1,15 @@
 import {
+  BUILT_IN_AGENTS,
+  CONVERSATION_COMMAND_AGENT_IDS,
   CONVERSATION_COMMAND_KEYS,
   type ChatMode,
   type ConversationCommandKey,
+  type WrapFormat,
 } from "@marinara-engine/shared";
 
 import { logger } from "../../lib/logger.js";
 import type { CharacterCommand } from "../conversation/character-commands.js";
+import { wrapContent } from "../prompt/format-engine.js";
 import { resolveSpotifyCredentials, spotifyHasScope } from "../spotify/spotify.service.js";
 import { getActiveTurnGame } from "../turn-games/turn-game-runner.service.js";
 import { getChatHapticIntifaceUrl } from "./haptic-runtime.js";
@@ -64,6 +68,14 @@ function getConversationCommandKey(command: CharacterCommand): ConversationComma
       return "uno";
     case "chess":
       return "chess";
+    case "poker":
+      return "poker";
+    case "eightball":
+      return "eightball";
+    case "tic_tac_toe":
+      return "tic_tac_toe";
+    case "rock_paper_scissors":
+      return "rock_paper_scissors";
     case "spotify":
     case "youtube":
       return "music";
@@ -80,13 +92,18 @@ function getConversationCommandKey(command: CharacterCommand): ConversationComma
   }
 }
 
+function isConversationCommandAvailable(key: ConversationCommandKey): boolean {
+  const packageAgentId = CONVERSATION_COMMAND_AGENT_IDS[key];
+  return !packageAgentId || BUILT_IN_AGENTS.some((agent) => agent.id === packageAgentId);
+}
+
 export function filterEnabledConversationCommands(
   commands: CharacterCommand[],
   metadata: Record<string, unknown>,
 ): CharacterCommand[] {
   return commands.filter((command) => {
     const key = getConversationCommandKey(command);
-    return key === null || isConversationCommandEnabled(metadata, key);
+    return key === null || (isConversationCommandAvailable(key) && isConversationCommandEnabled(metadata, key));
   });
 }
 
@@ -124,18 +141,24 @@ export async function buildConversationCommandsReminder(args: {
   chars: ConversationCommandsCharactersStore;
   agentsStore: Parameters<typeof resolveSpotifyCredentials>[0];
   db: Parameters<typeof getActiveTurnGame>[0];
+  wrapFormat: WrapFormat;
   resolvePromptMacros: (value: string) => string;
 }): Promise<string | null> {
   if (!args.enabled) return null;
   const { chatMeta, chatMode, characterIds, personaName } = args;
   const scheduleCommandEnabled = isConversationCommandEnabled(chatMeta, "schedule_update");
   const crossPostCommandEnabled = isConversationCommandEnabled(chatMeta, "cross_post");
-  const selfieCommandEnabled = isConversationCommandEnabled(chatMeta, "selfie");
+  const selfieCommandEnabled =
+    isConversationCommandAvailable("selfie") && isConversationCommandEnabled(chatMeta, "selfie");
   const memoryCommandEnabled = isConversationCommandEnabled(chatMeta, "memory");
   const sceneCommandEnabled = isConversationCommandEnabled(chatMeta, "scene");
-  const callCommandEnabled = isConversationCommandEnabled(chatMeta, "call");
-  const musicCommandEnabled = isConversationCommandEnabled(chatMeta, "music");
-  const hapticCommandEnabled = isConversationCommandEnabled(chatMeta, "haptic");
+  const reactCommandEnabled = isConversationCommandEnabled(chatMeta, "react");
+  const callCommandEnabled =
+    isConversationCommandAvailable("call") && isConversationCommandEnabled(chatMeta, "call");
+  const musicCommandEnabled =
+    isConversationCommandAvailable("music") && isConversationCommandEnabled(chatMeta, "music");
+  const hapticCommandEnabled =
+    isConversationCommandAvailable("haptic") && isConversationCommandEnabled(chatMeta, "haptic");
   const activeMusicCommandSource =
     args.musicPlayerEnabled === false
       ? null
@@ -201,7 +224,6 @@ export async function buildConversationCommandsReminder(args: {
   }
 
   const commandLines: string[] = [
-    `<commands>`,
     `Here are your optional, hidden commands you may use if you wish to, but only when they genuinely fit the conversation:`,
     ``,
   ];
@@ -214,6 +236,12 @@ export async function buildConversationCommandsReminder(args: {
   if (scheduleCommandEnabled) {
     addCommandLines(
       `- [schedule_update: status="online|idle|dnd|offline", activity="activity name", duration="number of hours (e.g., 1h)"] - only if you change your own status/activity, for example, if the user asks you to stop what you're doing or if you decide to change them yourself.`,
+    );
+  }
+
+  if (reactCommandEnabled) {
+    addCommandLines(
+      `- [react: emoji="😂"] or [react: emoji=":name:"] — if you want to react to the user's message, send it in its own line, using any standard emoji, or a custom one. It posts as a small emoji on their message, the way you'd react in a chat app. You can also react to another character instead by adding their name: [react: emoji="🙄" to "Character Name"]. Use it only when it genuinely fits how your character feels in the moment; it is optional, may stand alone or sit alongside your reply, and choosing a flat reaction or none at all is itself a valid choice.`,
     );
   }
 
@@ -242,14 +270,14 @@ export async function buildConversationCommandsReminder(args: {
   // Scene command: only in conversation mode
   if (sceneCommandEnabled && chatMode === "conversation") {
     addCommandLines(
-      `- [scene: scenario="brief description of what happens in this scene", background="place"] - initiate a mini-roleplay scene branching from this conversation. The system will plan and create a complete immersive scene for you.`,
+      `- [scene: scenario="brief description of what happens in this scene", background="place"] - request a mini-roleplay scene branching from this conversation. The user will be asked for POV, tense, and optional prompt wishes before the system plans and creates the scene.`,
       `   Example: You agree to go stargazing → include [scene: scenario="lying on a blanket in the park, looking at the stars together", background="park"]`,
       `   WHEN TO USE: You SHOULD proactively trigger a scene whenever the conversation naturally leads to an activity, outing, or situation that would be more immersive as a scene. Examples:`,
       `   - {{user}} says "I'm coming over" or "Let's go to the park" → trigger a scene for arriving/being at that location.`,
       `   - You invite {{user}} somewhere and they accept → trigger a scene for that activity.`,
       `   - A plan is made (date, trip, hangout, confrontation) and the moment arrives → trigger a scene.`,
       `   Do NOT wait for {{user}} to explicitly ask for a scene. If the conversation implies you and {{user}} are about to DO something together, initiate the scene yourself.`,
-      `   EXCEPTION: Do NOT start a scene for playing UNO, chess, cards, or other board/table games — those have their own commands. Use [uno] for UNO and [chess] for chess, not [scene].`,
+      `   EXCEPTION: Do NOT start a scene for playing UNO, chess, poker, 8-ball pool, tic-tac-toe, rock-paper-scissors, cards, or other board/table games — those have their own commands. Use [uno] for UNO, [chess] for chess, [poker] for poker, [eightball] for 8-ball pool, [tic_tac_toe] for tic-tac-toe, and [rock_paper_scissors] for rock-paper-scissors, not [scene].`,
     );
   }
 
@@ -261,11 +289,38 @@ export async function buildConversationCommandsReminder(args: {
 
   // Turn-games: conversation mode only, when no game is running yet and at least one other character is present.
   const unoAdvertisable =
-    chatMode === "conversation" && isConversationCommandEnabled(chatMeta, "uno") && characterIds.length >= 1;
+    isConversationCommandAvailable("uno") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "uno") &&
+    characterIds.length >= 1;
   const chessAdvertisable =
-    chatMode === "conversation" && isConversationCommandEnabled(chatMeta, "chess") && characterIds.length >= 1;
+    isConversationCommandAvailable("chess") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "chess") &&
+    characterIds.length >= 1;
+  const pokerAdvertisable =
+    isConversationCommandAvailable("poker") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "poker") &&
+    characterIds.length >= 1;
+  const eightballAdvertisable =
+    isConversationCommandAvailable("eightball") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "eightball") &&
+    characterIds.length >= 1;
+  const ticTacToeAdvertisable =
+    isConversationCommandAvailable("tic_tac_toe") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "tic_tac_toe") &&
+    characterIds.length >= 1;
+  const rpsAdvertisable =
+    isConversationCommandAvailable("rock_paper_scissors") &&
+    chatMode === "conversation" &&
+    isConversationCommandEnabled(chatMeta, "rock_paper_scissors") &&
+    characterIds.length >= 1;
   const noActiveTurnGame =
-    (unoAdvertisable || chessAdvertisable) && !(await getActiveTurnGame(args.db, args.chatId));
+    (unoAdvertisable || chessAdvertisable || pokerAdvertisable || eightballAdvertisable || ticTacToeAdvertisable || rpsAdvertisable) &&
+    !(await getActiveTurnGame(args.db, args.chatId));
   if (unoAdvertisable && noActiveTurnGame) {
     addCommandLines(
       `- [uno] - start a game of UNO at the table. Include this ONLY when ${personaName} proposes playing UNO (or cards) and you are willing to play right now. The system deals the cards and runs the game — you do NOT narrate dealing or describe the hands.`,
@@ -278,6 +333,34 @@ export async function buildConversationCommandsReminder(args: {
       `- [chess] - start a one-on-one chess game against ${personaName}. Include this ONLY when ${personaName} proposes playing chess and YOU are willing to play right now. Chess seats exactly two players: ${personaName} and you — whichever character includes [chess] takes the opponent's seat. The system sets up the board and runs the game — you do NOT describe the board or narrate setup.`,
       `   If you'd rather not play, say so in character and do NOT include [chess]. Agreeing to play IS including [chess].`,
       `   Example: ${personaName} says "up for a game of chess?" and you're in → "Prepare to lose your queen. [chess]"`,
+    );
+  }
+  if (pokerAdvertisable && noActiveTurnGame) {
+    addCommandLines(
+      `- [poker] - start a game of Texas Hold'em poker at the table. Include this ONLY when ${personaName} proposes playing poker and you are willing to play right now. The system seats ${personaName} plus every willing character at the table and runs the game — you do NOT narrate dealing, blinds, or describe anyone's cards.`,
+      `   If you are busy, tired, or simply don't feel like it, just say so in character and do NOT include [poker]. Agreeing to play IS including [poker].`,
+      `   Example: ${personaName} says "who's up for some poker?" and you're in → "Deal me in. [poker]"`,
+    );
+  }
+  if (eightballAdvertisable && noActiveTurnGame) {
+    addCommandLines(
+      `- [eightball] - start a one-on-one game of 8-ball pool against ${personaName}. Include this ONLY when ${personaName} proposes playing pool/8-ball and YOU are willing to play right now. 8-ball seats exactly two players: ${personaName} and you — whichever character includes [eightball] takes the opponent's seat. The system racks the table and runs the game — you do NOT describe the table or narrate shots.`,
+      `   If you'd rather not play, say so in character and do NOT include [eightball]. Agreeing to play IS including [eightball].`,
+      `   Example: ${personaName} says "rack 'em up?" and you're in → "You're breaking. [eightball]"`,
+    );
+  }
+  if (ticTacToeAdvertisable && noActiveTurnGame) {
+    addCommandLines(
+      `- [tic_tac_toe] - start a one-on-one tic-tac-toe game against ${personaName}. Include this ONLY when ${personaName} proposes playing tic-tac-toe (or noughts and crosses) and YOU are willing to play right now. Tic-tac-toe seats exactly two players: ${personaName} and you — whichever character includes [tic_tac_toe] takes the opponent's seat. The system sets up the board and runs the game — you do NOT describe the board or narrate moves.`,
+      `   If you'd rather not play, say so in character and do NOT include [tic_tac_toe]. Agreeing to play IS including [tic_tac_toe].`,
+      `   Example: ${personaName} says "tic-tac-toe?" and you're in → "You're on. [tic_tac_toe]"`,
+    );
+  }
+  if (rpsAdvertisable && noActiveTurnGame) {
+    addCommandLines(
+      `- [rock_paper_scissors] - start a one-on-one rock-paper-scissors match against ${personaName}. Include this ONLY when ${personaName} proposes playing rock-paper-scissors (or "rps") and YOU are willing to play right now. Rock-paper-scissors seats exactly two players: ${personaName} and you — whichever character includes [rock_paper_scissors] takes the opponent's seat. The system runs the match — you do NOT narrate throws or reveal your choice in advance.`,
+      `   If you'd rather not play, say so in character and do NOT include [rock_paper_scissors]. Agreeing to play IS including [rock_paper_scissors].`,
+      `   Example: ${personaName} says "rock paper scissors, best of three?" and you're in → "Bring it on. [rock_paper_scissors]"`,
     );
   }
 
@@ -318,8 +401,7 @@ export async function buildConversationCommandsReminder(args: {
   if (availableCommandCount === 0) return null;
   commandLines.push(
     `IMPORTANT: Commands are stripped from your message before the user sees it. The rest of your message is shown normally. You can include multiple commands in one message, but you do not need to use any of them unless it makes sense in context.`,
-    `</commands>`,
   );
 
-  return args.resolvePromptMacros(commandLines.join("\n"));
+  return wrapContent(args.resolvePromptMacros(commandLines.join("\n")), "commands", args.wrapFormat);
 }

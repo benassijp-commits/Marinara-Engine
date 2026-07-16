@@ -1,11 +1,13 @@
 // ──────────────────────────────────────────────
 // Schema: Game Checkpoints
 // ──────────────────────────────────────────────
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { fileTable, text, integer } from "../file-schema.js";
 
-export const gameCheckpoints = sqliteTable("game_checkpoints", {
+export const gameCheckpoints = fileTable("game_checkpoints", {
   id: text("id").primaryKey(),
   chatId: text("chat_id").notNull(),
+  /** Spatial snapshot captured alongside the Game snapshot, when enabled. */
+  spatialSnapshotId: text("spatial_snapshot_id"),
   /** FK to game_state_snapshots.id */
   snapshotId: text("snapshot_id").notNull(),
   /** FK to messages.id — the message this checkpoint was taken at */

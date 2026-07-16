@@ -197,7 +197,9 @@ export const ConversationMessage = memo(function ConversationMessage({
   const isConversationStart = extra.isConversationStart === true;
   const isHiddenFromAI = extra.hiddenFromAI === true;
   const conversationCallEvent =
-    extra.conversationCallEvent && typeof extra.conversationCallEvent === "object" && !Array.isArray(extra.conversationCallEvent)
+    extra.conversationCallEvent &&
+    typeof extra.conversationCallEvent === "object" &&
+    !Array.isArray(extra.conversationCallEvent)
       ? (extra.conversationCallEvent as Record<string, unknown>)
       : null;
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
@@ -260,6 +262,21 @@ export const ConversationMessage = memo(function ConversationMessage({
       : (msgPersona?.nameColor ?? personaInfo?.nameColor)
     : resolvedCharacterInfo?.nameColor;
 
+  // Conversation-only cosmetic display name (convoDisplayName). This component only
+  // ever mounts in Conversation mode, so reading it here can't leak into RP/Game.
+  // It's read live (character map / active persona), so renaming reflects on
+  // existing messages. Identity and macros keep the base `name`; only the visible
+  // label swaps. For personas we only have the *current* persona's live name, so we
+  // never stamp it onto a different persona's historical messages.
+  const convoDisplayName = isUser
+    ? plainUserMessages
+      ? undefined
+      : !msgPersona || msgPersona.personaId === personaInfo?.id
+        ? personaInfo?.convoDisplayName
+        : undefined
+    : primaryCharInfo?.convoDisplayName;
+  const headerDisplayName = convoDisplayName && convoDisplayName.trim() ? convoDisplayName : displayName;
+
   const macroContext = useMemo(
     () => ({
       userName: displayName,
@@ -312,16 +329,14 @@ export const ConversationMessage = memo(function ConversationMessage({
   const renderedContentParts = useMemo(() => {
     if (!contentParts?.length) return null;
     const count = Math.max(1, Math.min(visiblePartCount ?? contentParts.length, contentParts.length));
-    return contentParts
-      .slice(0, count)
-      .map((part, partIndex) =>
-        formatTextQuotes(
-          resolveMessageMacros(part, macroContext, {
-            randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
-          }),
-          quoteFormat,
-        ),
-      );
+    return contentParts.slice(0, count).map((part, partIndex) =>
+      formatTextQuotes(
+        resolveMessageMacros(part, macroContext, {
+          randomSeed: `${message.id}:${message.activeSwipeIndex ?? 0}:${partIndex}`,
+        }),
+        quoteFormat,
+      ),
+    );
   }, [contentParts, macroContext, message.activeSwipeIndex, message.id, quoteFormat, visiblePartCount]);
 
   // ── Attachment removal ──
@@ -418,9 +433,14 @@ export const ConversationMessage = memo(function ConversationMessage({
     const map = new Map<string, NonNullable<ReturnType<CharacterMap["get"]>>>();
     for (const [id, v] of scopedCharacterMap) {
       if (v) {
-        const key = normalizeTextForMatch(v.name);
-        if (id === message.characterId) map.set(key, v);
-        else if (!map.has(key)) map.set(key, v);
+        const aliases = [v.name, v.convoDisplayName].filter(
+          (name): name is string => typeof name === "string" && name.trim().length > 0,
+        );
+        for (const alias of aliases) {
+          const key = normalizeTextForMatch(alias);
+          if (id === message.characterId) map.set(key, v);
+          else if (!map.has(key)) map.set(key, v);
+        }
       }
     }
     return map;
@@ -431,6 +451,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     const names: string[] = [];
     for (const [, v] of scopedCharacterMap) {
       if (v?.name) names.push(v.name);
+      if (v?.convoDisplayName?.trim()) names.push(v.convoDisplayName);
     }
     return names;
   }, [scopedCharacterMap]);
@@ -438,8 +459,10 @@ export const ConversationMessage = memo(function ConversationMessage({
   const groupedSegments = useMemo(() => {
     if (isUser || !renderedContent) return null;
     const knownNames = charByName ? new Set(charByName.keys()) : new Set<string>();
-    return parseGroupedSpeakerSegments(renderedContent, knownNames);
-  }, [isUser, renderedContent, charByName]);
+    const leadingCharacter = message.characterId ? scopedCharacterMap?.get(message.characterId) : null;
+    const leadingSpeaker = leadingCharacter?.convoDisplayName?.trim() || leadingCharacter?.name || null;
+    return parseGroupedSpeakerSegments(renderedContent, knownNames, leadingSpeaker);
+  }, [isUser, renderedContent, charByName, message.characterId, scopedCharacterMap]);
 
   // Segment-targeted reactions render inline under their speaker's segment; the
   // remainder (whole-message entries + orphans from a re-segmentation) keeps the
@@ -659,15 +682,46 @@ export const ConversationMessage = memo(function ConversationMessage({
           : "rounded-2xl rounded-tl-md";
 
   // ── Build shared render context ──
+  // Convo-only: clicking an avatar opens the about-me viewer for that identity.
+  // The component only mounts in conversation mode, so this never applies elsewhere.
+  const aboutMeTarget: { kind: "character" | "persona"; id: string } | null = isUser
+    ? (msgPersona?.personaId ?? personaInfo?.id)
+      ? { kind: "persona", id: (msgPersona?.personaId ?? personaInfo?.id)! }
+      : null
+    : message.characterId
+      ? { kind: "character", id: message.characterId }
+      : null;
+  const onOpenAboutMe = aboutMeTarget
+    ? (anchor: DOMRect) =>
+        useUIStore.getState().openModal("about-me-viewer", {
+          ...aboutMeTarget,
+          anchorRect: {
+            top: anchor.top,
+            left: anchor.left,
+            right: anchor.right,
+            bottom: anchor.bottom,
+            width: anchor.width,
+            height: anchor.height,
+          },
+          avatarUrl,
+          avatarCrop: isUser ? personaAvatarCrop : (resolvedCharacterInfo?.avatarCrop ?? null),
+          displayName: headerDisplayName,
+          nameColor: nameColor ?? null,
+          status: aboutMeTarget.kind === "character" ? (resolvedCharacterInfo?.conversationStatus ?? null) : null,
+          activity: aboutMeTarget.kind === "character" ? (resolvedCharacterInfo?.conversationActivity ?? null) : null,
+        })
+    : undefined;
+
   const ctx: MessageRenderContext = {
     message,
     extra,
     isUser,
     isGrouped: !!isGrouped,
-    displayName,
+    displayName: headerDisplayName,
     avatarUrl,
     avatarCropStyle,
     nameColor,
+    onOpenAboutMe,
     mentionNames,
     charByName,
     quoteFormat,
@@ -846,7 +900,12 @@ export const ConversationMessage = memo(function ConversationMessage({
         status === "ended" && duration
           ? `${duration}${timestamp ? ` - ${timestamp}` : ""}`
           : timestamp || message.content;
-      const Icon = status === "ended" || status === "declined" || status === "missed" ? PhoneOff : status === "ringing" ? PhoneIncoming : Phone;
+      const Icon =
+        status === "ended" || status === "declined" || status === "missed"
+          ? PhoneOff
+          : status === "ringing"
+            ? PhoneIncoming
+            : Phone;
       const iconClass =
         status === "ended" || status === "declined" || status === "missed"
           ? "text-[var(--muted-foreground)]"

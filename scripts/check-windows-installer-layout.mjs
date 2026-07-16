@@ -5,9 +5,14 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const installerPath = resolve(REPO_ROOT, "win/installer/installer.nsi");
+const sharedPackagePath = resolve(REPO_ROOT, "packages/shared/package.json");
 
 try {
-  const content = await readFile(installerPath, "utf8");
+  const [content, sharedPackageSource] = await Promise.all([
+    readFile(installerPath, "utf8"),
+    readFile(sharedPackagePath, "utf8"),
+  ]);
+  const sharedPackage = JSON.parse(sharedPackageSource);
   const lines = content.split(/\r?\n/);
   const code = lines.map((line) => (/^\s*;/.test(line) ? "" : line)).join("\n");
 
@@ -32,6 +37,45 @@ try {
   ];
 
   const failures = unsafePatterns.filter(({ pattern }) => pattern.test(code));
+  const sharedBuild = sharedPackage?.scripts?.build;
+  if (typeof sharedBuild !== "string" || /\bpnpm(?:\.cmd)?\s/i.test(sharedBuild)) {
+    failures.push({
+      message:
+        "The shared workspace build must not invoke nested pnpm; Windows Corepack-only launchers do not put a global pnpm executable on PATH.",
+    });
+  }
+
+  const uninstallStart = code.indexOf('Section "Uninstall"');
+  const packageRemoval = code.indexOf('RMDir /r "$INSTDIR\\packages"', uninstallStart);
+  const canonicalDataDecision = code.indexOf("$INSTDIR\\packages\\server\\data", uninstallStart);
+  if (uninstallStart < 0 || packageRemoval < 0 || canonicalDataDecision < 0 || canonicalDataDecision > packageRemoval) {
+    failures.push({
+      message:
+        'The uninstaller must decide how to preserve "$INSTDIR\\packages\\server\\data" before removing packages.',
+    });
+  }
+  if (!code.includes('Rename "$INSTDIR\\packages\\server\\data" "$INSTDIR\\.__marinara-preserved-data"')) {
+    failures.push({ message: "The uninstaller must move current-layout user data out of packages before cleanup." });
+  }
+  if (!code.includes('Rename "$INSTDIR\\.__marinara-preserved-data" "$INSTDIR\\packages\\server\\data"')) {
+    failures.push({ message: "The uninstaller must restore preserved current-layout user data after cleanup." });
+  }
+  const interruptedDataDecision = code.indexOf(
+    '${ElseIf} ${FileExists} "$INSTDIR\\.__marinara-preserved-data\\*.*"',
+    uninstallStart,
+  );
+  if (interruptedDataDecision < 0 || interruptedDataDecision > packageRemoval) {
+    failures.push({ message: "The uninstaller must detect data staged by an interrupted previous uninstall." });
+  }
+  if (!code.includes('RMDir /r "$INSTDIR\\.__marinara-preserved-data"')) {
+    failures.push({ message: "The delete-data path must remove data staged by an interrupted previous uninstall." });
+  }
+  if (/RMDir\s+\/r\s+"\$INSTDIR\\installer"/i.test(code)) {
+    failures.push({ message: 'The uninstaller still targets the stale "$INSTDIR\\installer" directory.' });
+  }
+  if (!/RMDir\s+\/r\s+"\$INSTDIR\\win"/i.test(code)) {
+    failures.push({ message: 'The uninstaller must remove the current "$INSTDIR\\win" directory.' });
+  }
 
   const unsafeVariableAssignments = [
     {
@@ -79,7 +123,7 @@ try {
     process.exit(1);
   }
 
-  console.log("Windows installer staging layout is safe.");
+  console.log("Windows installer layout and Corepack launcher compatibility are safe.");
 } catch (err) {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);

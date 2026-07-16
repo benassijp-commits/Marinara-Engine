@@ -7,10 +7,11 @@ import { pathToFileURL } from "node:url";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import { flushDB } from "../../db/connection.js";
-import { FILE_BACKED_TABLES } from "../../db/file-backed-store.js";
+import { CASCADES, FILE_BACKED_TABLES } from "../../db/file-backed-store.js";
+import { getFileTableConfig, isFileTable, type AnyFileColumn, type AnyFileTable } from "../../db/file-schema.js";
 import * as schema from "../../db/schema/index.js";
 import { getFileStorageDir, getMonorepoRoot, isCustomToolScriptEnabled } from "../../config/runtime-config.js";
 import { logger } from "../../lib/logger.js";
@@ -19,26 +20,22 @@ import { newId, now } from "../../utils/id-generator.js";
 import { normalizeThemeCss } from "../../utils/theme-css.js";
 import { getMariImagesService } from "./mari-images.service.js";
 import { executeWikiCli } from "../professor-mari/fandom-mediawiki/wiki-cli.js";
-import type {
-  MariDbCommandResult,
-  MariDbDiffSummary,
-  MariDbHistoryEntry,
-  MariDbPendingApproval,
-  MariDbRowChange,
-  MariDbValidationIssue,
-  MariDbValidationResult,
+import {
+  LIMITS,
+  PROFESSOR_MARI_ID,
+  normalizeLorebookCategory,
+  type MariDbCommandResult,
+  type MariDbDiffSummary,
+  type MariDbHistoryEntry,
+  type MariDbPendingApproval,
+  type MariDbRowChange,
+  type MariDbValidationIssue,
+  type MariDbValidationResult,
 } from "@marinara-engine/shared";
 
 type Row = Record<string, unknown>;
-type Table = Record<string | symbol, unknown>;
-type Column = {
-  name: string;
-  table: Table;
-  primary?: boolean;
-  hasDefault?: boolean;
-  default?: unknown;
-  notNull?: boolean;
-};
+type Table = AnyFileTable;
+type Column = AnyFileColumn;
 type ColumnMeta = {
   key: string;
   dbName: string;
@@ -258,43 +255,19 @@ async function readPackageVersion(cwd: string): Promise<string | null> {
   }
 }
 
-const CASCADES: Array<{ parent: string; child: string; parentKey: string; childKey: string }> = [
-  { parent: "chats", child: "messages", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "agent_runs", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "agent_memory", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "chat_images", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "memory_chunks", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "game_state_snapshots", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "game_checkpoints", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "game_scene_videos", parentKey: "id", childKey: "chatId" },
-  { parent: "chats", child: "game_turn_storyboards", parentKey: "id", childKey: "chatId" },
-  {
-    parent: "game_turn_storyboards",
-    child: "game_turn_storyboard_keyframes",
-    parentKey: "id",
-    childKey: "storyboardId",
-  },
-  { parent: "messages", child: "message_swipes", parentKey: "id", childKey: "messageId" },
-  { parent: "characters", child: "character_card_versions", parentKey: "id", childKey: "characterId" },
-  { parent: "characters", child: "character_images", parentKey: "id", childKey: "characterId" },
-  { parent: "personas", child: "persona_images", parentKey: "id", childKey: "personaId" },
-  { parent: "personas", child: "persona_card_versions", parentKey: "id", childKey: "personaId" },
-  { parent: "lorebooks", child: "lorebook_character_links", parentKey: "id", childKey: "lorebookId" },
-  { parent: "lorebooks", child: "lorebook_persona_links", parentKey: "id", childKey: "lorebookId" },
-  { parent: "lorebooks", child: "lorebook_folders", parentKey: "id", childKey: "lorebookId" },
-  { parent: "lorebooks", child: "lorebook_entries", parentKey: "id", childKey: "lorebookId" },
-  { parent: "prompt_presets", child: "prompt_groups", parentKey: "id", childKey: "presetId" },
-  { parent: "prompt_presets", child: "prompt_sections", parentKey: "id", childKey: "presetId" },
-  { parent: "prompt_presets", child: "choice_blocks", parentKey: "id", childKey: "presetId" },
-  { parent: "agent_configs", child: "agent_runs", parentKey: "id", childKey: "agentConfigId" },
-  { parent: "agent_configs", child: "agent_memory", parentKey: "id", childKey: "agentConfigId" },
-];
+// The parent→child delete graph is imported from db/file-backed-store.ts (the
+// single source of truth) so cascade deletes and the dangling-reference
+// validator never drift from the real relations again.
 
+// Columns stored as JSON text. Ground truth is the file-table definition in
+// db/schema/* — these are plain text() columns whose JSON-ness only exists in
+// their doc comments, so this map cannot be derived automatically. Keep it in
+// sync with the schema when columns change.
 const JSON_COLUMNS: Record<string, readonly string[]> = {
   characters: ["data"],
   character_card_versions: ["data"],
   persona_card_versions: ["data"],
-  personas: ["avatarCrop", "trackerCardColors", "personaStats", "tags", "savedStatusOptions"],
+  personas: ["avatarCrop", "trackerCardColors", "personaStats", "tags", "savedStatusOptions", "convoBehavior"],
   character_groups: ["characterIds"],
   persona_groups: ["personaIds"],
   chats: ["characterIds", "metadata"],
@@ -315,64 +288,48 @@ const JSON_COLUMNS: Record<string, readonly string[]> = {
     "schedule",
     "embedding",
   ],
-  prompt_presets: ["tags"],
-  prompt_sections: ["enabledModes"],
-  choice_blocks: ["choices"],
-  chat_presets: ["parameters", "tags"],
-  api_connections: ["defaultParameters"],
+  prompt_presets: ["sectionOrder", "groupOrder", "variableGroups", "variableValues", "parameters", "defaultChoices"],
+  prompt_sections: ["markerConfig"],
+  choice_blocks: ["options"],
+  chat_presets: ["settings"],
+  // comfyuiWorkflow must be valid JSON by contract: image-generation.ts throws
+  // "Invalid ComfyUI workflow JSON" on parse failure (placeholders live inside
+  // string values). treatAsLocalEndpoint is a boolean-as-text, not JSON.
+  api_connections: ["defaultParameters", "comfyuiWorkflow"],
   agent_configs: ["settings"],
   agent_runs: ["resultData"],
   agent_memory: ["value"],
   custom_tools: ["parametersSchema"],
   game_state_snapshots: [
     "presentCharacters",
+    "recentEvents",
     "playerStats",
-    "partyState",
-    "npcState",
-    "relationships",
-    "quests",
-    "worldState",
-    "flags",
-    "metadata",
+    "personaStats",
+    "manualOverrides",
+    "fieldLocks",
   ],
-  game_checkpoints: ["snapshot", "metadata"],
-  regex_scripts: ["rules", "tags"],
-  chat_images: ["metadata"],
-  character_images: ["metadata"],
-  assets: ["metadata"],
-  custom_themes: ["metadata"],
-  installed_extensions: ["manifest", "settings"],
+  // game_checkpoints has no JSON columns (snapshotId is a plain FK; there is
+  // no snapshot/metadata column — see db/schema/checkpoints.ts). The same goes
+  // for chat_images, character_images, assets, custom_themes, and
+  // installed_extensions, whose former entries named columns that do not exist.
+  game_engine_state: ["state"],
+  regex_scripts: ["trimStrings", "placement", "targetCharacterIds"],
 };
-
-function symbolValue<T>(target: object, symbolName: string): T | undefined {
-  const symbol = Object.getOwnPropertySymbols(target).find((entry) => String(entry) === symbolName);
-  return symbol ? (target as Record<symbol, T>)[symbol] : undefined;
-}
-
-function isTable(value: unknown): value is Table {
-  return Boolean(value && typeof value === "object" && symbolValue(value as object, "Symbol(drizzle:IsDrizzleTable)"));
-}
-
-function tableNameOf(table: Table): string {
-  const name = symbolValue<string>(table, "Symbol(drizzle:Name)");
-  if (!name) throw new Error("Unknown table object");
-  return name;
-}
 
 function buildTableMetas() {
   const metas = new Map<string, TableMeta>();
   for (const candidate of Object.values(schema)) {
-    if (!isTable(candidate)) continue;
-    const table = candidate as Table;
-    const name = tableNameOf(table);
+    if (!isFileTable(candidate)) continue;
+    const table = candidate;
+    const config = getFileTableConfig(table);
+    const name = config.name;
     if (!FILE_BACKED_TABLE_SET.has(name)) continue;
-    const columnsObject = symbolValue<Record<string, Column>>(table, "Symbol(drizzle:Columns)") ?? {};
-    const columns = Object.entries(columnsObject).map(([key, column]) => ({
-      key,
+    const columns = config.columns.map((column) => ({
+      key: column.key,
       dbName: column.name,
       column,
-      primary: column.primary === true,
-      notNull: column.notNull === true,
+      primary: column.primary,
+      notNull: column.isNotNull,
     }));
     metas.set(name, {
       name,
@@ -805,6 +762,51 @@ function normalizeCharacterActionData(input: Row): Row {
   return out;
 }
 
+function normalizePersonaConvoBehavior(value: unknown): unknown {
+  if (isRecord(value)) return clone(value);
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (isRecord(parsed)) return parsed;
+  } catch {
+    // A plain directive is still useful input from Professor Mari or the CLI.
+  }
+  return { instruction: trimmed, insertionStrategy: "constant_after" };
+}
+
+export function buildPersonaCreateRow(data: Row, id: string, timestamp: string): Row {
+  return {
+    id,
+    name: requiredString(data, ["name"], "persona name"),
+    comment: firstString(data, ["comment"]) ?? "",
+    creator: firstString(data, ["creator"]) ?? "",
+    personaVersion: firstString(data, ["personaVersion", "persona_version"]) ?? "1.0",
+    creatorNotes: firstString(data, ["creatorNotes", "creator_notes", "creator-notes"]) ?? "",
+    phoneticName: firstString(data, ["phoneticName", "phonetic_name", "phonetic-name"]) ?? "",
+    description: firstString(data, ["description"]) ?? "",
+    personality: firstString(data, ["personality"]) ?? "",
+    scenario: firstString(data, ["scenario"]) ?? "",
+    backstory: firstString(data, ["backstory"]) ?? "",
+    appearance: firstString(data, ["appearance"]) ?? "",
+    isActive: "false",
+    nameColor: "",
+    dialogueColor: "",
+    boxColor: "",
+    trackerCardColors: { mode: "chat" },
+    personaStats: "",
+    tags: firstStringList(data, ["tags"]) ?? [],
+    savedStatusOptions: [],
+    avatarCrop: "",
+    convoDisplayName: firstString(data, ["convoDisplayName", "convo_display_name", "convo-display-name"]) ?? "",
+    aboutMe: firstString(data, ["aboutMe", "about_me", "about-me"]) ?? "",
+    convoBehavior: normalizePersonaConvoBehavior(data.convoBehavior ?? data.convo_behavior ?? data["convo-behavior"]),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
+
 function jsonString(value: unknown, fallback: unknown): string {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -1126,6 +1128,22 @@ function assignNumberField(target: Row, source: Row, sourceKeys: string[], targe
   const value = firstNumber(source, sourceKeys);
   if (value === undefined) return false;
   target[targetKey] = value;
+  return true;
+}
+
+function assignBoundedNumberField(
+  target: Row,
+  source: Row,
+  sourceKeys: string[],
+  targetKey: string,
+  minimum: number,
+  maximum: number,
+  integer = true,
+): boolean {
+  const value = firstNumber(source, sourceKeys);
+  if (value === undefined) return false;
+  const normalized = integer ? Math.trunc(value) : value;
+  target[targetKey] = Math.max(minimum, Math.min(maximum, normalized));
   return true;
 }
 
@@ -1771,34 +1789,18 @@ export class MariDbService {
           "creatorNotes",
           "creator_notes",
           "tags",
+          "phoneticName",
+          "phonetic_name",
+          "convoDisplayName",
+          "convo_display_name",
+          "aboutMe",
+          "about_me",
+          "convoBehavior",
+          "convo_behavior",
         ]);
-        const name = requiredString(data, ["name"], "persona name");
         const timestamp = now();
         const id = firstString(args, ["id", "personaId"]) ?? newId();
-        const row: Row = {
-          id,
-          name,
-          comment: firstString(data, ["comment"]) ?? "",
-          creator: firstString(data, ["creator"]) ?? "",
-          personaVersion: firstString(data, ["personaVersion", "persona_version"]) ?? "1.0",
-          creatorNotes: firstString(data, ["creatorNotes", "creator_notes", "creator-notes"]) ?? "",
-          description: firstString(data, ["description"]) ?? "",
-          personality: firstString(data, ["personality"]) ?? "",
-          scenario: firstString(data, ["scenario"]) ?? "",
-          backstory: firstString(data, ["backstory"]) ?? "",
-          appearance: firstString(data, ["appearance"]) ?? "",
-          isActive: "false",
-          nameColor: "",
-          dialogueColor: "",
-          boxColor: "",
-          trackerCardColors: { mode: "chat" },
-          personaStats: "",
-          tags: firstStringList(data, ["tags"]) ?? [],
-          savedStatusOptions: [],
-          avatarCrop: "",
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
+        const row = buildPersonaCreateRow(data, id, timestamp);
         return this.executeMutation(
           {
             kind: "insert",
@@ -1829,6 +1831,14 @@ export class MariDbService {
           "creatorNotes",
           "creator_notes",
           "tags",
+          "phoneticName",
+          "phonetic_name",
+          "convoDisplayName",
+          "convo_display_name",
+          "aboutMe",
+          "about_me",
+          "convoBehavior",
+          "convo_behavior",
         ]);
         const patch: Row = { updatedAt: now() };
         assignStringField(patch, data, ["name"], "name");
@@ -1840,6 +1850,19 @@ export class MariDbService {
         assignStringField(patch, data, ["comment"], "comment");
         assignStringField(patch, data, ["creator"], "creator");
         assignStringField(patch, data, ["creatorNotes", "creator_notes", "creator-notes"], "creatorNotes");
+        assignStringField(patch, data, ["phoneticName", "phonetic_name", "phonetic-name"], "phoneticName");
+        assignStringField(
+          patch,
+          data,
+          ["convoDisplayName", "convo_display_name", "convo-display-name"],
+          "convoDisplayName",
+        );
+        assignStringField(patch, data, ["aboutMe", "about_me", "about-me"], "aboutMe");
+        if (data.convoBehavior !== undefined || data.convo_behavior !== undefined || data["convo-behavior"] !== undefined) {
+          patch.convoBehavior = normalizePersonaConvoBehavior(
+            data.convoBehavior ?? data.convo_behavior ?? data["convo-behavior"],
+          );
+        }
         assignListField(patch, data, ["tags"], "tags");
         if (Object.keys(patch).length <= 1) {
           throw new Error("persona.update needs a patch field such as name, description, personality, scenario, backstory, appearance, tags, comment, creator, or creatorNotes");
@@ -1868,7 +1891,11 @@ export class MariDbService {
     let changed = false;
     changed = assignStringField(target, source, ["name"], "name") || changed;
     changed = assignStringField(target, source, ["description"], "description") || changed;
-    changed = assignStringField(target, source, ["category"], "category") || changed;
+    const category = firstString(source, ["category"]);
+    if (category !== undefined) {
+      target.category = normalizeLorebookCategory(category);
+      changed = true;
+    }
     changed = assignListField(target, source, ["tags"], "tags") || changed;
     changed = assignBooleanTextField(target, source, ["isGlobal", "global"], "isGlobal") || changed;
     changed = assignBooleanTextField(target, source, ["enabled"], "enabled") || changed;
@@ -1880,17 +1907,67 @@ export class MariDbService {
       target.enabled = "false";
       changed = true;
     }
-    changed = assignNumberField(target, source, ["scanDepth", "scan_depth"], "scanDepth") || changed;
-    changed = assignNumberField(target, source, ["tokenBudget", "token_budget"], "tokenBudget") || changed;
-    changed = assignNumberField(target, source, ["entryLimit", "entry_limit"], "entryLimit") || changed;
-    changed = assignBooleanTextField(target, source, ["recursiveScanning", "recursive"], "recursiveScanning") || changed;
-    changed = assignNumberField(target, source, ["maxRecursionDepth", "max_recursion_depth"], "maxRecursionDepth") || changed;
-    changed = assignBooleanTextField(target, source, ["excludeFromVectorization", "vectorsDisabled"], "excludeFromVectorization") || changed;
-    changed = assignNumberField(target, source, ["vectorQueryDepth", "vector_query_depth"], "vectorQueryDepth") || changed;
     changed =
-      assignNumberField(target, source, ["vectorScoreThreshold", "vector_score_threshold"], "vectorScoreThreshold") ||
+      assignBoundedNumberField(target, source, ["scanDepth", "scan_depth"], "scanDepth", 0, Number.MAX_SAFE_INTEGER) ||
       changed;
-    changed = assignNumberField(target, source, ["vectorMaxResults", "vector_max_results"], "vectorMaxResults") || changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["tokenBudget", "token_budget"],
+        "tokenBudget",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      ) || changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["entryLimit", "entry_limit"],
+        "entryLimit",
+        LIMITS.LOREBOOK_ENTRY_LIMIT_MIN,
+        LIMITS.LOREBOOK_ENTRY_LIMIT_MAX,
+      ) || changed;
+    changed = assignBooleanTextField(target, source, ["recursiveScanning", "recursive"], "recursiveScanning") || changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["maxRecursionDepth", "max_recursion_depth"],
+        "maxRecursionDepth",
+        1,
+        10,
+      ) || changed;
+    changed = assignBooleanTextField(target, source, ["excludeFromVectorization", "vectorsDisabled"], "excludeFromVectorization") || changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["vectorQueryDepth", "vector_query_depth"],
+        "vectorQueryDepth",
+        0,
+        LIMITS.LOREBOOK_VECTOR_QUERY_DEPTH_MAX,
+      ) || changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["vectorScoreThreshold", "vector_score_threshold"],
+        "vectorScoreThreshold",
+        0,
+        1,
+        false,
+      ) ||
+      changed;
+    changed =
+      assignBoundedNumberField(
+        target,
+        source,
+        ["vectorMaxResults", "vector_max_results"],
+        "vectorMaxResults",
+        LIMITS.LOREBOOK_VECTOR_MAX_RESULTS_MIN,
+        LIMITS.LOREBOOK_VECTOR_MAX_RESULTS_MAX,
+      ) || changed;
     if (isRecord(source.scope)) {
       target.scope = clone(source.scope);
       changed = true;
@@ -2018,6 +2095,8 @@ export class MariDbService {
           vectorMaxResults: 10,
           scope: { mode: "all", chatIds: [] },
           tags: [],
+          generatedBy: "agent",
+          sourceAgentId: PROFESSOR_MARI_ID,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
@@ -3124,38 +3203,34 @@ export class MariDbService {
         const name = flagString(flags, "name")?.trim();
         if (!name) {
           throw new Error(
-            "Usage: mari personas create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
+            "Usage: mari personas create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--phonetic-name <text>] [--convo-display-name <text>] [--about-me <text>] [--convo-behavior <text-or-json>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
           );
         }
         const timestamp = now();
-        const row: Row = {
-          id: flagString(flags, "id") ?? newId(),
-          name,
-          comment: flagString(flags, "comment") ?? "",
-          creator: flagString(flags, "creator") ?? "",
-          personaVersion: "1.0",
-          creatorNotes: flagString(flags, "creator-notes") ?? "",
-          description: flagString(flags, "description") ?? "",
-          personality: flagString(flags, "personality") ?? "",
-          scenario: flagString(flags, "scenario") ?? "",
-          backstory: flagString(flags, "backstory") ?? "",
-          appearance: flagString(flags, "appearance") ?? "",
-          isActive: "false",
-          nameColor: "",
-          dialogueColor: "",
-          boxColor: "",
-          trackerCardColors: { mode: "chat" },
-          personaStats: "",
-          tags: [],
-          savedStatusOptions: [],
-          avatarCrop: "",
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        };
+        const id = flagString(flags, "id") ?? newId();
+        const row = buildPersonaCreateRow(
+          {
+            name,
+            comment: flagString(flags, "comment"),
+            creator: flagString(flags, "creator"),
+            creatorNotes: flagString(flags, "creator-notes"),
+            phoneticName: flagString(flags, "phonetic-name"),
+            description: flagString(flags, "description"),
+            personality: flagString(flags, "personality"),
+            scenario: flagString(flags, "scenario"),
+            backstory: flagString(flags, "backstory"),
+            appearance: flagString(flags, "appearance"),
+            convoDisplayName: flagString(flags, "convo-display-name"),
+            aboutMe: flagString(flags, "about-me"),
+            convoBehavior: flagString(flags, "convo-behavior"),
+          },
+          id,
+          timestamp,
+        );
         const request: ParsedMutationRequest = {
           kind: "insert",
           table: "personas",
-          id: String(row.id),
+          id,
           row,
           apply: hasFlag(flags, "apply"),
           cascade: false,
@@ -3168,7 +3243,7 @@ export class MariDbService {
         const id = parsed.positionals[0];
         if (!id)
           throw new Error(
-            "Usage: mari personas update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
+            "Usage: mari personas update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--phonetic-name <text>] [--convo-display-name <text>] [--about-me <text>] [--convo-behavior <text-or-json>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
           );
         const patch: Row = { updatedAt: now() };
         const fieldMap: Array<[string, string]> = [
@@ -3181,6 +3256,9 @@ export class MariDbService {
           ["comment", "comment"],
           ["creator", "creator"],
           ["creator-notes", "creatorNotes"],
+          ["phonetic-name", "phoneticName"],
+          ["convo-display-name", "convoDisplayName"],
+          ["about-me", "aboutMe"],
         ];
         for (const [flagName, fieldName] of fieldMap) {
           const val = flagString(flags, flagName);
@@ -3192,9 +3270,11 @@ export class MariDbService {
             ? personaTagsRaw.split(/[,|]/).map((t) => t.trim()).filter(Boolean)
             : [];
         }
+        const convoBehaviorRaw = flagString(flags, "convo-behavior");
+        if (convoBehaviorRaw !== undefined) patch.convoBehavior = normalizePersonaConvoBehavior(convoBehaviorRaw);
         if (Object.keys(patch).length <= 1) {
           throw new Error(
-            "Provide at least one field to update (--name, --description, --personality, --scenario, --backstory, --appearance, --tags, --comment, --creator, --creator-notes)",
+            "Provide at least one field to update (--name, --description, --personality, --scenario, --backstory, --appearance, --phonetic-name, --convo-display-name, --about-me, --convo-behavior, --tags, --comment, --creator, --creator-notes)",
           );
         }
         const request: ParsedMutationRequest = {
@@ -3301,7 +3381,7 @@ export class MariDbService {
           id: flagString(flags, "id") ?? newId(),
           name,
           description: flagString(flags, "description") ?? "",
-          category: flagString(flags, "category") ?? "uncategorized",
+          category: normalizeLorebookCategory(flagString(flags, "category")),
           isGlobal: hasFlag(flags, "global") ? "true" : "false",
           enabled: "true",
           scanDepth: 2,
@@ -3312,6 +3392,8 @@ export class MariDbService {
           excludeFromVectorization: "false",
           scope: { mode: "all", chatIds: [] },
           tags: [],
+          generatedBy: "agent",
+          sourceAgentId: PROFESSOR_MARI_ID,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
@@ -3337,12 +3419,13 @@ export class MariDbService {
         const fieldMap: Array<[string, string]> = [
           ["name", "name"],
           ["description", "description"],
-          ["category", "category"],
         ];
         for (const [flagName, fieldName] of fieldMap) {
           const val = flagString(flags, flagName);
           if (val !== undefined) patch[fieldName] = val;
         }
+        const category = flagString(flags, "category");
+        if (category !== undefined) patch.category = normalizeLorebookCategory(category);
         if (hasFlag(flags, "global")) patch.isGlobal = "true";
         if (hasFlag(flags, "no-global")) patch.isGlobal = "false";
         if (hasFlag(flags, "enable")) patch.enabled = "true";
@@ -3374,13 +3457,20 @@ export class MariDbService {
         const lorebookId = parsed.positionals[0];
         if (!lorebookId) {
           throw new Error(
-            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
           );
         }
         const entryName = flagString(flags, "name")?.trim();
         if (!entryName) throw new Error("--name is required for add-entry");
         const lorebookExists = await this.getRawById(getMeta("lorebooks"), lorebookId);
         if (!lorebookExists) throw new Error(`Lorebook ${lorebookId} not found`);
+        const addFolderId = flagString(flags, "folder-id");
+        if (addFolderId) {
+          const folderRow = await this.getRawById(getMeta("lorebook_folders"), addFolderId);
+          if (!folderRow || String(folderRow.lorebookId) !== lorebookId) {
+            throw new Error(`Folder ${addFolderId} not found in lorebook ${lorebookId}`);
+          }
+        }
         const keysRaw = flagString(flags, "keys") ?? "";
         const keys = keysRaw
           ? keysRaw
@@ -3392,6 +3482,7 @@ export class MariDbService {
         const entryRow: Row = {
           id: flagString(flags, "id") ?? newId(),
           lorebookId,
+          folderId: addFolderId ?? null,
           name: entryName,
           content: flagString(flags, "content") ?? "",
           description: flagString(flags, "description") ?? "",
@@ -3444,7 +3535,7 @@ export class MariDbService {
         const entryId = parsed.positionals[0];
         if (!entryId) {
           throw new Error(
-            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--apply] [--reason <text>]",
+            "Usage: mari lorebooks update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
           );
         }
         const entryExists = await this.getRawById(getMeta("lorebook_entries"), entryId);
@@ -3476,9 +3567,21 @@ export class MariDbService {
         if (hasFlag(flags, "disable")) entryPatch.enabled = "false";
         if (hasFlag(flags, "constant")) entryPatch.constant = "true";
         if (hasFlag(flags, "no-constant")) entryPatch.constant = "false";
+        const patchFolderId = flagString(flags, "folder-id");
+        if (patchFolderId !== undefined) {
+          if (!patchFolderId || patchFolderId === "none") {
+            entryPatch.folderId = null;
+          } else {
+            const folderRow = await this.getRawById(getMeta("lorebook_folders"), patchFolderId);
+            if (!folderRow || String(folderRow.lorebookId) !== String(entryExists.lorebookId)) {
+              throw new Error(`Folder ${patchFolderId} not found in this entry's lorebook`);
+            }
+            entryPatch.folderId = patchFolderId;
+          }
+        }
         if (Object.keys(entryPatch).length <= 1) {
           throw new Error(
-            "Provide at least one field to update (--name, --content, --keys, --description, --tag, --enable, --disable, --constant, --no-constant, --order)",
+            "Provide at least one field to update (--name, --content, --keys, --description, --tag, --enable, --disable, --constant, --no-constant, --order, --folder-id)",
           );
         }
         const updateEntryRequest: ParsedMutationRequest = {
@@ -4606,8 +4709,8 @@ export class MariDbService {
       "Read:  active",
       "Read:  get <id>",
       "Read:  search <query> [--limit <n>]",
-      "Write: create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
-      "Write: update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
+      "Write: create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--phonetic-name <text>] [--convo-display-name <text>] [--about-me <text>] [--convo-behavior <text-or-json>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
+      "Write: update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--phonetic-name <text>] [--convo-display-name <text>] [--about-me <text>] [--convo-behavior <text-or-json>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
       "Write: delete <id> [--apply] [--reason <text>]",
       "Writes dry-run by default; --apply saves reversible changes and shows a Keep/Restore review card.",
     ].join("\n");
@@ -4623,8 +4726,8 @@ export class MariDbService {
       "Read:  search <query> [--limit <n>]",
       "Write: create --name <name> [--description <text>] [--category <text>] [--global] [--apply] [--reason <text>]",
       "Write: update <id> [--name <name>] [--description <text>] [--category <text>] [--tags <t1,t2,...>] [--global] [--enable] [--disable] [--apply] [--reason <text>]",
-      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--apply] [--reason <text>]",
-      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--apply] [--reason <text>]",
+      "Write: add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--folder-id <folder-id>] [--apply] [--reason <text>]",
+      "Write: update-entry <entry-id> [--name <name>] [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--tag <tag>] [--enable] [--disable] [--constant] [--no-constant] [--order <n>] [--folder-id <folder-id>|none] [--apply] [--reason <text>]",
       "Write: delete-entry <entry-id> [--apply] [--reason <text>]",
       "Write: link-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",
       "Write: unlink-character <lorebook-id> --character <character-id> [--apply] [--reason <text>]",

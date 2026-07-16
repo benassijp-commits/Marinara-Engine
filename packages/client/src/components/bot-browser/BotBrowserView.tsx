@@ -1,6 +1,6 @@
 // ──────────────────────────────────────────────
 // View: Browser (full-page, replaces chat area)
-// Multi-provider: ChubAI, JannyAI, CharacterTavern, Pygmalion, Wyvern
+// Multi-provider: ChubAI, JannyAI, CharacterTavern, Pygmalion, Wyvern, DataCat
 // With login modals for Pygmalion & CharacterTavern NSFW, PNG download for all providers
 // ──────────────────────────────────────────────
 import { useState, useCallback, useEffect, useLayoutEffect, useRef, useMemo } from "react";
@@ -105,13 +105,10 @@ interface ProviderConfig {
   hasTokenFilters: boolean;
   extraToggles: { key: string; label: string; icon: string }[];
   nsfwAvailable: boolean;
-  /** "login" = show login modal, "wyvern" = show sort hint, true/false = normal */
+  /** "free" = NSFW toggle enabled; "login" = toggle enabled once logged in; "wyvern" = toggle rendered disabled (only sourceId "wyvern" pairs this with a sort-hint toast on click — other "wyvern"-mode providers, e.g. DataCat, get no toast) */
   nsfwMode: "free" | "login" | "wyvern";
   search: (params: SearchParams) => Promise<{ cards: BrowseCard[]; totalCount: number }>;
   fetchDetail: (card: BrowseCard) => Promise<CardDetail | null>;
-  importCard: (card: BrowseCard) => Promise<void>;
-  getAvatarUrl: (card: BrowseCard) => string;
-  getExternalUrl: (card: BrowseCard) => string;
   siteName: string;
 }
 
@@ -384,8 +381,6 @@ const chubProvider: ProviderConfig = {
   extraToggles: [],
   nsfwAvailable: true,
   nsfwMode: "free",
-  getAvatarUrl: (card) => `/api/bot-browser/chub/avatar/${encodeProxyPath(card.id)}`,
-  getExternalUrl: (card) => `https://chub.ai/characters/${card.id}`,
   search: async (p) => {
     const preset = CHUB_SORT_PRESETS.find((pr) => pr.value === p.sort) ?? CHUB_SORT_PRESETS[0];
     const isSearching = p.query.trim().length > 0;
@@ -462,7 +457,6 @@ const chubProvider: ProviderConfig = {
       extensions: optionalRecord(def.extensions),
     };
   },
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -489,15 +483,6 @@ const jannyProvider: ProviderConfig = {
   extraToggles: [{ key: "showLowQuality", label: "Show Low Quality", icon: "🚫" }],
   nsfwAvailable: true,
   nsfwMode: "free",
-  getAvatarUrl: (card) => `/api/bot-browser/janny/avatar/${encodeProxyPath((card._raw as any)?.avatar || "")}`,
-  getExternalUrl: (card) => {
-    const raw = card._raw as any;
-    const slug = card.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    return `https://jannyai.com/characters/${raw?.id || card.id}_character-${slug}`;
-  },
   search: async (p) => {
     // Fetch a one-time search token from the server (token is scraped from JannyAI's
     // public Astro bundle). The actual MeiliSearch POST runs from the BROWSER so that
@@ -792,7 +777,7 @@ const jannyProvider: ProviderConfig = {
       /* fall through */
     }
 
-    // Strategy 2: server-side proxy (likely fails due to Cloudflare, but try anyway)
+    // Fall back to our server-side proxy (likely fails due to Cloudflare, but try anyway)
     try {
       const res = await fetch(`/api/bot-browser/janny/character/${charId}?slug=character-${slug}`);
       if (res.ok) {
@@ -813,7 +798,6 @@ const jannyProvider: ProviderConfig = {
     return null;
   },
 
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -840,8 +824,6 @@ const chartavernProvider: ProviderConfig = {
   extraToggles: [{ key: "isOC", label: "Original Character", icon: "⭐" }],
   nsfwAvailable: false,
   nsfwMode: "login",
-  getAvatarUrl: (card) => `/api/bot-browser/chartavern/avatar/${encodeProxyPath(card.id)}`,
-  getExternalUrl: (card) => `https://character-tavern.com/character/${card.id}`,
   search: async (p) => {
     const params = new URLSearchParams({
       q: p.query,
@@ -902,7 +884,6 @@ const chartavernProvider: ProviderConfig = {
       hasLorebook: !!c.lorebookId,
     };
   },
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -930,14 +911,6 @@ const pygmalionProvider: ProviderConfig = {
   extraToggles: [],
   nsfwAvailable: false,
   nsfwMode: "login",
-  getAvatarUrl: (card) => {
-    const raw = card._raw as any;
-    const av = raw?.avatarUrl;
-    if (!av) return "";
-    if (av.startsWith("http")) return `/api/bot-browser/pygmalion/avatar/${encodeURIComponent(av)}`;
-    return `/api/bot-browser/pygmalion/avatar/${encodeProxyPath(av)}`;
-  },
-  getExternalUrl: (card) => `https://pygmalion.chat/character/${card.id}`,
   search: async (p) => {
     const params = new URLSearchParams({
       q: p.query,
@@ -1013,7 +986,6 @@ const pygmalionProvider: ProviderConfig = {
       alternateGreetings: Array.isArray(p.alternateGreetings) ? p.alternateGreetings.filter(Boolean) : [],
     };
   },
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -1044,14 +1016,6 @@ const wyvernProvider: ProviderConfig = {
   extraToggles: [],
   nsfwAvailable: false,
   nsfwMode: "wyvern",
-  getAvatarUrl: (card) => {
-    const raw = card._raw as any;
-    const src = raw?.avatar_url || raw?.avatar;
-    if (!src) return "";
-    if (src.startsWith("http")) return `/api/bot-browser/wyvern/avatar/${encodeURIComponent(src)}`;
-    return `/api/bot-browser/wyvern/avatar/${encodeProxyPath(src)}/public`;
-  },
-  getExternalUrl: (card) => `https://app.wyvern.chat/characters/${card.id}`,
   search: async (p) => {
     const params = new URLSearchParams({ page: String(p.page), limit: "48", sort: p.sort });
     if (p.query) params.set("q", p.query);
@@ -1123,7 +1087,6 @@ const wyvernProvider: ProviderConfig = {
       hasLorebook: !!(c.lorebooks?.length > 0),
     };
   },
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -1198,18 +1161,6 @@ const datacatProvider: ProviderConfig = {
   // DataCat is NSFW-only — hide the toggle since every character is NSFW-tagged
   nsfwAvailable: false,
   nsfwMode: "wyvern",
-  getAvatarUrl: (card) => {
-    const raw = card._raw as any;
-    const av = raw?.avatar || "";
-    if (!av) return "";
-    if (av.startsWith("http")) return `/api/bot-browser/datacat/avatar/${encodeURIComponent(av)}`;
-    return `/api/bot-browser/datacat/avatar/${encodeProxyPath(av)}`;
-  },
-  getExternalUrl: (card) => {
-    const raw = card._raw as any;
-    const id = raw?.characterId || raw?.character_id || card.id;
-    return `https://datacat.run/characters/${id}`;
-  },
   search: async (p) => {
     await loadDatacatTags();
     const tagIds = p.includeTags.length > 0 ? datacatTagNamesToIds(p.includeTags) : [];
@@ -1358,7 +1309,6 @@ const datacatProvider: ProviderConfig = {
       return null;
     }
   },
-  importCard: async () => {},
 };
 
 // ════════════════════════════════════════════════
@@ -1947,73 +1897,100 @@ export function BotBrowserView() {
   };
 
   return (
-    <div className="mari-chrome-token-scope flex h-full flex-col overflow-hidden">
+    <div
+      data-component="BotBrowserView"
+      className="mari-chrome-token-scope flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(circle_at_top_left,_color-mix(in_srgb,var(--marinara-chat-chrome-accent)_14%,transparent),_transparent_30%),radial-gradient(circle_at_top_right,_color-mix(in_srgb,var(--marinara-chat-chrome-text)_10%,transparent),_transparent_26%),var(--background)] text-[var(--marinara-chat-chrome-panel-text)]"
+    >
       {/* ═══ Header ═══ */}
-      <div className="relative flex h-12 flex-shrink-0 items-center gap-3 bg-[var(--card)]/80 px-4 backdrop-blur-sm">
-        <div className="absolute inset-x-0 bottom-0 h-px bg-[var(--border)]/30" />
-        <button
-          type="button"
-          onClick={closeBotBrowser}
-          className="mari-editor-action inline-flex shrink-0"
-          title="Back"
-          aria-label="Back"
-        >
-          <ArrowLeft size="1.125rem" />
-        </button>
-        <h2 className="mari-chrome-text-strong text-sm font-semibold">Browser</h2>
-        <div className="relative ml-2">
+      <header className="relative z-10 flex shrink-0 flex-col gap-2 border-b border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--card)]/85 px-3 py-2 backdrop-blur-xl md:px-6 md:py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
           <button
-            ref={sourceButtonRef}
-            onClick={() => setSourceOpen((v) => !v)}
-            className="mari-chrome-control mari-chrome-control--small px-3 py-1.5 text-xs"
+            type="button"
+            onClick={closeBotBrowser}
+            className="mari-chrome-control h-9 w-9 shrink-0 rounded-2xl p-0 md:h-10 md:w-10"
+            title="Close library"
+            aria-label="Close library"
           >
-            <span>{provider.icon}</span>
-            <span>{provider.name}</span>
-            <ChevronDown size="0.625rem" className={cn("transition-transform", sourceOpen && "rotate-180")} />
+            <ArrowLeft size="0.95rem" />
           </button>
+          <div className="min-w-0">
+            <p className="text-[0.625rem] font-semibold uppercase tracking-[0.28em] text-[var(--marinara-chat-chrome-panel-muted)]">
+              Cards Library
+            </p>
+            <h1 className="truncate text-base font-semibold text-[var(--marinara-chat-chrome-panel-title)] md:text-2xl">
+              Browse character cards online
+            </h1>
+            <p className="truncate text-xs text-[var(--marinara-chat-chrome-panel-muted)] md:text-sm">
+              {totalCount > 0
+                ? `${totalCount.toLocaleString()} cards from ${provider.name}`
+                : `Browsing ${provider.name}`}
+            </p>
+          </div>
         </div>
-        {sourceOpen &&
-          sourceMenuPosition &&
-          createPortal(
-            <div
-              className="mari-chrome-token-scope mari-chrome-selection-bar mari-chrome-selection-bar--opaque fixed z-[9999] min-w-[180px] overflow-y-auto shadow-xl"
-              style={{
-                left: sourceMenuPosition.left,
-                top: sourceMenuPosition.top,
-                maxHeight: sourceMenuPosition.maxHeight,
-              }}
+
+        <div className="flex min-w-0 flex-wrap items-center gap-2 sm:ml-auto">
+          <div className="relative">
+            <button
+              ref={sourceButtonRef}
+              onClick={() => setSourceOpen((v) => !v)}
+              className="mari-chrome-control h-9 px-3 text-xs md:h-10"
             >
-              {ALL_PROVIDERS.map((p) => (
+              <span>{provider.icon}</span>
+              <span>{provider.name}</span>
+              <ChevronDown size="0.625rem" className={cn("transition-transform", sourceOpen && "rotate-180")} />
+            </button>
+          </div>
+          {sourceOpen &&
+            sourceMenuPosition &&
+            createPortal(
+              <>
                 <button
-                  key={p.id}
-                  onClick={() => switchProvider(p.id)}
-                  className={cn(
-                    "flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-xs transition-colors",
-                    p.id === sourceId
-                      ? "mari-chrome-accent-surface mari-accent-animated font-semibold"
-                      : "hover:bg-[var(--accent)]",
-                  )}
+                  type="button"
+                  aria-label="Close provider menu"
+                  className="fixed inset-0 z-[9998] cursor-default"
+                  onClick={() => setSourceOpen(false)}
+                />
+                <div
+                  className="mari-chrome-token-scope mari-chrome-selection-bar mari-chrome-selection-bar--opaque fixed z-[9999] min-w-[180px] overflow-y-auto shadow-xl"
+                  style={{
+                    left: sourceMenuPosition.left,
+                    top: sourceMenuPosition.top,
+                    maxHeight: sourceMenuPosition.maxHeight,
+                  }}
                 >
-                  <span className="text-sm">{p.icon}</span>
-                  <span>{p.name}</span>
-                  {p.id === sourceId && <span className="ml-auto text-[0.6rem]">✓</span>}
-                </button>
-              ))}
-            </div>,
-            document.body,
+                  {ALL_PROVIDERS.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => switchProvider(p.id)}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-xs transition-colors",
+                        p.id === sourceId
+                          ? "mari-chrome-accent-surface mari-accent-animated font-semibold"
+                          : "hover:bg-[var(--accent)]",
+                      )}
+                    >
+                      <span className="text-sm">{p.icon}</span>
+                      <span>{p.name}</span>
+                      {p.id === sourceId && <span className="ml-auto text-[0.6rem]">✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </>,
+              document.body,
+            )}
+          {/* Auth indicator for login providers */}
+          {sourceId === "pygmalion" && pygLoggedIn && (
+            <span className="flex items-center gap-1 text-[0.65rem] text-emerald-400">
+              <CheckCircle size="0.625rem" /> Logged in
+            </span>
           )}
-        {/* Auth indicator for login providers */}
-        {sourceId === "pygmalion" && pygLoggedIn && (
-          <span className="ml-auto flex items-center gap-1 text-[0.65rem] text-emerald-400">
-            <CheckCircle size="0.625rem" /> Logged in
-          </span>
-        )}
-        {sourceId === "chartavern" && ctLoggedIn && (
-          <span className="ml-auto flex items-center gap-1 text-[0.65rem] text-emerald-400">
-            <CheckCircle size="0.625rem" /> Session active
-          </span>
-        )}
-      </div>
+          {sourceId === "chartavern" && ctLoggedIn && (
+            <span className="flex items-center gap-1 text-[0.65rem] text-emerald-400">
+              <CheckCircle size="0.625rem" /> Session active
+            </span>
+          )}
+        </div>
+      </header>
 
       <div className="flex flex-1 overflow-hidden">
         {/* ═══ Tag Sidebar ═══ */}
@@ -2450,7 +2427,7 @@ export function BotBrowserView() {
                 </div>
               ) : error ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 py-12">
-                  <span className="text-sm text-[var(--destructive)]">{error}</span>
+                  <span className="text-sm font-medium text-[var(--marinara-chat-chrome-panel-title)]">{error}</span>
                   <button
                     onClick={doSearch}
                     className="mari-chrome-control mari-chrome-control--selected px-4 py-2 text-xs"
@@ -3133,10 +3110,6 @@ function DetailView({
 }
 
 // ════════════════════════════════════════════════
-// Definition Section
-// ════════════════════════════════════════════════
-
-// ════════════════════════════════════════════════
 // PNG Character Card Builder
 // ════════════════════════════════════════════════
 
@@ -3265,6 +3238,10 @@ function crc32(data: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 crc32.table = null as Uint32Array | null;
+
+// ════════════════════════════════════════════════
+// Definition Section
+// ════════════════════════════════════════════════
 
 function DefSection({ title, content }: { title: string; content: string }) {
   return (

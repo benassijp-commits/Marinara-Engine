@@ -275,7 +275,7 @@ export function GameJournal({
     <div
       className={
         embedded
-          ? "flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
+          ? "flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-transparent"
           : "absolute inset-0 z-40 flex min-h-0 flex-col overflow-hidden bg-black/85 backdrop-blur-md"
       }
     >
@@ -317,7 +317,10 @@ export function GameJournal({
       </div>
 
       {/* Content */}
-      <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-4 [-webkit-overflow-scrolling:touch]">
+      <div
+        data-game-journal-scroll
+        className="relative min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-y-contain p-4 [-webkit-overflow-scrolling:touch]"
+      >
         {activeTab === "all" && <TimelineView entries={visibleEntries} />}
         {activeTab === "npcs" && (
           <NpcsView
@@ -365,11 +368,14 @@ function TimelineView({ entries }: { entries: JournalEntry[] }) {
   );
 }
 
+// Thresholds must match getReputationTier in packages/server/src/services/game/reputation.service.ts
 function reputationLabel(rep: number): { text: string; color: string } {
+  if (rep >= 80) return { text: "Devoted", color: "text-emerald-300" };
   if (rep >= 50) return { text: "Allied", color: "text-emerald-400" };
   if (rep >= 20) return { text: "Friendly", color: "text-green-400" };
   if (rep >= -20) return { text: "Neutral", color: "text-gray-400" };
-  if (rep >= -50) return { text: "Hostile", color: "text-orange-400" };
+  if (rep >= -50) return { text: "Unfriendly", color: "text-amber-400" };
+  if (rep >= -80) return { text: "Hostile", color: "text-orange-400" };
   return { text: "Enemy", color: "text-red-400" };
 }
 

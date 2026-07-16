@@ -1,7 +1,7 @@
 import {
   isClaudeAdaptiveOnlyNoSamplingModel,
   normalizeThinkingTagPairs,
-  supportsXhighReasoningEffort,
+  resolveProviderReasoningEffort,
   type GenerationParameterSendMap,
   type ThinkingTagPair,
 } from "@marinara-engine/shared";
@@ -16,14 +16,11 @@ import {
   parseStoredGenerationParameters,
   resolveProviderTopK,
 } from "../../routes/generate/generate-route-utils.js";
-import {
-  mergeModelContextLimit,
-  resolveStoredModelContextLimit,
-} from "./model-access-policy.js";
-import {
-  normalizeChatTopP,
-} from "./generation-parameters.js";
+import { mergeModelContextLimit, resolveStoredModelContextLimit } from "./model-access-policy.js";
+import { normalizeChatTopP } from "./generation-parameters.js";
 import { clampGenerationMaxOutputTokens } from "./output-token-limits.js";
+import { withConnectionFallbackProvider, type FallbackConnection } from "../llm/connection-fallback-provider.js";
+import type { GenerationFallbackNotifier } from "./fallback-notification.js";
 
 type GenerationConnection = {
   provider: string;
@@ -41,6 +38,9 @@ type GenerationProviderRuntimeArgs = {
   connectionId: string;
   connection: GenerationConnection;
   baseUrl: string;
+  fallbackConnection?: FallbackConnection | null;
+  fallbackBaseUrl?: string;
+  onFallback?: GenerationFallbackNotifier;
   chatMode: string;
   isSceneChat: boolean;
   chatParameters: unknown;
@@ -73,6 +73,7 @@ export type GenerationProviderRuntime = GenerationProviderRuntimeArgs["initial"]
   enableThinking: boolean;
   isClaudeNoSampling: boolean;
   providerTopK: number | undefined;
+  primaryProvider: BaseLLMProvider;
   provider: BaseLLMProvider;
 };
 
@@ -148,25 +149,12 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
 
   const modelLower = (args.connection.model ?? "").toLowerCase();
   const providerLower = (args.connection.provider ?? "").toLowerCase();
-  let resolvedEffort: "low" | "medium" | "high" | "xhigh" | "max" | null =
-    runtime.reasoningEffort !== "maximum" ? runtime.reasoningEffort : null;
-  const supportsXhigh = supportsXhighReasoningEffort(modelLower);
-  if (runtime.reasoningEffort === "xhigh" && !supportsXhigh) {
-    resolvedEffort = "high";
-  }
-  if (runtime.reasoningEffort === "maximum") {
-    const isNativeAnthropicAdaptiveOnly =
-      (providerLower === "anthropic" || providerLower === "claude_subscription") &&
-      isClaudeAdaptiveOnlyNoSamplingModel(modelLower);
-    resolvedEffort = isNativeAnthropicAdaptiveOnly ? "max" : supportsXhigh ? "xhigh" : "high";
-  }
+  let resolvedEffort = resolveProviderReasoningEffort({
+    provider: providerLower,
+    model: modelLower,
+    reasoningEffort: runtime.reasoningEffort,
+  });
 
-  const isXaiAutoReasoningModel =
-    (providerLower === "xai" && (modelLower.startsWith("grok-4.3") || modelLower.startsWith("grok-4-1-fast"))) ||
-    (providerLower === "openrouter" && modelLower.startsWith("x-ai/grok-"));
-  if (isXaiAutoReasoningModel) {
-    resolvedEffort = null;
-  }
   if (resolvedEffort && !runtime.showThoughts) {
     runtime.showThoughts = true;
   }
@@ -191,8 +179,8 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
     runtime.presencePenalty = 0;
   }
 
-  const providerTopK = resolveProviderTopK(args.connection.provider, runtime.topK);
-  const provider =
+  const providerTopK = resolveProviderTopK(runtime.topK);
+  const primaryProvider =
     args.connectionId === LOCAL_SIDECAR_CONNECTION_ID
       ? getLocalSidecarProvider()
       : createLLMProvider(
@@ -205,6 +193,14 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
           args.connection.claudeFastMode === "true",
           args.connection.treatAsLocalEndpoint === "true",
         );
+  const provider = withConnectionFallbackProvider({
+    primary: primaryProvider,
+    primaryConnectionId: args.connectionId,
+    fallbackConnection: args.fallbackConnection,
+    fallbackBaseUrl: args.fallbackBaseUrl ?? "",
+    category: "main",
+    onFallback: args.onFallback,
+  });
 
   return {
     ...runtime,
@@ -214,6 +210,7 @@ export function resolveGenerationProviderRuntime(args: GenerationProviderRuntime
     enableThinking,
     isClaudeNoSampling,
     providerTopK,
+    primaryProvider,
     provider,
   };
 }

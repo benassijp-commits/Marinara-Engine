@@ -14,6 +14,10 @@
 // - [call] or [call: reason="..."] (ring the user for an audio call; Conversation mode)
 // - [uno] (start a game of UNO at the table; Conversation mode)
 // - [chess] (start a one-on-one chess game against the user; Conversation mode)
+// - [poker] (start a game of Texas Hold'em poker at the table; Conversation mode)
+// - [eightball] (start a one-on-one 8-ball pool game against the user; Conversation mode)
+// - [tic_tac_toe] (start a one-on-one tic-tac-toe game against the user; Conversation mode)
+// - [rock_paper_scissors] (start a one-on-one rock-paper-scissors match against the user; Conversation mode)
 // - [spotify: title="Song title", artist="Artist"] (play a song on the user's active Spotify player)
 // - [youtube: query="Song title Artist"] (play a song on the user's active YouTube player)
 // - [react: emoji="😂"] or [react: emoji=":custom_name:"] (react to the user's latest message; Conversation mode)
@@ -31,6 +35,7 @@
 // - <create_lorebook>{"name":"...","description":"...","category":"...","tags":["..."],"entries":[{"name":"...","content":"...","keys":["..."],"tag":"..."}]}</create_lorebook>
 // - <update_lorebook>{"name":"Existing","description":"...","entries":[{"name":"Entry","content":"refined content","keys":["..."]}]}</update_lorebook>
 // - <create_preset>{"name":"...","description":"...","sections":[{"name":"...","content":"...","role":"system"}],"choiceBlocks":[{"variableName":"...","question":"...","options":[{"label":"...","value":"..."}]}]}</create_preset>
+// - <suggestions>[{"label":"...","prompt":"...","entity":"characters"}]</suggestions>
 // - [create_chat: character="...", mode="conversation|roleplay"]
 // - [navigate: panel="...", tab="..."]
 // - [fetch: type="character|persona|lorebook|chat|preset", name="..."]
@@ -38,6 +43,10 @@
 import { normalizeTextForMatch, stripLeadingMessageTimestamps } from "@marinara-engine/shared";
 
 import { stripConversationPromptTimestamps } from "./transcript-sanitize.js";
+import {
+  parseCapabilityConversationCommands,
+  stripCapabilityConversationCommands,
+} from "../capability-packages/capability-command-registry.service.js";
 
 export interface ScheduleUpdateCommand {
   type: "schedule_update";
@@ -92,6 +101,31 @@ export interface UnoCommand {
 export interface ChessCommand {
   /** Start a one-on-one chess game against the user. Param-less; the system sets up + runs the board. */
   type: "chess";
+}
+
+export interface PokerCommand {
+  /** Start a game of Texas Hold'em poker at the table. Param-less; the system seats + runs the game. */
+  type: "poker";
+}
+
+export interface EightballCommand {
+  /** Start a one-on-one 8-ball pool game against the user. Param-less; the system racks + runs the table. */
+  type: "eightball";
+}
+
+export interface TicTacToeCommand {
+  /** Start a one-on-one tic-tac-toe game against the user. Param-less; the system sets up + runs the board. */
+  type: "tic_tac_toe";
+}
+
+export interface RockPaperScissorsCommand {
+  /** Start a one-on-one rock-paper-scissors match against the user. Param-less; the system sets up + runs the match. */
+  type: "rock_paper_scissors";
+}
+
+export interface CapabilityConversationCommand {
+  type: "capability";
+  commandType: string;
 }
 
 export interface InfluenceCommand {
@@ -331,6 +365,16 @@ export interface FetchCommand {
   name: string;
 }
 
+export interface SuggestionsCommand {
+  type: "suggestions";
+  suggestions: unknown;
+}
+
+export interface PlanCommand {
+  type: "plan";
+  plan: unknown;
+}
+
 export type AssistantCommand =
   | CreatePersonaCommand
   | CreateCharacterCommand
@@ -341,7 +385,9 @@ export type AssistantCommand =
   | CreatePresetCommand
   | CreateChatCommand
   | NavigateCommand
-  | FetchCommand;
+  | FetchCommand
+  | SuggestionsCommand
+  | PlanCommand;
 
 export type CharacterCommand =
   | ScheduleUpdateCommand
@@ -352,6 +398,11 @@ export type CharacterCommand =
   | CallCommand
   | UnoCommand
   | ChessCommand
+  | PokerCommand
+  | EightballCommand
+  | TicTacToeCommand
+  | RockPaperScissorsCommand
+  | CapabilityConversationCommand
   | InfluenceCommand
   | NoteCommand
   | DirectMessageCommand
@@ -376,10 +427,6 @@ const SELFIE_RE = /\[selfie(?::\s*(?:context="([^"]*)"|"([^"]*)"|([^\]\r\n"]+)))
 const MEMORY_RE = /\[memory:\s*target="([^"]+)"\s*,\s*summary="([^"]+)"\]/gi;
 const SCENE_RE = new RegExp(`\\[scene:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
 const CALL_RE = new RegExp(`\\[call(?::\\s*(${QUOTED_PARAM_BLOCK}))?\\]`, "gi");
-// Param-less UNO trigger. Tolerates a stray `[uno: ...]` so a chatty model can't dodge the match.
-const UNO_RE = /\[uno(?::[^\]\r\n]*)?\]/gi;
-// Param-less chess trigger. Same tolerant shape as UNO_RE.
-const CHESS_RE = /\[chess(?::[^\]\r\n]*)?\]/gi;
 const HAPTIC_RE = new RegExp(`\\[haptic:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
 const SPOTIFY_RE = new RegExp(`\\[spotify:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
 const YOUTUBE_RE = new RegExp(`\\[youtube:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
@@ -456,6 +503,8 @@ const CREATE_LOREBOOK_RE = new RegExp(`\\[create_lorebook:\\s*(${QUOTED_PARAM_BL
 const CREATE_LOREBOOK_BLOCK_RE = /<create_lorebook>([\s\S]*?)<\/create_lorebook>/gi;
 const UPDATE_LOREBOOK_BLOCK_RE = /<update_lorebook>([\s\S]*?)<\/update_lorebook>/gi;
 const CREATE_PRESET_BLOCK_RE = /<create_preset>([\s\S]*?)<\/create_preset>/gi;
+const SUGGESTIONS_BLOCK_RE = /<suggestions>([\s\S]*?)<\/suggestions>/gi;
+const PLAN_BLOCK_RE = /<plan>([\s\S]*?)<\/plan>/gi;
 const CREATE_CHAT_RE = new RegExp(`\\[create_chat:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
 const NAVIGATE_RE = new RegExp(`\\[navigate:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
 const FETCH_RE = new RegExp(`\\[fetch:\\s*(${QUOTED_PARAM_BLOCK})\\]`, "gi");
@@ -583,6 +632,127 @@ function stripJsonFence(raw: string): string {
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
     .trim();
+}
+
+function parseJsonValue(raw: string): unknown | null {
+  try {
+    return JSON.parse(stripJsonFence(raw)) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Suggestion-chip payloads come from free-form model output, which commonly drifts from
+ * strict JSON (trailing commas, single-quoted strings, smart quotes from a "helpful"
+ * autocorrect). A single stray comma would otherwise silently drop the whole chip set with
+ * no visible symptom other than "Mari said she had suggestions but none appeared" - so this
+ * repairs the common near-miss cases before giving up.
+ */
+function parseLenientJsonValue(raw: string): unknown | null {
+  const direct = parseJsonValue(raw);
+  if (direct !== null) return direct;
+  const repaired = raw
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/,\s*([\]}])/g, "$1")
+    .replace(/'([^'\\]*)'/g, (_match, inner: string) => `"${inner.replace(/"/g, '\\"')}"`);
+  return parseJsonValue(repaired);
+}
+
+function findBracketJsonCommandBlocks(content: string, commandName: string): string[] {
+  const blocks: string[] = [];
+  const marker = `[${commandName}:`;
+  let cursor = 0;
+  while (cursor < content.length) {
+    const start = content.toLowerCase().indexOf(marker, cursor);
+    if (start === -1) break;
+    let index = start + marker.length;
+    while (/\s/.test(content[index] ?? "")) index += 1;
+    const opening = content[index];
+    const closing = opening === "[" ? "]" : opening === "{" ? "}" : null;
+    if (!closing) {
+      cursor = start + marker.length;
+      continue;
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (; index < content.length; index += 1) {
+      const char = content[index] ?? "";
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === opening) depth += 1;
+      else if (char === closing) {
+        depth -= 1;
+        if (depth === 0 && content[index + 1] === "]") {
+          blocks.push(content.slice(start + marker.length, index + 1).trim());
+          cursor = index + 2;
+          break;
+        }
+      }
+    }
+    if (index >= content.length) cursor = start + marker.length;
+  }
+  return blocks;
+}
+
+function stripBracketJsonCommandBlocks(content: string, commandName: string): string {
+  const marker = `[${commandName}:`;
+  let result = "";
+  let cursor = 0;
+  while (cursor < content.length) {
+    const start = content.toLowerCase().indexOf(marker, cursor);
+    if (start === -1) break;
+    let index = start + marker.length;
+    while (/\s/.test(content[index] ?? "")) index += 1;
+    const opening = content[index];
+    const closing = opening === "[" ? "]" : opening === "{" ? "}" : null;
+    if (!closing) {
+      cursor = start + marker.length;
+      continue;
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let end = -1;
+    for (; index < content.length; index += 1) {
+      const char = content[index] ?? "";
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === opening) depth += 1;
+      else if (char === closing) {
+        depth -= 1;
+        if (depth === 0 && content[index + 1] === "]") {
+          end = index + 2;
+          break;
+        }
+      }
+    }
+    if (end === -1) {
+      cursor = start + marker.length;
+      continue;
+    }
+    result += content.slice(cursor, start);
+    cursor = end;
+  }
+  return result + content.slice(cursor);
 }
 
 function parseLorebookBlock(raw: string): CreateLorebookCommand | null {
@@ -1000,17 +1170,7 @@ export function parseCharacterCommands(content: string): {
     break;
   }
 
-  // Parse uno command — start a game of UNO. Param-less; only one per message.
-  for (const _unoMatch of content.matchAll(UNO_RE)) {
-    commands.push({ type: "uno" });
-    break;
-  }
-
-  // Parse chess command — start a one-on-one chess game. Param-less; only one per message.
-  for (const _chessMatch of content.matchAll(CHESS_RE)) {
-    commands.push({ type: "chess" });
-    break;
-  }
+  commands.push(...parseCapabilityConversationCommands(content));
 
   // Parse influence commands (<influence>text</influence>)
   for (const match of content.matchAll(INFLUENCE_RE)) {
@@ -1154,6 +1314,26 @@ export function parseCharacterCommands(content: string): {
     if (cmd) commands.push(cmd);
   }
 
+  for (const match of content.matchAll(SUGGESTIONS_BLOCK_RE)) {
+    const suggestions = parseLenientJsonValue(match[1] ?? "");
+    if (suggestions !== null) commands.push({ type: "suggestions", suggestions });
+  }
+
+  for (const suggestionsBlock of findBracketJsonCommandBlocks(content, "suggestions")) {
+    const suggestions = parseLenientJsonValue(suggestionsBlock);
+    if (suggestions !== null) commands.push({ type: "suggestions", suggestions });
+  }
+
+  for (const match of content.matchAll(PLAN_BLOCK_RE)) {
+    const plan = parseLenientJsonValue(match[1] ?? "");
+    if (plan !== null) commands.push({ type: "plan", plan });
+  }
+
+  for (const planBlock of findBracketJsonCommandBlocks(content, "plan")) {
+    const plan = parseLenientJsonValue(planBlock);
+    if (plan !== null) commands.push({ type: "plan", plan });
+  }
+
   for (const match of content.matchAll(CREATE_LOREBOOK_RE)) {
     const params = match[1]!;
     const name = parseQuotedParam(params, "name");
@@ -1207,15 +1387,13 @@ export function parseCharacterCommands(content: string): {
   }
 
   // Strip all commands from the visible content
-  let cleanContent = content
+  let cleanContent = stripCapabilityConversationCommands(content)
     .replace(SCHEDULE_UPDATE_RE, "")
     .replace(CROSS_POST_RE, "")
     .replace(SELFIE_RE, "")
     .replace(MEMORY_RE, "")
     .replace(SCENE_RE, "")
     .replace(CALL_RE, "")
-    .replace(UNO_RE, "")
-    .replace(CHESS_RE, "")
     .replace(HAPTIC_RE, "")
     .replace(SPOTIFY_RE, "")
     .replace(YOUTUBE_RE, "")
@@ -1234,12 +1412,16 @@ export function parseCharacterCommands(content: string): {
     .replace(CREATE_LOREBOOK_BLOCK_RE, "")
     .replace(UPDATE_LOREBOOK_BLOCK_RE, "")
     .replace(CREATE_PRESET_BLOCK_RE, "")
+    .replace(SUGGESTIONS_BLOCK_RE, "")
+    .replace(PLAN_BLOCK_RE, "")
     .replace(CREATE_LOREBOOK_RE, "")
     .replace(CREATE_CHAT_RE, "")
     .replace(NAVIGATE_RE, "")
     .replace(FETCH_RE, "")
     .replace(/\n{3,}/g, "\n\n") // collapse excessive newlines left by removals
     .trim();
+  cleanContent = stripBracketJsonCommandBlocks(cleanContent, "suggestions").replace(/\n{3,}/g, "\n\n").trim();
+  cleanContent = stripBracketJsonCommandBlocks(cleanContent, "plan").replace(/\n{3,}/g, "\n\n").trim();
 
   return { cleanContent, commands };
 }

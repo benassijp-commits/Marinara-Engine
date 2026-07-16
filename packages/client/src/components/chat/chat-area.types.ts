@@ -5,6 +5,8 @@ export type CharacterMap = Map<
   string,
   {
     name: string;
+    /** Conversation-only cosmetic display name (extensions.convoDisplayName). */
+    convoDisplayName?: string;
     phoneticName?: string;
     description?: string;
     personality?: string;
@@ -25,6 +27,8 @@ export type CharacterMap = Map<
 export type PersonaInfo = {
   id?: string;
   name: string;
+  /** Conversation-only cosmetic display name (persona.convoDisplayName). */
+  convoDisplayName?: string;
   phoneticName?: string;
   description?: string;
   personality?: string;
@@ -40,6 +44,7 @@ export type PersonaInfo = {
 
 export type PeekPromptData = {
   messages: Array<{ role: string; content: string }>;
+  chatMode?: string;
   parameters: unknown;
   source?: "cached" | "live_preview" | "raw_messages";
   exact?: boolean;

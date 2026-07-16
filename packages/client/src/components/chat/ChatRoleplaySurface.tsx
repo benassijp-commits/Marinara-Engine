@@ -13,6 +13,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type RefObject,
 } from "react";
+import { isMessageShadowedByLiveStream } from "../../lib/generation-stream-policy";
 import {
   type ChatSummaryEntry,
   type MarkerConfig,
@@ -27,6 +28,7 @@ import {
   FileText,
   Image,
   Loader2,
+  MapPin,
   PenLine,
   ScrollText,
   Settings2,
@@ -37,7 +39,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useRenderTimer } from "../../lib/perf-diagnostics";
-import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
+import { CHAT_FLOATING_UI_DISMISS_EVENT, isDesktopShellNavigationTarget } from "../../lib/chat-floating-ui-events";
 import { getConnectedChatDisplayName } from "../../lib/chat-display";
 import { playConfiguredNotificationPing } from "../../lib/notification-sound";
 import { messageHasPendingPostProcessing } from "../../lib/chat-message-extra";
@@ -238,23 +240,27 @@ function CrossfadeBackground({
     const currentUrl = activeSlot.current === "a" ? bgA : bgB;
     if (url === currentUrl) return;
 
-    if (url && (url.startsWith("/api/backgrounds/") || url.startsWith("/api/game-assets/"))) {
-      fetch(url, { method: "HEAD" })
-        .then((res) => {
-          if (res.ok) {
-            applyUrl(url);
-          } else {
-            console.warn(`[Background] "${url}" not found — clearing`);
-            useUIStore.getState().setChatBackground(null);
-          }
-        })
-        .catch(() => {
-          applyUrl(url);
-        });
+    if (!url) {
+      applyUrl(null);
       return;
     }
 
-    applyUrl(url);
+    let cancelled = false;
+    const image = document.createElement("img");
+    image.onload = () => {
+      if (!cancelled) applyUrl(url);
+    };
+    image.onerror = () => {
+      if (cancelled || useUIStore.getState().chatBackground !== url) return;
+      console.warn(`[Background] "${url}" could not be loaded — clearing`);
+      useUIStore.getState().setChatBackground(null);
+    };
+    image.src = url;
+    return () => {
+      cancelled = true;
+      image.onload = null;
+      image.onerror = null;
+    };
 
     function applyUrl(nextUrl: string | null) {
       if (activeSlot.current === "a") {
@@ -469,6 +475,7 @@ function ActiveContextLinksButton({
   useEffect(() => {
     if (!open) return;
     const handle = (event: MouseEvent) => {
+      if (isDesktopShellNavigationTarget(event.target)) return;
       const target = event.target as Node;
       if (ref.current?.contains(target) || panelRef.current?.contains(target)) return;
       setOpen(false);
@@ -516,6 +523,9 @@ function ActiveContextLinksButton({
   const promptPresetId = typeof chat.promptPresetId === "string" ? chat.promptPresetId : null;
   const triggeredEntries = activeLorebookScan?.entries ?? [];
   const skippedLorebookEntries = activeLorebookScan?.budgetSkippedEntries ?? [];
+  const currentLocationEntryCount = triggeredEntries.filter((entry) =>
+    entry.activationSources.includes("current_location"),
+  ).length;
   const visibleLorebookIds = Array.from(
     new Set([
       ...activeLorebookIds,
@@ -589,6 +599,12 @@ function ActiveContextLinksButton({
             <span className="shrink-0 text-[0.625rem] text-foreground/45">Card</span>
           </button>
         ))}
+        {currentLocationEntryCount > 0 && (
+          <div className="flex items-center gap-1.5 rounded-md bg-sky-400/10 px-2 py-1.5 text-[0.625rem] font-semibold text-sky-200 ring-1 ring-sky-400/20">
+            <MapPin size="0.6875rem" /> Current location · {currentLocationEntryCount}{" "}
+            {currentLocationEntryCount === 1 ? "entry" : "entries"}
+          </div>
+        )}
         {visibleLorebookIds.map((id, index) => {
           const entries = triggeredEntriesByLorebook.get(id) ?? [];
           const skippedEntries = skippedEntriesByLorebook.get(id) ?? [];
@@ -618,6 +634,11 @@ function ActiveContextLinksButton({
                         >
                           {statusStyle.label}
                         </span>
+                        {entry.activationSources.includes("current_location") && (
+                          <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-sky-400/15 px-1 py-0.5 text-[0.5rem] font-semibold text-sky-200">
+                            <MapPin size="0.5rem" /> Location
+                          </span>
+                        )}
                         <span className="shrink-0 text-foreground/40">#{entry.order}</span>
                       </div>
                     );
@@ -627,7 +648,9 @@ function ActiveContextLinksButton({
               {skippedEntries.length > 0 && (
                 <div className="ml-6 rounded-md bg-amber-500/10 px-2 py-1 text-[0.625rem] leading-relaxed text-amber-100/80 ring-1 ring-amber-500/20">
                   {skippedEntries.length} matching {skippedEntries.length === 1 ? "entry was" : "entries were"} skipped
-                  by token budget.
+                  {skippedEntries.some((entry) => entry.blockedBy === "location")
+                    ? " by the current-location context cap."
+                    : " by token budget."}
                 </div>
               )}
             </div>
@@ -713,6 +736,7 @@ function SummaryButton({
   summaryPromptTemplates,
   activeSummaryPromptTemplateId,
   summaryConnectionId,
+  summaryMaxTokens,
   automaticSummaryEnabled,
   activeAgentIds,
   summaryRunInterval,
@@ -729,6 +753,7 @@ function SummaryButton({
   summaryPromptTemplates?: ComponentProps<typeof SummaryPopover>["promptTemplates"];
   activeSummaryPromptTemplateId?: string | null;
   summaryConnectionId?: string | null;
+  summaryMaxTokens?: number;
   automaticSummaryEnabled: boolean;
   activeAgentIds: string[];
   summaryRunInterval?: number;
@@ -815,6 +840,7 @@ function SummaryButton({
             promptTemplates={summaryPromptTemplates}
             activePromptTemplateId={activeSummaryPromptTemplateId}
             summaryConnectionId={summaryConnectionId}
+            summaryMaxTokens={summaryMaxTokens}
             automaticSummaryEnabled={automaticSummaryEnabled}
             activeAgentIds={activeAgentIds}
             summaryRunInterval={summaryRunInterval}
@@ -1051,6 +1077,7 @@ type RoleplaySurfaceProps = {
   fullBodySpriteOpacity: number;
   spriteArrangeMode: boolean;
   enabledAgentTypes: Set<string>;
+  manualTrackersActive: boolean;
   chatCharIds: string[];
   characterMap: CharacterMap;
   characterNames: string[];
@@ -1163,6 +1190,7 @@ export function ChatRoleplaySurface({
   fullBodySpriteOpacity,
   spriteArrangeMode,
   enabledAgentTypes,
+  manualTrackersActive,
   chatCharIds,
   characterMap,
   characterNames,
@@ -1247,6 +1275,7 @@ export function ChatRoleplaySurface({
 }: RoleplaySurfaceProps) {
   useRenderTimer("rp-surface"); // [#3104 diagnostic]
   const isStreamCommitted = useChatStore((s) => s.committedStreamChatIds.has(activeChatId));
+  const streamedMessageId = useChatStore((s) => s.streamedMessageIds.get(activeChatId) ?? null);
   const hasDraftInput = useChatStore((s) => s.currentInput.trim().length > 0);
   const hasLiveStream = isStreaming && !isStreamCommitted;
   const linkedChatName = chat?.connectedChatId
@@ -1464,6 +1493,10 @@ export function ChatRoleplaySurface({
     typeof chatMeta.summaryRunInterval === "number" && Number.isFinite(chatMeta.summaryRunInterval)
       ? chatMeta.summaryRunInterval
       : undefined;
+  const summaryMaxTokens =
+    typeof chatMeta.summaryMaxTokens === "number" && Number.isFinite(chatMeta.summaryMaxTokens)
+      ? chatMeta.summaryMaxTokens
+      : undefined;
   const hideSummarisedMessages =
     typeof chatMeta.hideSummarisedMessages === "boolean" ? chatMeta.hideSummarisedMessages : undefined;
   const summaryTailMessages =
@@ -1530,7 +1563,7 @@ export function ChatRoleplaySurface({
                         onRetryFailedAgents={onRetryFailedAgents}
                         onRerunSingleTracker={onRerunSingleTracker}
                         enabledAgentTypes={enabledAgentTypes}
-                        manualTrackers={!!chatMeta.manualTrackers}
+                        manualTrackers={manualTrackersActive}
                         injectionSourceMessages={messages}
                       />
                     </Suspense>
@@ -1565,6 +1598,7 @@ export function ChatRoleplaySurface({
                       summaryConnectionId={
                         typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                       }
+                      summaryMaxTokens={summaryMaxTokens}
                       automaticSummaryEnabled={automaticSummaryEnabled}
                       activeAgentIds={summaryActiveAgentIds}
                       summaryRunInterval={summaryRunInterval}
@@ -1632,7 +1666,7 @@ export function ChatRoleplaySurface({
                           onRetryFailedAgents={onRetryFailedAgents}
                           onRerunSingleTracker={onRerunSingleTracker}
                           enabledAgentTypes={enabledAgentTypes}
-                          manualTrackers={!!chatMeta.manualTrackers}
+                          manualTrackers={manualTrackersActive}
                           mobileCompact
                           injectionSourceMessages={messages}
                         />
@@ -1670,6 +1704,7 @@ export function ChatRoleplaySurface({
                           summaryConnectionId={
                             typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                           }
+                          summaryMaxTokens={summaryMaxTokens}
                           automaticSummaryEnabled={automaticSummaryEnabled}
                           activeAgentIds={summaryActiveAgentIds}
                           summaryRunInterval={summaryRunInterval}
@@ -1740,6 +1775,7 @@ export function ChatRoleplaySurface({
                         summaryConnectionId={
                           typeof chatMeta.summaryConnectionId === "string" ? chatMeta.summaryConnectionId : null
                         }
+                        summaryMaxTokens={summaryMaxTokens}
                         automaticSummaryEnabled={automaticSummaryEnabled}
                         activeAgentIds={summaryActiveAgentIds}
                         summaryRunInterval={summaryRunInterval}
@@ -1835,6 +1871,16 @@ export function ChatRoleplaySurface({
 
                 {visibleMessages?.map((msg, i) => {
                   if (isHiddenFromUser(msg)) return null;
+                  if (
+                    isMessageShadowedByLiveStream({
+                      hasLiveStream,
+                      regenerateMessageId,
+                      streamedMessageId,
+                      messageId: msg.id,
+                    })
+                  ) {
+                    return null;
+                  }
                   const sourceIndex = transcriptWindow.startIndex + i;
                   const messageDepth = (messages?.length ?? 0) - 1 - sourceIndex;
                   const messageOrderIndex = loadedMessageOffset + sourceIndex;
@@ -1918,6 +1964,7 @@ export function ChatRoleplaySurface({
                   hiddenAfterCount={transcriptWindow.hiddenAfterCount}
                   onShowNewer={transcriptWindow.hiddenAfterCount > 0 ? showNewerTranscriptMessages : undefined}
                   onJumpToLatest={transcriptWindow.hiddenAfterCount > 0 ? jumpToLatestTranscriptMessages : undefined}
+                  buttonClassName="border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] text-[var(--marinara-chat-chrome-button-text-active)] hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)]"
                 />
 
                 {!isStreaming && <CyoaChoices messages={visibleMessages} />}

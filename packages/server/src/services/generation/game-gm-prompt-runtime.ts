@@ -1,5 +1,8 @@
 import {
+  GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
+  normalizeAgentPromptTemplateOptions,
   normalizeTextForMatch,
+  resolveGameSetupArtStylePrompt,
   type GameActiveState,
   type GameCampaignPlan,
   type GameMap,
@@ -62,6 +65,29 @@ function parseMaybeJson(value: unknown): unknown {
   }
 }
 
+export function resolveGameGmPromptTemplate(
+  chatMetadata: Record<string, unknown>,
+  setupConfig?: Record<string, unknown> | null,
+): string | null {
+  const explicitPrompt =
+    typeof chatMetadata.gameSystemPrompt === "string" ? chatMetadata.gameSystemPrompt.trim() : "";
+  if (explicitPrompt) return explicitPrompt;
+
+  const selectedId =
+    typeof chatMetadata.gameGmPromptTemplateId === "string" && chatMetadata.gameGmPromptTemplateId.trim()
+      ? chatMetadata.gameGmPromptTemplateId.trim()
+      : typeof setupConfig?.gameGmPromptTemplateId === "string"
+        ? setupConfig.gameGmPromptTemplateId.trim()
+        : "";
+  if (!selectedId) return null;
+
+  const options = [
+    ...GAME_GM_BUILT_IN_PROMPT_TEMPLATES,
+    ...normalizeAgentPromptTemplateOptions(chatMetadata.gameGmPromptTemplates),
+  ];
+  return options.find((option) => option.id === selectedId)?.promptTemplate.trim() || null;
+}
+
 function appendGameCardDetails(parts: string[], card: Record<string, unknown> | undefined): void {
   if (!card) return;
   if (card.class) parts.push(`Class: ${card.class}`);
@@ -83,10 +109,12 @@ function buildLibraryCardParts(data: any, fallbackName = "Unknown"): { name: str
   const description = cardPromptText(data.description);
   const backstory = cardPromptText(data.extensions?.backstory || data.backstory);
   const appearance = cardPromptText(data.extensions?.appearance || data.appearance);
+  const systemPrompt = cardPromptText(data.system_prompt);
   if (personality) parts.push(`Personality: ${personality}`);
   if (description) parts.push(`Description: ${description}`);
   if (backstory) parts.push(`Backstory: ${backstory}`);
   if (appearance) parts.push(`Appearance: ${appearance}`);
+  if (systemPrompt) parts.push(`Character System Instructions: ${systemPrompt}`);
   return { name, parts };
 }
 
@@ -290,6 +318,10 @@ export async function injectGameGmPromptRuntime(args: {
     playerCard,
     gmCharacterCard,
     difficulty: (setupConfig?.difficulty as string) || "normal",
+    // Effective combat style: runtime drawer override wins, then the wizard
+    // choice, then "classic" for legacy games created before this setting.
+    combatStyle:
+      (args.chatMetadata.gameCombatStyle as string) || (setupConfig?.combatStyle as string) || "classic",
     genre: (setupConfig?.genre as string) || "fantasy",
     setting: (setupConfig?.setting as string) || "original",
     tone: (setupConfig?.tone as string) || "balanced",
@@ -300,7 +332,7 @@ export async function injectGameGmPromptRuntime(args: {
       args.chatMetadata.gameImageAutoGenerationEnabled !== false &&
       args.chatMetadata.gameStoryboardViewerDisplayMode !== "background" &&
       !!args.chatMetadata.gameImageConnectionId,
-    artStylePrompt: (setupConfig?.artStylePrompt as string) || undefined,
+    artStylePrompt: resolveGameSetupArtStylePrompt(setupConfig) || undefined,
     gameTime,
     weatherContext,
     playerNotes,
@@ -320,8 +352,7 @@ export async function injectGameGmPromptRuntime(args: {
     })(),
     characterSprites: listPartySprites(partyIdNamePairs),
     language: (setupConfig?.language as string) || undefined,
-    gameSystemPrompt:
-      typeof args.chatMetadata.gameSystemPrompt === "string" ? args.chatMetadata.gameSystemPrompt.trim() : null,
+    gameSystemPrompt: resolveGameGmPromptTemplate(args.chatMetadata, setupConfig),
     gameSpecialInstructions:
       typeof args.chatMetadata.gameSpecialInstructions === "string"
         ? args.chatMetadata.gameSpecialInstructions.trim()

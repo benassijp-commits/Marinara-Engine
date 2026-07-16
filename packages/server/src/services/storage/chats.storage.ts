@@ -1,13 +1,14 @@
 // ──────────────────────────────────────────────
 // Storage: Chats
 // ──────────────────────────────────────────────
-import { eq, desc, and, gt, inArray, isNull, isNotNull } from "drizzle-orm";
+import { eq, desc, and, gt, inArray, isNull, isNotNull } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
 import {
   chats,
   messages,
   messageSwipes,
   gameStateSnapshots,
+  spatialContextSnapshots,
   gameCheckpoints,
   gameEngineState,
   chatImages,
@@ -33,6 +34,7 @@ import {
   type TimestampOverrides,
 } from "../import/import-timestamps.js";
 import { scheduleNeedsRefresh, type CharacterSchedules, type WeekSchedule } from "../conversation/schedule.service.js";
+import { resolveConversationTimeZone, toZonedWallClockDate } from "../conversation/timezone.js";
 import { logger } from "../../lib/logger.js";
 
 const GALLERY_DIR = join(DATA_DIR, "gallery");
@@ -232,6 +234,26 @@ async function invalidateMemoryChunksFrom(db: DB, chatId: string, createdAt: str
     );
 }
 
+/**
+ * Count swipes per message id. Avoids `inArray(messageSwipes.messageId, ids)`,
+ * which the file-native store evaluates as `ids.includes()` for every swipe row
+ * (re-materializing the ids array each row) — O(swipeRows * ids) = O(n^2) for a
+ * large chat and a prime cause of the post-generation stall (#3402). One scan of
+ * the swipes table + a Set of the wanted ids is O(totalSwipes) instead.
+ */
+async function countSwipesByMessageId(db: DB, ids: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (ids.length === 0) return counts;
+  const wanted = new Set(ids);
+  const rows = await db.select({ messageId: messageSwipes.messageId }).from(messageSwipes);
+  for (const row of rows) {
+    if (wanted.has(row.messageId)) {
+      counts.set(row.messageId, (counts.get(row.messageId) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 /** Create the chat storage facade used by routes and importers. */
 export function createChatsStorage(db: DB) {
   let chatLastMessageAtBackfilled = false;
@@ -320,6 +342,7 @@ export function createChatsStorage(db: DB) {
       }
       await db.delete(gameCheckpoints).where(inArray(gameCheckpoints.messageId, chunk));
       await db.delete(gameStateSnapshots).where(inArray(gameStateSnapshots.messageId, chunk));
+      await db.delete(spatialContextSnapshots).where(inArray(spatialContextSnapshots.messageId, chunk));
       await db.delete(gameEngineState).where(inArray(gameEngineState.messageId, chunk));
     }
   }
@@ -389,9 +412,11 @@ export function createChatsStorage(db: DB) {
       if (chat.id === excludeChatId || chat.mode !== "conversation") continue;
       const meta = parseMetadata(chat.metadata);
       if (!areConversationSchedulesEnabled(meta) || !hasConversationSchedules(meta.characterSchedules)) continue;
+      const scheduleNow = toZonedWallClockDate(new Date(), resolveConversationTimeZone(meta));
 
       for (const [characterId, schedule] of Object.entries(meta.characterSchedules)) {
-        if (!wanted.has(characterId) || sharedSchedules[characterId] || scheduleNeedsRefresh(schedule)) continue;
+        if (!wanted.has(characterId) || sharedSchedules[characterId] || scheduleNeedsRefresh(schedule, scheduleNow))
+          continue;
         sharedSchedules[characterId] = schedule;
       }
 
@@ -457,9 +482,10 @@ export function createChatsStorage(db: DB) {
 
       const characterIds = parseCharacterIds(chat.characterIds);
       const currentSchedules = hasConversationSchedules(meta.characterSchedules) ? meta.characterSchedules : {};
+      const scheduleNow = toZonedWallClockDate(new Date(), resolveConversationTimeZone(meta));
       const missingOrStaleIds = characterIds.filter((characterId) => {
         const existing = currentSchedules[characterId];
-        return !existing || scheduleNeedsRefresh(existing);
+        return !existing || scheduleNeedsRefresh(existing, scheduleNow);
       });
       if (missingOrStaleIds.length === 0) return currentSchedules;
 
@@ -704,6 +730,7 @@ export function createChatsStorage(db: DB) {
       await db.delete(agentMemory).where(eq(agentMemory.chatId, id));
       await db.delete(gameCheckpoints).where(eq(gameCheckpoints.chatId, id));
       await db.delete(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, id));
+      await db.delete(spatialContextSnapshots).where(eq(spatialContextSnapshots.chatId, id));
       await db.delete(gameEngineState).where(eq(gameEngineState.chatId, id));
       await db.delete(conversationCallMessages).where(eq(conversationCallMessages.chatId, id));
       await db.delete(conversationCallSessions).where(eq(conversationCallSessions.chatId, id));
@@ -736,6 +763,7 @@ export function createChatsStorage(db: DB) {
         await db.delete(agentMemory).where(eq(agentMemory.chatId, chat.id));
         await db.delete(gameCheckpoints).where(eq(gameCheckpoints.chatId, chat.id));
         await db.delete(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, chat.id));
+        await db.delete(spatialContextSnapshots).where(eq(spatialContextSnapshots.chatId, chat.id));
         await db.delete(gameEngineState).where(eq(gameEngineState.chatId, chat.id));
         await db.delete(conversationCallMessages).where(eq(conversationCallMessages.chatId, chat.id));
         await db.delete(conversationCallSessions).where(eq(conversationCallSessions.chatId, chat.id));
@@ -763,11 +791,8 @@ export function createChatsStorage(db: DB) {
     // ── Messages ──
 
     async lastContactByCharacter(chatId: string): Promise<Record<string, string>> {
-      // Aggregate in JS rather than via SQL GROUP BY / MAX(): the default
-      // file-storage backend's query builder implements where()/orderBy() but
-      // not groupBy() (and doesn't evaluate sql`MAX()` aggregates), so the SQL
-      // form throws "groupBy is not a function" there. Selecting the plain
-      // columns and reducing here works on both the file store and libsql.
+      // Aggregate in JS because the file-native query builder intentionally
+      // exposes only row selection, filtering, ordering, and pagination.
       // created_at is a TEXT (ISO) column, so lexicographic `>` is chronological.
       const rows = await db
         .select({
@@ -804,17 +829,10 @@ export function createChatsStorage(db: DB) {
         .where(eq(messages.chatId, chatId))
         .orderBy(messages.createdAt, messages.id);
       const decorated = rows.map((m, index) => ({ ...m, rowid: index + 1 }));
-      const ids = decorated.map((m) => m.id);
-      const swipes = ids.length
-        ? await db
-            .select({ messageId: messageSwipes.messageId })
-            .from(messageSwipes)
-            .where(inArray(messageSwipes.messageId, ids))
-        : [];
-      const countMap = new Map<string, number>();
-      for (const swipe of swipes) {
-        countMap.set(swipe.messageId, (countMap.get(swipe.messageId) ?? 0) + 1);
-      }
+      const countMap = await countSwipesByMessageId(
+        db,
+        decorated.map((m) => m.id),
+      );
       return decorated.map((m) => ({ ...m, swipeCount: countMap.get(m.id) ?? 0 }));
     },
 
@@ -835,16 +853,10 @@ export function createChatsStorage(db: DB) {
         candidates = candidates.filter((m) => m.createdAt < before);
       }
       const reversed = candidates.slice(-limit);
-      const ids = reversed.map((m) => m.id);
-      if (ids.length === 0) return reversed;
-      const swipes = await db
-        .select({ messageId: messageSwipes.messageId })
-        .from(messageSwipes)
-        .where(inArray(messageSwipes.messageId, ids));
-      const countMap = new Map<string, number>();
-      for (const swipe of swipes) {
-        countMap.set(swipe.messageId, (countMap.get(swipe.messageId) ?? 0) + 1);
-      }
+      const countMap = await countSwipesByMessageId(
+        db,
+        reversed.map((m) => m.id),
+      );
       return reversed.map((m) => ({ ...m, swipeCount: countMap.get(m.id) ?? 0 }));
     },
 
@@ -973,10 +985,7 @@ export function createChatsStorage(db: DB) {
 
       const lastTimestamp = latestTrustedTimestamp(createdTimestamps) ?? batchTimestamps.updatedAt;
 
-      // Batch in chunks of 500 to stay within SQLite variable limits.
-      // Deliberately avoids db.transaction() — libSQL's stateful transaction
-      // objects trigger a use-after-free / race on Windows when the loop is
-      // large, causing an access-violation crash (see #73).
+      // Batch large imports to bound the amount of work performed per write.
       const CHUNK = 500;
       for (let i = 0; i < msgRows.length; i += CHUNK) {
         await db.insert(messages).values(msgRows.slice(i, i + CHUNK));
@@ -1123,7 +1132,7 @@ export function createChatsStorage(db: DB) {
         // partial state is the `flipped` set. Undo exactly those so the call is
         // all-or-nothing and a caller never records ownership of a half-applied
         // batch. (db.transaction() is intentionally avoided in this store — see the
-        // bulk-insert note re: the libSQL stateful-transaction crash #73 — so this
+        // bounded bulk-insert path above — so this
         // compensating undo is the atomicity mechanism.) A clean undo preserves
         // the original error. A failed undo is surfaced as a compound failure so
         // callers never mistake a partially restored batch for a clean rollback.
@@ -1338,6 +1347,9 @@ export function createChatsStorage(db: DB) {
         await db
           .delete(gameStateSnapshots)
           .where(and(eq(gameStateSnapshots.messageId, messageId), eq(gameStateSnapshots.swipeIndex, index)));
+        await db
+          .delete(spatialContextSnapshots)
+          .where(and(eq(spatialContextSnapshots.messageId, messageId), eq(spatialContextSnapshots.swipeIndex, index)));
 
         const swipesToShift = await db
           .select()
@@ -1359,6 +1371,17 @@ export function createChatsStorage(db: DB) {
             .update(gameStateSnapshots)
             .set({ swipeIndex: snapshot.swipeIndex - 1 })
             .where(eq(gameStateSnapshots.id, snapshot.id));
+        }
+
+        const spatialSnapshotsToShift = await db
+          .select()
+          .from(spatialContextSnapshots)
+          .where(and(eq(spatialContextSnapshots.messageId, messageId), gt(spatialContextSnapshots.swipeIndex, index)));
+        for (const snapshot of spatialSnapshotsToShift) {
+          await db
+            .update(spatialContextSnapshots)
+            .set({ swipeIndex: snapshot.swipeIndex - 1 })
+            .where(eq(spatialContextSnapshots.id, snapshot.id));
         }
 
         // Mirror the prune for turn-game (UNO) snapshots so anchors stay aligned

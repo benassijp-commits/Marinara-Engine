@@ -15,12 +15,14 @@ import {
 } from "../../services/conversation/timezone.js";
 import { formatConversationPromptTurn } from "../../services/generation/generation-text-utils.js";
 import type { GenerationPromptMessage } from "../../services/generation/prompt-message-scope.js";
+import {
+  withConnectionFallbackProvider,
+  type FallbackConnection,
+} from "../../services/llm/connection-fallback-provider.js";
+import type { BaseLLMProvider } from "../../services/llm/base-provider.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
 import { wrapContent } from "../../services/prompt/format-engine.js";
-import {
-  annotateContentWithReactions,
-  REACTION_ANNOTATION_CONTENT_CAP,
-} from "./conversation-custom-assets.js";
+import { annotateContentWithReactions, REACTION_ANNOTATION_CONTENT_CAP } from "./conversation-custom-assets.js";
 import {
   formatConversationDateHistoryMessages,
   formatConversationSummaryHistoryBlock,
@@ -41,7 +43,10 @@ type ConversationHistoryCharacterStore = {
 };
 
 type ConversationHistoryChatsStore = {
-  patchMetadata(chatId: string, updater: (freshMeta: Record<string, unknown>) => Record<string, unknown>): Promise<unknown>;
+  patchMetadata(
+    chatId: string,
+    updater: (freshMeta: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<unknown>;
 };
 
 type ConversationSummaryConnection = {
@@ -55,6 +60,25 @@ type ConversationSummaryConnection = {
 
 type BucketMsg = { role: string; content: string; author: string; ts: Date };
 type Bucket = { date: string; msgs: BucketMsg[] };
+
+export type ConversationMembershipHistoryEvent = "joined" | "left";
+
+export function resolveConversationMembershipHistoryEvent(
+  message: ConversationHistoryMessage | null | undefined,
+): ConversationMembershipHistoryEvent | null {
+  if (!message) return null;
+  const taggedEvent = parseExtra(message.extra).conversationMembershipEvent;
+  if (taggedEvent === "joined" || taggedEvent === "left") return taggedEvent;
+  if (message.role !== "system" && message.role !== "narrator") return null;
+  const content = typeof message.content === "string" ? message.content.trim() : "";
+  const legacyMatch = content.match(/\bhas (joined|left) the chat\.\s*$/u);
+  return legacyMatch?.[1] === "joined" || legacyMatch?.[1] === "left" ? legacyMatch[1] : null;
+}
+
+function hasTaggedConversationMembershipEvent(message: ConversationHistoryMessage | null | undefined): boolean {
+  const taggedEvent = parseExtra(message?.extra).conversationMembershipEvent;
+  return taggedEvent === "joined" || taggedEvent === "left";
+}
 
 export async function prepareConversationPromptHistory(args: {
   finalMessages: GenerationPromptMessage[];
@@ -74,7 +98,10 @@ export async function prepareConversationPromptHistory(args: {
   promptTimeZone?: string;
   wrapFormat: WrapFormat;
   connection: ConversationSummaryConnection;
+  connectionId: string;
   baseUrl: string;
+  fallbackConnection?: FallbackConnection | null;
+  fallbackBaseUrl?: string;
 }): Promise<{ finalMessages: GenerationPromptMessage[]; importantMemoryBlock: string | null }> {
   const rolloverHour = Math.max(
     0,
@@ -113,17 +140,34 @@ export async function prepareConversationPromptHistory(args: {
 
   const parseDateKey = parseConversationDateKey;
   const fmtDateKey = formatConversationDateKey;
-  const summarySourceMessages = args.regenerateMessageId
+  const unfilteredSummarySourceMessages = args.regenerateMessageId
     ? args.scopedMessages.filter((message) => message.id !== args.regenerateMessageId)
     : args.scopedMessages;
-  const summaryProvider = createLLMProvider(
-    args.connection.provider,
-    args.baseUrl,
-    args.connection.apiKey,
-    args.connection.maxContext,
-    args.connection.openrouterProvider,
-    args.connection.maxTokensOverride,
+  const firstSummaryConversationTurnIndex = unfilteredSummarySourceMessages.findIndex(
+    (message) => message.role === "user" || message.role === "assistant",
   );
+  const summarySourceMessages = unfilteredSummarySourceMessages.filter(
+    (message, index) =>
+      !(
+        resolveConversationMembershipHistoryEvent(message) !== null &&
+        !hasTaggedConversationMembershipEvent(message) &&
+        (firstSummaryConversationTurnIndex < 0 || index < firstSummaryConversationTurnIndex)
+      ),
+  );
+  const summaryProvider: BaseLLMProvider = withConnectionFallbackProvider({
+    primary: createLLMProvider(
+      args.connection.provider,
+      args.baseUrl,
+      args.connection.apiKey,
+      args.connection.maxContext,
+      args.connection.openrouterProvider,
+      args.connection.maxTokensOverride,
+    ),
+    primaryConnectionId: args.connectionId,
+    fallbackConnection: args.fallbackConnection,
+    fallbackBaseUrl: args.fallbackBaseUrl ?? "",
+    category: "agents",
+  });
   const summaryRun = await generateMissingConversationSummaries({
     messages: summarySourceMessages.map((message) => ({
       id: typeof message.id === "string" ? message.id : undefined,
@@ -144,7 +188,10 @@ export async function prepareConversationPromptHistory(args: {
   });
 
   for (const failure of summaryRun.failedDays) {
-    logger.warn({ chatId: args.chatId, date: failure.date, err: failure.error }, "[conversation-summary] failed to generate day summary");
+    logger.warn(
+      { chatId: args.chatId, date: failure.date, err: failure.error },
+      "[conversation-summary] failed to generate day summary",
+    );
   }
   for (const failure of summaryRun.failedWeeks) {
     logger.warn(
@@ -154,8 +201,7 @@ export async function prepareConversationPromptHistory(args: {
   }
 
   const hasNewSummaries =
-    Object.keys(summaryRun.newlyGeneratedDays).length > 0 ||
-    Object.keys(summaryRun.newlyConsolidatedWeeks).length > 0;
+    Object.keys(summaryRun.newlyGeneratedDays).length > 0 || Object.keys(summaryRun.newlyConsolidatedWeeks).length > 0;
   if (hasNewSummaries || summaryRun.summaryFailureMetadataChanged) {
     await args.chats.patchMetadata(args.chatId, (freshMeta) => {
       const existingDaySummaries = (freshMeta.daySummaries as Record<string, unknown> | undefined) ?? {};
@@ -240,6 +286,7 @@ async function annotateConversationPromptReactions(args: {
   });
   if (!anyReactedMessage) return args.finalMessages;
 
+  const reactionNameById = new Map(args.charIdToName);
   const reactionSpeakersByNorm = new Map<string, string>();
   const addReactionSpeaker = (name: unknown) => {
     if (typeof name !== "string") return;
@@ -259,7 +306,11 @@ async function annotateConversationPromptReactions(args: {
     if (!row) continue;
     try {
       const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
-      addReactionSpeaker((data as { name?: unknown } | null)?.name);
+      const name = (data as { name?: unknown } | null)?.name;
+      if (typeof name === "string" && name.trim()) {
+        reactionNameById.set(cid, name);
+        addReactionSpeaker(name);
+      }
     } catch {
       // Malformed character data — skip; that speaker just won't be attributable.
     }
@@ -288,6 +339,7 @@ async function annotateConversationPromptReactions(args: {
         parseExtra(raw.extra).reactions,
         reactionSpeakersByNorm,
         reactorDisplayName,
+        typeof raw.characterId === "string" ? (reactionNameById.get(raw.characterId) ?? null) : null,
       ),
     };
   });
@@ -306,11 +358,26 @@ function bucketConversationHistory(args: {
   const buckets: Array<Bucket | GenerationPromptMessage> = [];
   let currentBucket: Bucket | null = null;
   let firstTodayIdx: number | null = null;
+  const firstConversationTurnIndex = args.chatMessages.findIndex(
+    (message) => message.role === "user" || message.role === "assistant",
+  );
 
   for (let i = 0; i < args.finalMessages.length; i++) {
     const msg = args.finalMessages[i]!;
     const raw = args.chatMessages[i];
-    if (!raw?.createdAt || msg.role === "system") {
+    const membershipEvent = resolveConversationMembershipHistoryEvent(raw);
+    const isLegacySetupMembershipEvent =
+      membershipEvent !== null &&
+      !hasTaggedConversationMembershipEvent(raw) &&
+      (firstConversationTurnIndex < 0 || i < firstConversationTurnIndex);
+    if (isLegacySetupMembershipEvent) continue;
+    const narratorTimestamp = raw?.role === "narrator" && raw.createdAt ? new Date(raw.createdAt as string) : null;
+    const isPastNarratorHistory =
+      msg.role === "system" &&
+      narratorTimestamp !== null &&
+      Number.isFinite(narratorTimestamp.getTime()) &&
+      !args.isSameDay(narratorTimestamp);
+    if (!raw?.createdAt || (msg.role === "system" && !isPastNarratorHistory && membershipEvent === null)) {
       if (currentBucket) {
         buckets.push(currentBucket);
         currentBucket = null;
@@ -320,12 +387,16 @@ function bucketConversationHistory(args: {
     }
 
     const ts = new Date(raw.createdAt as string);
-    const author =
-      msg.role === "user"
-        ? args.personaName
-        : ((raw.characterId ? args.charIdToName.get(raw.characterId as string) : null) ??
-          args.convoCharNames[0] ??
-          "Character");
+    let author = "Character";
+    if (membershipEvent !== null) author = "System";
+    else if (raw.role === "narrator") author = "Narrator";
+    else if (msg.role === "user") author = args.personaName;
+    else {
+      author =
+        (raw.characterId ? args.charIdToName.get(raw.characterId as string) : null) ??
+        args.convoCharNames[0] ??
+        "Character";
+    }
 
     if (args.isSameDay(ts)) {
       if (currentBucket) {
@@ -339,13 +410,18 @@ function bucketConversationHistory(args: {
         args.personaName,
         msg.role === "assistant" ? author : null,
       );
-      buckets.push({ ...msg, content: `[${args.fmtTime(ts)}] ${promptContent}` });
+      buckets.push({
+        ...msg,
+        role: membershipEvent !== null ? "user" : msg.role,
+        content: `[${args.fmtTime(ts)}] ${promptContent}`,
+      });
       continue;
     }
 
     const dateKey = args.fmtDate(ts);
     const bucketMessage = {
       ...msg,
+      role: membershipEvent !== null ? "user" : msg.role,
       content: stripConversationPromptTimestamps(msg.content),
       author,
       ts,
@@ -406,7 +482,12 @@ function collectConversationSummaryTail(args: {
     if (bucket.date === args.todayDateKey) continue;
     if (!args.daySummaries[bucket.date]) continue;
     for (let mi = bucket.msgs.length - 1; mi >= 0; mi--) {
-      tailEntries.unshift(bucket.msgs[mi]!);
+      const message = bucket.msgs[mi]!;
+      // Timestamped narrator messages (including concluded scene summaries) are represented as
+      // system-role history. Once their day is summarized, do not resurrect those generated blocks
+      // through the verbatim conversation tail; keep filling the tail with real conversation turns.
+      if (message.role === "system") continue;
+      tailEntries.unshift(message);
       if (tailEntries.length >= args.tailCount) break outer;
     }
   }

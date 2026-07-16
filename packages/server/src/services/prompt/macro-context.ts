@@ -435,3 +435,35 @@ export async function collectCharacterPostHistoryEntries(
 
   return entries;
 }
+
+export async function collectCharacterAdvancedPromptEntries(
+  db: DB,
+  characterIds: string[],
+  macroCtx: MacroContext,
+  wrapFormat: WrapFormat,
+): Promise<PromptDepthEntry[]> {
+  const [depthEntries, postHistoryEntries] = await Promise.all([
+    collectCharacterDepthPromptEntries(db, characterIds, macroCtx),
+    collectCharacterPostHistoryEntries(db, characterIds, macroCtx, wrapFormat),
+  ]);
+  return [...depthEntries, ...postHistoryEntries];
+}
+
+export function resolveCharacterAdvancedPromptIds(
+  characterIds: string[],
+  chatMode: string,
+  chatMetadata: Record<string, unknown>,
+): string[] {
+  const resolved = new Set(characterIds.filter((id) => id && !id.startsWith("npc:")));
+  if (chatMode !== "game") return [...resolved];
+
+  const partyIds = Array.isArray(chatMetadata.gamePartyCharacterIds)
+    ? chatMetadata.gamePartyCharacterIds
+    : [];
+  for (const id of partyIds) {
+    if (typeof id === "string" && id && !id.startsWith("npc:")) resolved.add(id);
+  }
+  const gmCharacterId = chatMetadata.gameGmCharacterId;
+  if (typeof gmCharacterId === "string" && gmCharacterId) resolved.add(gmCharacterId);
+  return [...resolved];
+}

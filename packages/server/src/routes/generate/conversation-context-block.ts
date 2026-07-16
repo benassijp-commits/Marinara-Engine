@@ -30,8 +30,10 @@ export function buildConversationCurrentContextBlock(args: {
   userActivity?: string | null;
   mentionedCharacterNames?: string[] | null;
   autonomousIntentKey?: unknown;
-  isGroup: boolean;
-  earlyGroupMode: string;
+  /** @deprecated Group behavior is derived from convoCharInfo. Kept for caller compatibility. */
+  isGroup?: boolean;
+  /** @deprecated Conversation mode no longer has a separate early-group mode. */
+  earlyGroupMode?: string;
   wrapFormat: WrapFormat;
 }): string {
   const timeStr = formatZonedConversationTime(args.nowInstant, args.promptTimeZone);
@@ -52,12 +54,12 @@ export function buildConversationCurrentContextBlock(args: {
   const statusLine = buildConversationStatusLine(args.convoCharInfo);
 
   const userStatusLabels: Record<string, string> = {
-    active: "active",
+    active: "online",
     idle: "idle / away from the computer",
     dnd: "do not disturb",
   };
   const shouldIncludeUserStatus = args.userStatus !== "invisible";
-  const userStatusLabel = userStatusLabels[args.userStatus ?? "active"] ?? "active";
+  const userStatusLabel = userStatusLabels[args.userStatus ?? "active"] ?? "online";
   const userActivity = args.userActivity?.replace(/\s+/g, " ").trim().slice(0, 120) ?? "";
   const userStatusLine = userActivity ? `${userStatusLabel} - ${userActivity}` : userStatusLabel;
 
@@ -85,9 +87,6 @@ export function buildConversationCurrentContextBlock(args: {
     ...(intentHint ? [`What prompted this message: ${intentHint}`] : []),
     ...scheduleLines,
     `The current time and date: ${timeStr}, ${dateStr}.`,
-    ...(args.isGroup && args.earlyGroupMode !== "individual"
-      ? [`- Remember to prefix messages with \`Name: message\`!`]
-      : []),
   ];
 
   return wrapContent(contextLines.join("\n"), "Context", args.wrapFormat);
@@ -95,13 +94,13 @@ export function buildConversationCurrentContextBlock(args: {
 
 function buildConversationStatusLine(convoCharInfo: ConversationContextCharacter[]): string {
   const statusLabels: Record<string, string> = {
-    online: "online and active",
+    online: "online",
     idle: "idle / away",
     dnd: "busy / do not disturb",
     offline: "offline",
   };
   const buildCharStatus = (character: ConversationContextCharacter) => {
-    const label = statusLabels[character.status] ?? "online and active";
+    const label = statusLabels[character.status] ?? "online";
     return character.activity ? `${label} (${character.activity})` : label;
   };
   return convoCharInfo.length === 1

@@ -27,6 +27,7 @@ import {
   Hash,
   Key,
   Lock,
+  MapPin,
   MoreHorizontal,
   Regex,
   Settings2,
@@ -37,6 +38,7 @@ import {
 import { cn } from "../../lib/utils";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useUpdateLorebookEntry, useDeleteLorebookEntry, useDuplicateLorebookEntry } from "../../hooks/use-lorebooks";
+import { useUIStore } from "../../stores/ui.store";
 import { MacroTextarea } from "../ui/MacroTextarea";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
 import type {
@@ -90,6 +92,7 @@ interface Props {
    * preview active. Adds a side accent + chip; does not change behavior.
    */
   previewMatch?: "matched" | "constant";
+  mapBacklinks?: Array<{ chatId: string; locationId: string; locationName: string }>;
 }
 
 /** Maps the (constant, selective) boolean pair into a single status enum for the inline select. */
@@ -172,7 +175,7 @@ const MATCHING_SOURCE_OPTIONS: Array<{ value: LorebookMatchingSource; label: str
 const GENERATION_TRIGGER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "conversation", label: "Conversation" },
   { value: "roleplay", label: "Roleplay" },
-  { value: "visual_novel", label: "VN" },
+  { value: "visual_novel", label: "Legacy Roleplay" },
   { value: "game", label: "Game" },
   { value: "chat", label: "Chat reply" },
   { value: "continue", label: "Continue" },
@@ -210,6 +213,7 @@ export function LorebookEntryRow({
   isSelected = false,
   onToggleSelected,
   previewMatch,
+  mapBacklinks = [],
 }: Props) {
   const updateEntry = useUpdateLorebookEntry();
   const deleteEntry = useDeleteLorebookEntry();
@@ -686,6 +690,21 @@ export function LorebookEntryRow({
           className="min-w-0 flex-1 truncate rounded bg-transparent px-1 text-sm font-medium outline-none transition-colors hover:bg-[var(--accent)]/40 focus:bg-[var(--accent)]/40 focus:ring-1 focus:ring-[var(--ring)] sm:min-w-[7rem]"
         />
 
+        {mapBacklinks.length > 0 && (
+          <button
+            type="button"
+            className="inline-flex min-h-7 shrink-0 items-center gap-1 rounded-md bg-sky-400/10 px-1.5 text-[0.625rem] font-medium text-sky-300 ring-1 ring-sky-400/20 hover:bg-sky-400/15"
+            title={`Used by: ${mapBacklinks.map((backlink) => backlink.locationName).join(", ")}`}
+            aria-label={`Open hierarchical map. Used by ${mapBacklinks.map((backlink) => backlink.locationName).join(", ")}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              useUIStore.getState().openSpatialMapDetail(mapBacklinks[0]!.chatId);
+            }}
+          >
+            <MapPin size="0.6875rem" /> Used by {mapBacklinks.length}
+          </button>
+        )}
+
         <button
           type="button"
           className={cn(
@@ -916,9 +935,9 @@ export function LorebookEntryRow({
           type="button"
           aria-label="Delete entry"
           onClick={handleDelete}
-          className="shrink-0 rounded p-0.5 opacity-0 transition-all hover:bg-[var(--destructive)]/15 group-hover:opacity-100 max-md:opacity-100 sm:p-1"
+          className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 max-md:opacity-100 sm:p-1"
         >
-          <Trash2 size="0.75rem" className="text-[var(--destructive)]" />
+          <Trash2 size="0.75rem" />
         </button>
       </div>
 
@@ -1200,7 +1219,7 @@ function FilterPills({
   }
 
   return (
-    <div className="flex max-h-20 flex-wrap gap-1 overflow-y-auto pr-1">
+    <div className="flex max-h-20 flex-wrap items-start gap-1 overflow-y-auto p-px pr-1.5">
       {values.map((item) => {
         const active = selected.includes(item.value);
         return (
@@ -1209,10 +1228,10 @@ function FilterPills({
             type="button"
             onClick={() => onChange(toggleStringValue(selected, item.value))}
             className={cn(
-              "rounded-full px-2 py-0.5 text-[0.625rem] ring-1 transition-colors",
+              "mari-editor-chip min-h-6 max-w-full px-2 py-1 text-[0.625rem] leading-none transition-colors",
               active
-                ? "mari-chrome-accent-surface mari-accent-animated"
-                : "mari-editor-chip text-[var(--marinara-editor-muted)] hover:text-[var(--marinara-editor-text)]",
+                ? "mari-editor-chip--accent mari-chrome-accent-surface mari-accent-animated"
+                : "text-[var(--marinara-editor-muted)] hover:text-[var(--marinara-editor-text)]",
             )}
           >
             {item.label}

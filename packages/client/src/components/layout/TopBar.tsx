@@ -1,7 +1,19 @@
 // ──────────────────────────────────────────────
 // Layout: Top Bar (polished, with hover glow)
 // ──────────────────────────────────────────────
-import { MessageSquareText, Home, Settings, Link, BookOpen, Users, Sparkles, FileText, User, Bot } from "lucide-react";
+import {
+  MessageSquareText,
+  Home,
+  Settings,
+  Link,
+  BookOpen,
+  Users,
+  Sparkles,
+  FileText,
+  User,
+  Bot,
+  AtSign,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useUIStore } from "../../stores/ui.store";
@@ -10,6 +22,8 @@ import { cn } from "../../lib/utils";
 import { SpotifyMiniPlayer } from "../spotify/SpotifyMiniPlayer";
 import { YouTubePlayer } from "../chat/YouTubePlayer";
 import { LocalMusicPlayer } from "../chat/LocalMusicPlayer";
+import { MusicDjUnavailablePlayer } from "../music/MusicDjUnavailablePlayer";
+import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 
 type RightPanelButtonPanel = "lorebooks" | "presets" | "connections" | "agents" | "personas";
 
@@ -80,6 +94,7 @@ export function TopBar() {
   const activeChatId = useChatStore((s) => s.activeChatId);
   const setActiveChatId = useChatStore((s) => s.setActiveChatId);
   const closeAllDetails = useUIStore((s) => s.closeAllDetails);
+  const openNoodle = useUIStore((s) => s.openNoodle);
   const characterDetailId = useUIStore((s) => s.characterDetailId);
   const lorebookDetailId = useUIStore((s) => s.lorebookDetailId);
   const presetDetailId = useUIStore((s) => s.presetDetailId);
@@ -90,17 +105,29 @@ export function TopBar() {
   const regexDetailId = useUIStore((s) => s.regexDetailId);
   const botBrowserOpen = useUIStore((s) => s.botBrowserOpen);
   const gameAssetsBrowserOpen = useUIStore((s) => s.gameAssetsBrowserOpen);
+  const noodleOpen = useUIStore((s) => s.noodleOpen);
+  const musicPlayerEnabled = useUIStore((s) => s.musicPlayerEnabled);
   const characterLibraryOpen = useUIStore((s) => s.characterLibraryOpen);
+  const cardLibraryKind = useUIStore((s) => s.cardLibraryKind);
   const headerRef = useRef<HTMLElement | null>(null);
   const leftControlsRef = useRef<HTMLDivElement | null>(null);
   const rightNavRef = useRef<HTMLElement | null>(null);
   const [spotifyDesktopViewport, setSpotifyDesktopViewport] = useState(false);
   const [spotifyUseFloatingFallback, setSpotifyUseFloatingFallback] = useState(false);
   const [hoveredTopbarKey, setHoveredTopbarKey] = useState<string | null>(null);
+  const { data: installedCapabilities = [], isLoading: installedCapabilitiesLoading } =
+    useInstalledCapabilityPackages();
+  const musicDjInstalled = installedCapabilities.some(
+    (capability) => capability.id === "spotify" && capability.status === "active",
+  );
+  const showMusicDjUnavailablePlayer =
+    spotifyDesktopViewport && musicPlayerEnabled && !installedCapabilitiesLoading && !musicDjInstalled;
 
   const isBotBrowserActive = (rightPanelOpen && rightPanel === "bot-browser") || botBrowserOpen;
   const isCharactersPanelActive =
-    (rightPanelOpen && rightPanel === "characters") || Boolean(characterDetailId) || characterLibraryOpen;
+    (rightPanelOpen && rightPanel === "characters") ||
+    Boolean(characterDetailId) ||
+    (characterLibraryOpen && cardLibraryKind === "characters");
   const panelContextActive: Record<RightPanelButtonPanel, boolean> = {
     lorebooks: (rightPanelOpen && rightPanel === "lorebooks") || Boolean(lorebookDetailId),
     presets:
@@ -110,7 +137,10 @@ export function TopBar() {
       Boolean(toolDetailId),
     connections: (rightPanelOpen && rightPanel === "connections") || Boolean(connectionDetailId),
     agents: (rightPanelOpen && rightPanel === "agents") || Boolean(agentDetailId),
-    personas: (rightPanelOpen && rightPanel === "personas") || Boolean(personaDetailId),
+    personas:
+      (rightPanelOpen && rightPanel === "personas") ||
+      Boolean(personaDetailId) ||
+      (characterLibraryOpen && cardLibraryKind === "personas"),
   };
   const isHomeActive =
     !activeChatId &&
@@ -124,6 +154,7 @@ export function TopBar() {
     !regexDetailId &&
     !botBrowserOpen &&
     !gameAssetsBrowserOpen &&
+    !noodleOpen &&
     !characterLibraryOpen;
 
   const isTopbarHovered = (key: string) => hoveredTopbarKey === key;
@@ -232,7 +263,10 @@ export function TopBar() {
 
       {/* Left section: window controls + chat info */}
       <div className="mari-topbar-left flex min-w-0 flex-1 items-center gap-2">
-        <div ref={leftControlsRef} className="mari-topbar-left-controls mari-rgb-icon-scope flex shrink-0 items-center gap-2">
+        <div
+          ref={leftControlsRef}
+          className="mari-topbar-left-controls mari-rgb-icon-scope flex shrink-0 items-center gap-2"
+        >
           <button
             onClick={handleSidebarClick}
             data-tour="sidebar-toggle"
@@ -273,6 +307,32 @@ export function TopBar() {
             onClick={() => {
               window.dispatchEvent(new Event("marinara:home-professor-mari-close"));
               setActiveChatId(null);
+              openNoodle();
+            }}
+            data-tour="noodle-tab"
+            data-topbar-hover-key="noodle"
+            className={cn(
+              TOPBAR_BUTTON_CLASS,
+              noodleOpen
+                ? TOPBAR_ACTIVE_BUTTON_CLASS
+                : cn(
+                    "text-[var(--muted-foreground)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+                    isTopbarHovered("noodle") &&
+                      cn(TOPBAR_FORCE_HOVER_CLASS, "text-[var(--marinara-chat-chrome-button-text-hover)]"),
+                  ),
+            )}
+            title="Noodle"
+          >
+            <AtSign size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
+            {noodleOpen && (
+              <span className="mari-topbar-active-underline absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full" />
+            )}
+          </button>
+
+          <button
+            onClick={() => {
+              window.dispatchEvent(new Event("marinara:home-professor-mari-close"));
+              setActiveChatId(null);
               closeAllDetails();
             }}
             data-topbar-hover-key="home"
@@ -294,9 +354,15 @@ export function TopBar() {
             )}
           </button>
         </div>
-        {spotifyDesktopViewport && <SpotifyMiniPlayer forceFloating={spotifyUseFloatingFallback} />}
-        <YouTubePlayer />
-        <LocalMusicPlayer />
+        {showMusicDjUnavailablePlayer ? (
+          <MusicDjUnavailablePlayer floating={spotifyUseFloatingFallback} />
+        ) : musicDjInstalled ? (
+          <>
+            {spotifyDesktopViewport && <SpotifyMiniPlayer forceFloating={spotifyUseFloatingFallback} />}
+            <YouTubePlayer />
+            <LocalMusicPlayer />
+          </>
+        ) : null}
       </div>
 
       {/* Right section - Panel toggles */}
@@ -306,7 +372,7 @@ export function TopBar() {
         aria-label="Panel navigation"
         className="mari-topbar-panel-nav mari-rgb-icon-scope flex shrink-0 items-center justify-end gap-0.5 rounded-xl p-1 max-sm:gap-0 max-sm:p-0.5"
       >
-        {/* Browser */}
+        {/* Card Browser */}
         <button
           onClick={() => handleRightPanelClick("bot-browser")}
           data-tour="panel-bot-browser"
@@ -320,7 +386,7 @@ export function TopBar() {
                   isTopbarHovered("browser") && cn(TOPBAR_FORCE_HOVER_CLASS, "text-lime-300"),
                 ),
           )}
-          title="Browser"
+          title="Card Browser"
         >
           <Bot size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
           {isBotBrowserActive && (
@@ -335,17 +401,18 @@ export function TopBar() {
           className={cn(
             TOPBAR_PANEL_BUTTON_CLASS,
             isCharactersPanelActive
-              ? cn(TOPBAR_ACTIVE_BUTTON_CLASS, "text-rose-300")
+              ? TOPBAR_ACTIVE_BUTTON_CLASS
               : cn(
-                  "text-[var(--muted-foreground)] hover:text-rose-300",
-                  isTopbarHovered("characters") && cn(TOPBAR_FORCE_HOVER_CLASS, "text-rose-300"),
+                  "text-[var(--muted-foreground)] hover:text-[var(--marinara-chat-chrome-button-text-hover)]",
+                  isTopbarHovered("characters") &&
+                    cn(TOPBAR_FORCE_HOVER_CLASS, "text-[var(--marinara-chat-chrome-button-text-hover)]"),
                 ),
           )}
           title="Characters"
         >
           <Users size={15} className={TOPBAR_ACCENT_ICON_CLASS} />
           {isCharactersPanelActive && (
-            <span className="absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full bg-gradient-to-r from-pink-400 to-rose-500" />
+            <span className="mari-topbar-active-underline absolute -bottom-0.5 left-1/2 h-0.5 w-3 -translate-x-1/2 rounded-full" />
           )}
         </button>
 

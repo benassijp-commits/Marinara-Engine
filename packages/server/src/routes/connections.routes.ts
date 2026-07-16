@@ -111,6 +111,7 @@ function usesResponsesEndpointForTestMessage(provider: string, model: string): b
   if (!isOpenAICompatibleProvider(provider) || provider === "custom") return false;
   const normalized = model.toLowerCase();
   return (
+    normalized.startsWith("gpt-5.6") ||
     normalized.startsWith("gpt-5.5") ||
     normalized.startsWith("gpt-5.4") ||
     normalized.startsWith("codex-") ||
@@ -509,8 +510,12 @@ export async function connectionsRoutes(app: FastifyInstance) {
       // image_generation has no standard modelsEndpoint — use provider-specific checks
       let testUrl: string;
       if (conn.provider === "image_generation" && imageSource === "novelai") {
-        // NovelAI: validate the API key via the user subscription endpoint
-        testUrl = "https://api.novelai.net/user/subscription";
+        return {
+          success: true,
+          message: "NovelAI connection configured. Use 'Test Image' to verify generation works.",
+          latencyMs: Date.now() - start,
+          modelName: conn.model,
+        };
       } else if (conn.provider === "image_generation" && imageSource === "horde") {
         // Horde: heartbeat is the lightweight health endpoint for the public API.
         testUrl = buildHordeUrl(baseUrl, "status/heartbeat");
@@ -1044,9 +1049,10 @@ export async function connectionsRoutes(app: FastifyInstance) {
   //    billed against. The Claude Agent SDK can silently route a request to a
   //    smaller model (fast mode, post-rate-limit `cooldown` state, account-tier
   //    gating) without surfacing the swap to the caller. We send a tiny prompt
-  //    through the SDK with fast mode forced off, then return the model(s) the
-  //    SDK reports in `modelUsage` plus its `fast_mode_state` so the UI can
-  //    show "you asked for X, the SDK billed Y." ──
+  //    through the SDK with the connection's own fast-mode setting (not
+  //    forced off), then return the model(s) the SDK reports in `modelUsage`
+  //    plus its `fast_mode_state` so the UI can show "you asked for X, the
+  //    SDK billed Y." ──
   app.post<{ Params: { id: string } }>("/:id/diagnose-claude-subscription", async (req, reply) => {
     const conn = await storage.getWithKey(req.params.id);
     if (!conn) return reply.status(404).send({ error: "Connection not found" });

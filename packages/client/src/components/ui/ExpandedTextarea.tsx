@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Expanded Textarea — Fullscreen editing overlay
 // ──────────────────────────────────────────────
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Minimize2 } from "lucide-react";
@@ -21,6 +21,9 @@ interface ExpandedTextareaProps {
   onChange: (value: string) => void;
   placeholder?: string;
   surface?: "default" | "chat";
+  closeLabel?: string;
+  footer?: ReactNode;
+  overlayStyle?: CSSProperties;
 }
 
 export function ExpandedTextarea({
@@ -31,6 +34,9 @@ export function ExpandedTextarea({
   onChange,
   placeholder,
   surface = "default",
+  closeLabel = "Collapse",
+  footer,
+  overlayStyle,
 }: ExpandedTextareaProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isChatSurface = surface === "chat";
@@ -61,6 +67,8 @@ export function ExpandedTextarea({
           // "inside" — otherwise the first click (including the Collapse button)
           // closes the drawer, unmounting the editor before its edit can commit.
           data-chat-floating-panel="true"
+          data-component="ExpandedTextarea"
+          style={overlayStyle}
           className={cn(
             "fixed inset-0 z-[100] flex flex-col max-md:pt-[env(safe-area-inset-top)]",
             isChatSurface
@@ -92,7 +100,7 @@ export function ExpandedTextarea({
                 )}
               >
                 <Minimize2 size="0.875rem" />
-                <span className="max-md:hidden">Collapse</span>
+                <span className="max-md:hidden">{closeLabel}</span>
               </button>
             </div>
           </div>
@@ -112,6 +120,18 @@ export function ExpandedTextarea({
               )}
             />
           </div>
+          {footer ? (
+            <div
+              className={cn(
+                "shrink-0",
+                isChatSurface
+                  ? "border-t border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)] px-4 py-3 md:px-6"
+                  : "border-t border-[var(--border)] bg-[var(--background)] px-4 py-3 md:px-6",
+              )}
+            >
+              {footer}
+            </div>
+          ) : null}
         </motion.div>
       )}
     </AnimatePresence>,

@@ -19,6 +19,15 @@ export type SelectiveLogic = "and" | "and_all" | "or" | "not" | "not_all";
 /** Role for injected lorebook content. */
 export type LorebookRole = "system" | "user" | "assistant";
 
+/** Why an entry was activated for the current generation. */
+export type LorebookActivationSource =
+  | "current_location"
+  | "keyword"
+  | "semantic"
+  | "constant"
+  | "sticky"
+  | "recursive";
+
 /** Include/exclude behavior for contextual lorebook filters. */
 export type LorebookFilterMode = "any" | "include" | "exclude";
 
@@ -85,8 +94,9 @@ export interface Lorebook {
 
 /**
  * A collapsible container that groups lorebook entries to reduce visual
- * clutter in the editor. Folders are flat in v1 — `parentFolderId` is reserved
- * for future nested-folder support and must currently be null.
+ * clutter in the editor. Folders nest: `parentFolderId` points at the parent
+ * folder, and the server validates the parent exists in the same lorebook and
+ * rejects cycles (see lorebook-folder-tree.ts and lorebooks.routes.ts).
  *
  * Folder enable/disable acts as a gate: when `enabled` is false, every entry
  * inside the folder is treated as inactive at activation time, regardless of
@@ -109,8 +119,9 @@ export interface LorebookFolder {
    */
   enabled: boolean;
   /**
-   * Reserved for future nested-folder support. Always null in v1; the server
-   * rejects non-null values.
+   * Parent folder for nesting, or null for a root-level folder. The server
+   * validates the parent exists in the same lorebook and rejects self-parent
+   * and cycle moves (`canReparentFolder`).
    */
   parentFolderId: string | null;
   /** Display order among sibling folders (lower = higher in the list). */

@@ -124,6 +124,8 @@ export interface ChatOptions {
   enableThinking?: boolean;
   /** Reasoning effort level for models that support it */
   reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  /** When true, previous provider-native reasoning state is not reused. */
+  excludePastReasoning?: boolean;
   /** Output verbosity for GPT-5+ models */
   verbosity?: "low" | "medium" | "high";
   /** Emit provider prompt debug logs even when normal debug logging is disabled. */
@@ -699,10 +701,6 @@ export abstract class BaseLLMProvider {
       "Content-Type": "application/json",
       Authorization: `Bearer ${this.apiKey}`,
     };
-    if (this.baseUrl.includes("openrouter.ai")) {
-      headers["HTTP-Referer"] = "https://github.com/Pasta-Devs/Marinara-Engine";
-      headers["X-Title"] = "Marinara Engine";
-    }
     const res = await llmFetch(`${this.baseUrl}/embeddings`, {
       method: "POST",
       headers,

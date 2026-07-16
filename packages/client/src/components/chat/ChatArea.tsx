@@ -61,6 +61,7 @@ import {
   BUILT_IN_AGENTS,
   PROFESSOR_MARI_ID,
   buildGuidedGenerationInstructionMessage,
+  normalizeManualTrackerAgentTypes,
   type AchievementEvent,
   type GeneratedSceneVideo,
   type SpritePlacement,
@@ -80,6 +81,11 @@ import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import { achievementKeys, trackAchievementEvent } from "../../hooks/use-achievements";
 import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
+import {
+  findLatestTTSAutoplayMessage,
+  getTTSAutoplayRevision,
+  shouldAutoplayGeneratedTTS,
+} from "../../lib/tts-autoplay";
 import { CHAT_SCROLL_TO_BOTTOM_EVENT, type ChatScrollToBottomDetail } from "../../lib/chat-scroll-events";
 import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import { CHAT_TOOLBAR_ACTION_EVENT, readChatToolbarFloatingPanelAnchor } from "./ChatToolbarControls";
@@ -109,17 +115,19 @@ import { HomeProfessorMariChat } from "./HomeProfessorMariChat";
 import { HomeAchievements } from "./HomeAchievements";
 import { NewChatConnectionGate } from "./NewChatConnectionGate";
 import { ChatCommonOverlays, preloadChatSettingsDrawer, type ChatSettingsInitialSection } from "./ChatCommonOverlays";
-import { PendingTypingDots } from "./PendingTypingDots";
-import { CreatorNotesCssInjector, type CardCssMode } from "./CreatorNotesCssInjector";
+import { CreatorNotesCssInjector, type CardCssMode, type PersonaCssRow } from "./CreatorNotesCssInjector";
 import type { ChatModeFilter } from "../../lib/card-css";
-import { ImagePromptReviewModal, type ImagePromptOverride, type ImagePromptReviewItem } from "../ui/ImagePromptReviewModal";
+import {
+  ImagePromptReviewModal,
+  type ImagePromptOverride,
+  type ImagePromptReviewItem,
+} from "../ui/ImagePromptReviewModal";
 
 export type { CharacterMap };
 
-const BUILT_IN_AGENT_ID_SET = new Set(BUILT_IN_AGENTS.map((agent) => agent.id));
-const BUILT_IN_TRACKER_AGENT_ID_SET = new Set(
-  BUILT_IN_AGENTS.filter((agent) => agent.category === "tracker" && !agent.libraryHidden).map((agent) => agent.id),
-);
+const isBuiltInAgentType = (agentType: string) => BUILT_IN_AGENTS.some((agent) => agent.id === agentType);
+const isBuiltInTrackerAgentType = (agentType: string) =>
+  BUILT_IN_AGENTS.some((agent) => agent.id === agentType && agent.category === "tracker" && !agent.libraryHidden);
 
 function compareMessagesByCursor(left: MessageWithSwipes, right: MessageWithSwipes): number {
   const createdAtCompare = left.createdAt.localeCompare(right.createdAt);
@@ -162,6 +170,32 @@ type GenerateSceneBackgroundPayload = {
   force: boolean;
   debugMode: boolean;
   promptOverrides?: ImagePromptOverride[];
+};
+
+type GenerateRoleplaySceneVideoPayload = {
+  chatId: string;
+  galleryImageId?: string;
+  queueMediaGenerationRequests: boolean;
+  debugMode: boolean;
+  promptOverride?: string;
+};
+
+type RoleplaySceneVideoPromptPreview = {
+  prompt: string;
+  galleryImageId: string;
+  durationSeconds: number;
+  aspectRatio: "16:9" | "9:16";
+  resolution: string | null;
+  maxPromptLength: number | null;
+};
+
+type GenerateConversationSelfiePayload = {
+  characterId: string;
+  promptOverride?: string;
+  negativePromptOverride?: string;
+  previewOnly?: boolean;
+  queueImageGenerationRequests: boolean;
+  debugMode: boolean;
 };
 
 function buildRoleplayBackgroundSceneDescription(args: {
@@ -280,7 +314,12 @@ function suppressBuiltInProfessorMariForMode(mode: string | undefined): boolean 
 
 const INTUITIVE_SWIPE_MIN_DISTANCE = 56;
 const INTUITIVE_SWIPE_MAX_VERTICAL_DRIFT = 44;
+const MEDIA_PROMPT_PREVIEW_TIMEOUT_MS = 180_000;
 const SCENE_VIDEO_GENERATION_TIMEOUT_MS = 1_800_000;
+
+function isMediaPromptPreviewTimeout(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "TimeoutError";
+}
 
 const shouldIgnoreIntuitiveSwipeTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof Element)) return false;
@@ -310,6 +349,12 @@ type AgentInjectionReviewItem = {
 type AgentInjectionReviewRequest = {
   chatId: string;
   injections: AgentInjectionReviewItem[];
+};
+
+type IllustratorPromptReviewRequest = {
+  chatId: string;
+  item: ImagePromptReviewItem;
+  resultData: Record<string, unknown>;
 };
 
 type CharacterRow = { id: string; data: unknown; avatarPath: string | null; comment?: string | null };
@@ -345,6 +390,7 @@ function toCharacterMapValue(char: CharacterRow): CharacterMapValue {
     const extensions = data.extensions && typeof data.extensions === "object" ? data.extensions : {};
     return {
       name: data.name ?? "Unknown",
+      convoDisplayName: extensions.convoDisplayName || undefined,
       phoneticName: extensions.phoneticName || undefined,
       description: data.description ?? "",
       personality: data.personality ?? "",
@@ -374,6 +420,7 @@ function toCharacterMapValue(char: CharacterRow): CharacterMapValue {
 function areCharacterMapValuesEqual(a: CharacterMapValue, b: CharacterMapValue): boolean {
   return (
     a.name === b.name &&
+    a.convoDisplayName === b.convoDisplayName &&
     a.phoneticName === b.phoneticName &&
     a.description === b.description &&
     a.personality === b.personality &&
@@ -388,8 +435,7 @@ function areCharacterMapValuesEqual(a: CharacterMapValue, b: CharacterMapValue):
     a.conversationStatus === b.conversationStatus &&
     a.conversationActivity === b.conversationActivity &&
     // avatarCrop is a small plain object — compare by value, not reference.
-    (a.avatarCrop === b.avatarCrop ||
-      JSON.stringify(a.avatarCrop ?? null) === JSON.stringify(b.avatarCrop ?? null))
+    (a.avatarCrop === b.avatarCrop || JSON.stringify(a.avatarCrop ?? null) === JSON.stringify(b.avatarCrop ?? null))
   );
 }
 
@@ -537,10 +583,15 @@ export function ChatArea() {
   const [spriteArrangeMode, setSpriteArrangeMode] = useState(false);
   const [agentInjectionReview, setAgentInjectionReview] = useState<AgentInjectionReviewRequest | null>(null);
   const [agentInjectionDrafts, setAgentInjectionDrafts] = useState<Record<string, string>>({});
+  const [illustratorPromptReview, setIllustratorPromptReview] = useState<IllustratorPromptReviewRequest | null>(null);
+  const [illustratorPromptReviewSubmitting, setIllustratorPromptReviewSubmitting] = useState(false);
   const [creditsOpen, setCreditsOpen] = useState(false);
   const [homeProfessorChatOpen, setHomeProfessorChatOpen] = useState(false);
   const [homeProfessorChatActive, setHomeProfessorChatActive] = useState(false);
   const homeProfessorChatOpenRef = useRef(false);
+  const homeViewportRef = useRef<HTMLDivElement>(null);
+  const homeContentRef = useRef<HTMLDivElement>(null);
+  const [homeFitScale, setHomeFitScale] = useState(1);
   const queryClient = useQueryClient();
   useEffect(() => {
     homeProfessorChatOpenRef.current = homeProfessorChatOpen;
@@ -552,6 +603,61 @@ export function ChatArea() {
   const handleHomeProfessorChatExitComplete = useCallback(() => {
     if (!homeProfessorChatOpenRef.current) setHomeProfessorChatActive(false);
   }, []);
+  useLayoutEffect(() => {
+    if (activeChatId || homeProfessorChatActive) {
+      setHomeFitScale(1);
+      return;
+    }
+
+    const viewport = homeViewportRef.current;
+    const content = homeContentRef.current;
+    if (!viewport || !content) return;
+
+    let frame: number | null = null;
+    let disposed = false;
+    const updateScale = () => {
+      frame = null;
+      if (disposed) return;
+
+      const viewportStyle = getComputedStyle(viewport);
+      const availableHeight =
+        viewport.clientHeight -
+        Number.parseFloat(viewportStyle.paddingTop || "0") -
+        Number.parseFloat(viewportStyle.paddingBottom || "0");
+      const availableWidth =
+        viewport.clientWidth -
+        Number.parseFloat(viewportStyle.paddingLeft || "0") -
+        Number.parseFloat(viewportStyle.paddingRight || "0");
+      const naturalHeight = content.scrollHeight;
+      const naturalWidth = content.scrollWidth;
+
+      if (availableHeight <= 0 || availableWidth <= 0 || naturalHeight <= 0 || naturalWidth <= 0) return;
+
+      const nextScale = Math.min(1, availableHeight / naturalHeight, availableWidth / naturalWidth);
+      const fittedScale = Math.max(0, Math.floor(nextScale * 1000) / 1000);
+      setHomeFitScale((current) => (Math.abs(current - fittedScale) < 0.001 ? current : fittedScale));
+    };
+    const scheduleScaleUpdate = () => {
+      if (disposed) return;
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(updateScale);
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => scheduleScaleUpdate());
+    resizeObserver?.observe(viewport);
+    resizeObserver?.observe(content);
+    window.addEventListener("resize", scheduleScaleUpdate);
+    void document.fonts?.ready.then(scheduleScaleUpdate);
+    updateScale();
+
+    return () => {
+      disposed = true;
+      if (frame !== null) cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleScaleUpdate);
+    };
+  }, [activeChatId, homeProfessorChatActive]);
   const trackHomeFooterAchievement = useCallback(
     (event: AchievementEvent) => {
       void trackAchievementEvent(event, { keepalive: true })
@@ -673,14 +779,6 @@ export function ChatArea() {
     });
     return map;
   }, [messageOffset, messages]);
-  const _messageOrderIndexById = useMemo(() => {
-    const map = new Map<string, number>();
-    if (!messages) return map;
-    messages.forEach((message, index) => {
-      map.set(message.id, messageOffset + index);
-    });
-    return map;
-  }, [messageOffset, messages]);
   const { data: gameLibraryCharacters } = useCharacters({
     enabled: !!chat?.id && chat.id === activeChatId && isGameChat,
     includeBuiltIn: true,
@@ -692,6 +790,7 @@ export function ChatArea() {
   const updateMessageExtra = useUpdateMessageExtra(activeChatId);
   const peekPrompt = usePeekPrompt();
   const branchChat = useBranchChat();
+  const branchPendingRef = useRef(false);
   const { generate, retryAgents } = useGenerate();
   const generateGallerySelfie = useGenerateGallerySelfie(activeChatId ?? "");
   const setActiveSwipe = useSetActiveSwipe(activeChatId);
@@ -731,6 +830,18 @@ export function ChatArea() {
     return () => window.removeEventListener("marinara:agent-injection-review", handleReviewRequest);
   }, []);
 
+  useEffect(() => {
+    const handleIllustratorPromptReview = (event: Event) => {
+      const detail = (event as CustomEvent<IllustratorPromptReviewRequest>).detail;
+      if (!detail?.chatId || !detail.item || !detail.resultData) return;
+      if (detail.chatId !== useChatStore.getState().activeChatId) return;
+      setIllustratorPromptReviewSubmitting(false);
+      setIllustratorPromptReview(detail);
+    };
+    window.addEventListener("marinara:image-prompt-review", handleIllustratorPromptReview);
+    return () => window.removeEventListener("marinara:image-prompt-review", handleIllustratorPromptReview);
+  }, []);
+
   const handleContinueAgentInjectionReview = useCallback(() => {
     if (!agentInjectionReview) return;
     const overrides = agentInjectionReview.injections.map((injection) => ({
@@ -748,6 +859,30 @@ export function ChatArea() {
     setAgentInjectionReview(null);
     setAgentInjectionDrafts({});
   }, []);
+
+  const handleContinueIllustratorPromptReview = useCallback(
+    async (overrides: ImagePromptOverride[]) => {
+      if (!illustratorPromptReview || illustratorPromptReviewSubmitting) return;
+      const override = overrides.find((entry) => entry.id === illustratorPromptReview.item.id);
+      if (!override?.prompt.trim()) return;
+      setIllustratorPromptReviewSubmitting(true);
+      const success = await retryAgents(illustratorPromptReview.chatId, ["illustrator"], {
+        illustratorPromptReviewOverride: {
+          resultData: illustratorPromptReview.resultData,
+          prompt: override.prompt,
+          ...(override.negativePrompt ? { negativePrompt: override.negativePrompt } : {}),
+        },
+      });
+      setIllustratorPromptReviewSubmitting(false);
+      if (success) setIllustratorPromptReview(null);
+    },
+    [illustratorPromptReview, illustratorPromptReviewSubmitting, retryAgents],
+  );
+
+  const handleCloseIllustratorPromptReview = useCallback(() => {
+    if (illustratorPromptReviewSubmitting) return;
+    setIllustratorPromptReview(null);
+  }, [illustratorPromptReviewSubmitting]);
 
   // Character IDs in the active chat. Keyed on the raw characterIds field
   // (all getChatCharacterIds reads) so chat-detail refetches that only bump
@@ -804,6 +939,7 @@ export function ChatArea() {
         if (typeof snapshot.name !== "string") continue;
         map.set(id, {
           name: snapshot.name,
+          convoDisplayName: snapshot.convoDisplayName,
           description: snapshot.description ?? "",
           personality: snapshot.personality ?? "",
           backstory: snapshot.backstory ?? "",
@@ -922,10 +1058,12 @@ export function ChatArea() {
     // Prefer per-chat personaId, fall back to the globally active persona outside Game mode.
     const persona = chatPersona ?? (!isGameChat ? activePersonaFallback : null);
     if (!persona) return undefined;
-    const avatarCrop = typeof persona.avatarCrop === "string" ? parseAvatarCropJson(persona.avatarCrop) : (persona.avatarCrop ?? null);
+    const avatarCrop =
+      typeof persona.avatarCrop === "string" ? parseAvatarCropJson(persona.avatarCrop) : (persona.avatarCrop ?? null);
     return {
       id: persona.id,
       name: persona.name,
+      convoDisplayName: persona.convoDisplayName || undefined,
       phoneticName: persona.phoneticName || undefined,
       description: persona.description ?? "",
       personality: persona.personality || undefined,
@@ -1068,10 +1206,20 @@ export function ChatArea() {
   const summaryContextSize: number = (chatMeta.summaryContextSize as number) ?? 50;
   const [roleplayBackgroundReviewItems, setRoleplayBackgroundReviewItems] = useState<ImagePromptReviewItem[]>([]);
   const [roleplayBackgroundReviewSubmitting, setRoleplayBackgroundReviewSubmitting] = useState(false);
+  const [roleplayVideoReviewItems, setRoleplayVideoReviewItems] = useState<ImagePromptReviewItem[]>([]);
+  const [roleplayVideoReviewSubmitting, setRoleplayVideoReviewSubmitting] = useState(false);
+  const [conversationSelfieReviewItems, setConversationSelfieReviewItems] = useState<ImagePromptReviewItem[]>([]);
+  const [conversationSelfieReviewSubmitting, setConversationSelfieReviewSubmitting] = useState(false);
   const roleplaySceneVideoGeneratingRef = useRef(false);
   const roleplayBackgroundReviewResolveRef = useRef<((overrides: ImagePromptOverride[] | null) => void) | null>(null);
+  const roleplayVideoReviewResolveRef = useRef<((overrides: ImagePromptOverride[] | null) => void) | null>(null);
+  const conversationSelfieReviewResolveRef = useRef<((overrides: ImagePromptOverride[] | null) => void) | null>(null);
 
   const openRoleplayBackgroundPromptReview = useCallback((items: ImagePromptReviewItem[]) => {
+    if (roleplayBackgroundReviewResolveRef.current) {
+      toast.error("Finish or cancel the current background prompt review first.");
+      return Promise.resolve(null);
+    }
     return new Promise<ImagePromptOverride[] | null>((resolve) => {
       roleplayBackgroundReviewResolveRef.current = resolve;
       setRoleplayBackgroundReviewSubmitting(false);
@@ -1087,11 +1235,81 @@ export function ChatArea() {
     resolve?.(overrides);
   }, []);
 
+  const confirmRoleplayBackgroundPromptReview = useCallback((overrides: ImagePromptOverride[]) => {
+    const resolve = roleplayBackgroundReviewResolveRef.current;
+    if (!resolve) return;
+    roleplayBackgroundReviewResolveRef.current = null;
+    setRoleplayBackgroundReviewSubmitting(true);
+    resolve(overrides);
+  }, []);
+
+  const openRoleplayVideoPromptReview = useCallback((items: ImagePromptReviewItem[]) => {
+    if (roleplayVideoReviewResolveRef.current) {
+      toast.error("Finish or cancel the current video prompt review first.");
+      return Promise.resolve(null);
+    }
+    return new Promise<ImagePromptOverride[] | null>((resolve) => {
+      roleplayVideoReviewResolveRef.current = resolve;
+      setRoleplayVideoReviewSubmitting(false);
+      setRoleplayVideoReviewItems(items);
+    });
+  }, []);
+
+  const closeRoleplayVideoPromptReview = useCallback((overrides: ImagePromptOverride[] | null) => {
+    const resolve = roleplayVideoReviewResolveRef.current;
+    roleplayVideoReviewResolveRef.current = null;
+    setRoleplayVideoReviewSubmitting(false);
+    setRoleplayVideoReviewItems([]);
+    resolve?.(overrides);
+  }, []);
+
+  const confirmRoleplayVideoPromptReview = useCallback((overrides: ImagePromptOverride[]) => {
+    const resolve = roleplayVideoReviewResolveRef.current;
+    if (!resolve) return;
+    roleplayVideoReviewResolveRef.current = null;
+    setRoleplayVideoReviewSubmitting(true);
+    resolve(overrides);
+  }, []);
+
+  const openConversationSelfiePromptReview = useCallback((items: ImagePromptReviewItem[]) => {
+    if (conversationSelfieReviewResolveRef.current) {
+      toast.error("Finish or cancel the current selfie prompt review first.");
+      return Promise.resolve(null);
+    }
+    return new Promise<ImagePromptOverride[] | null>((resolve) => {
+      conversationSelfieReviewResolveRef.current = resolve;
+      setConversationSelfieReviewSubmitting(false);
+      setConversationSelfieReviewItems(items);
+    });
+  }, []);
+
+  const closeConversationSelfiePromptReview = useCallback((overrides: ImagePromptOverride[] | null) => {
+    const resolve = conversationSelfieReviewResolveRef.current;
+    conversationSelfieReviewResolveRef.current = null;
+    setConversationSelfieReviewSubmitting(false);
+    setConversationSelfieReviewItems([]);
+    resolve?.(overrides);
+  }, []);
+
+  const confirmConversationSelfiePromptReview = useCallback((overrides: ImagePromptOverride[]) => {
+    const resolve = conversationSelfieReviewResolveRef.current;
+    if (!resolve) return;
+    conversationSelfieReviewResolveRef.current = null;
+    setConversationSelfieReviewSubmitting(true);
+    resolve(overrides);
+  }, []);
+
   useEffect(() => {
     return () => {
       const resolve = roleplayBackgroundReviewResolveRef.current;
       roleplayBackgroundReviewResolveRef.current = null;
       resolve?.(null);
+      const resolveVideo = roleplayVideoReviewResolveRef.current;
+      roleplayVideoReviewResolveRef.current = null;
+      resolveVideo?.(null);
+      const resolveSelfie = conversationSelfieReviewResolveRef.current;
+      conversationSelfieReviewResolveRef.current = null;
+      resolveSelfie?.(null);
     };
   }, []);
 
@@ -1121,11 +1339,20 @@ export function ChatArea() {
 
     try {
       if (useUIStore.getState().reviewImagePromptsBeforeSend) {
-        const preview = await api.post<{ items: ImagePromptReviewItem[] }>("/backgrounds/generate-scene/preview", payload);
-        if (preview.items.length > 0) {
+        let preview: { items: ImagePromptReviewItem[] } | undefined;
+        try {
+          preview = await api.post<{ items: ImagePromptReviewItem[] }>(
+            "/backgrounds/generate-scene/preview",
+            payload,
+            { signal: AbortSignal.timeout(MEDIA_PROMPT_PREVIEW_TIMEOUT_MS) },
+          );
+        } catch (error) {
+          if (!isMediaPromptPreviewTimeout(error)) throw error;
+          toast.error("Background prompt preview timed out. Continuing with the default prompt.");
+        }
+        if (preview?.items.length) {
           const overrides = await openRoleplayBackgroundPromptReview(preview.items);
           if (!overrides) return;
-          setRoleplayBackgroundReviewSubmitting(true);
           payload.promptOverrides = overrides;
         }
       }
@@ -1138,13 +1365,14 @@ export function ChatArea() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Background generation failed.");
     } finally {
-      setRoleplayBackgroundReviewSubmitting(false);
+      closeRoleplayBackgroundPromptReview(null);
     }
   }, [
     activeChatId,
     characterNames,
     chat,
     chatMode,
+    closeRoleplayBackgroundPromptReview,
     messages,
     openRoleplayBackgroundPromptReview,
     queryClient,
@@ -1163,17 +1391,50 @@ export function ChatArea() {
       }
 
       const galleryImageId = source?.galleryImageId?.trim();
+      const payload: GenerateRoleplaySceneVideoPayload = {
+        chatId: activeChatId,
+        ...(galleryImageId ? { galleryImageId } : {}),
+        queueMediaGenerationRequests: useUIStore.getState().queueImageGenerationRequests,
+        debugMode: useUIStore.getState().debugMode,
+      };
       roleplaySceneVideoGeneratingRef.current = true;
       try {
-        const result = await api.post<{ video: GeneratedSceneVideo }>(
-          "/gallery/generate-scene-video",
-          {
-            chatId: activeChatId,
-            ...(galleryImageId ? { galleryImageId } : {}),
-            debugMode: useUIStore.getState().debugMode,
-          },
-          { signal: AbortSignal.timeout(SCENE_VIDEO_GENERATION_TIMEOUT_MS) },
-        );
+        if (useUIStore.getState().reviewImagePromptsBeforeSend) {
+          let preview: RoleplaySceneVideoPromptPreview | undefined;
+          try {
+            preview = await api.post<RoleplaySceneVideoPromptPreview>(
+              "/gallery/generate-scene-video/preview",
+              payload,
+              { signal: AbortSignal.timeout(MEDIA_PROMPT_PREVIEW_TIMEOUT_MS) },
+            );
+          } catch (error) {
+            if (!isMediaPromptPreviewTimeout(error)) throw error;
+            toast.error("Video prompt preview timed out. Continuing with the default prompt.");
+          }
+          if (preview) {
+            const details = [`${preview.durationSeconds}s`, preview.aspectRatio, preview.resolution].filter(
+              (value): value is string => Boolean(value),
+            );
+            const overrides = await openRoleplayVideoPromptReview([
+              {
+                id: "gallery-scene-video",
+                kind: "video",
+                title: galleryImageId ? "Animate selected illustration" : "Animate latest illustration",
+                prompt: preview.prompt,
+                details: details.join(" | "),
+                maxLength: preview.maxPromptLength ?? undefined,
+              },
+            ]);
+            if (!overrides) return;
+            const reviewedPrompt = overrides[0]?.prompt.trim();
+            if (!reviewedPrompt) return;
+            payload.promptOverride = reviewedPrompt;
+          }
+        }
+
+        const result = await api.post<{ video: GeneratedSceneVideo }>("/gallery/generate-scene-video", payload, {
+          signal: AbortSignal.timeout(SCENE_VIDEO_GENERATION_TIMEOUT_MS),
+        });
         const galleryStore = useGalleryStore.getState();
         galleryStore.pinVideo(result.video);
         galleryStore.syncLatestViewer({ ...result.video, kind: "video" as const });
@@ -1182,10 +1443,19 @@ export function ChatArea() {
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Scene video generation failed.");
       } finally {
+        closeRoleplayVideoPromptReview(null);
         roleplaySceneVideoGeneratingRef.current = false;
       }
     },
-    [activeChatId, chat, chatMeta.sceneVideoConnectionId, chatMode, queryClient],
+    [
+      activeChatId,
+      chat,
+      chatMeta.sceneVideoConnectionId,
+      chatMode,
+      closeRoleplayVideoPromptReview,
+      openRoleplayVideoPromptReview,
+      queryClient,
+    ],
   );
 
   const handleGenerateConversationSelfie = useCallback(
@@ -1198,12 +1468,50 @@ export function ChatArea() {
       if (!targetCharacterId) {
         throw new Error("Add a character to this conversation before generating a selfie.");
       }
-      await generateGallerySelfie.mutateAsync({
+      const payload: GenerateConversationSelfiePayload = {
         characterId: targetCharacterId,
+        queueImageGenerationRequests: useUIStore.getState().queueImageGenerationRequests,
         debugMode: useUIStore.getState().debugMode,
-      });
+      };
+      try {
+        if (useUIStore.getState().reviewImagePromptsBeforeSend) {
+          let preview: { items: ImagePromptReviewItem[] } | undefined;
+          try {
+            preview = await api.post<{ items: ImagePromptReviewItem[] }>(
+              `/gallery/${activeChatId}/selfie`,
+              {
+                ...payload,
+                previewOnly: true,
+              },
+              { signal: AbortSignal.timeout(MEDIA_PROMPT_PREVIEW_TIMEOUT_MS) },
+            );
+          } catch (error) {
+            if (!isMediaPromptPreviewTimeout(error)) throw error;
+            toast.error("Selfie prompt preview timed out. Continuing with the default prompt.");
+          }
+          if (preview?.items.length) {
+            const overrides = await openConversationSelfiePromptReview(preview.items);
+            if (!overrides) return;
+            const override = overrides[0];
+            if (!override?.prompt.trim()) return;
+            payload.promptOverride = override.prompt;
+            if (override.negativePrompt !== undefined) payload.negativePromptOverride = override.negativePrompt;
+          }
+        }
+        await generateGallerySelfie.mutateAsync(payload);
+      } finally {
+        closeConversationSelfiePromptReview(null);
+      }
     },
-    [activeChatId, characterMap, chatCharIds, chatMode, generateGallerySelfie],
+    [
+      activeChatId,
+      characterMap,
+      chatCharIds,
+      chatMode,
+      closeConversationSelfiePromptReview,
+      generateGallerySelfie,
+      openConversationSelfiePromptReview,
+    ],
   );
 
   // Creator-notes card CSS: resolve the per-chat mode (default "chat") and map
@@ -1213,10 +1521,23 @@ export function ChatArea() {
     chatMeta.cardCssMode === "exclusive" || chatMeta.cardCssMode === "chat" ? chatMeta.cardCssMode : "disabled";
   const cardCssChatMode: ChatModeFilter =
     chatMode === "conversation" ? "conversation" : chatMode === "game" ? "game" : "roleplay";
+  // Persona creator-notes CSS only reaches the Conversation about-me popout
+  // (personas have no other data-card-css hook), so only feed it in Convo mode.
+  const cardCssPersonas = useMemo<PersonaCssRow[] | undefined>(() => {
+    if (chatMode !== "conversation") return undefined;
+    const persona = (chatPersona ?? (!isGameChat ? activePersonaFallback : null)) as
+      | { id?: string; creatorNotes?: string | null }
+      | null
+      | undefined;
+    return persona?.id
+      ? [{ id: persona.id, creatorNotes: typeof persona.creatorNotes === "string" ? persona.creatorNotes : null }]
+      : undefined;
+  }, [chatMode, chatPersona, activePersonaFallback, isGameChat]);
   const cardCssInjector = (
     <CreatorNotesCssInjector
       characterIds={chatCharIds}
       allCharacters={chatCharacterRows}
+      personas={cardCssPersonas}
       mode={cardCssMode}
       chatMode={cardCssChatMode}
     />
@@ -1434,6 +1755,19 @@ export function ChatArea() {
     for (const id of activeAgentIds) set.add(id);
     return set;
   }, [chatMeta.enableAgents, chatMeta.activeAgentIds]);
+  const manualTrackerAgentTypes = useMemo(
+    () => normalizeManualTrackerAgentTypes(chatMeta.manualTrackerAgentTypes),
+    [chatMeta.manualTrackerAgentTypes],
+  );
+  const manualTrackerTypes = useMemo(() => {
+    const set = new Set<string>();
+    for (const type of enabledAgentTypes) {
+      if (!isBuiltInTrackerAgentType(type)) continue;
+      if (chatMeta.manualTrackers === true || manualTrackerAgentTypes[type] === true) set.add(type);
+    }
+    return set;
+  }, [chatMeta.manualTrackers, enabledAgentTypes, manualTrackerAgentTypes]);
+  const hasManualTrackerAgents = manualTrackerTypes.size > 0;
 
   const combatAgentEnabled = enabledAgentTypes.has("combat");
   const expressionAgentEnabled = enabledAgentTypes.has("expression");
@@ -1735,17 +2069,21 @@ export function ChatArea() {
 
   const handleRerunTrackers = useCallback(async () => {
     if (!activeChatId || isStreaming || agentProcessing) return;
-    const types = Array.from(enabledAgentTypes).filter(
-      (type) => BUILT_IN_TRACKER_AGENT_ID_SET.has(type) || !BUILT_IN_AGENT_ID_SET.has(type),
-    );
+    const manualTypes = Array.from(manualTrackerTypes);
+    const types =
+      manualTypes.length > 0
+        ? manualTypes
+        : Array.from(enabledAgentTypes).filter(
+            (type) => isBuiltInTrackerAgentType(type) || !isBuiltInAgentType(type),
+          );
     if (types.length === 0) return;
     await retryAgents(activeChatId, types);
-  }, [activeChatId, isStreaming, agentProcessing, enabledAgentTypes, retryAgents]);
+  }, [activeChatId, isStreaming, agentProcessing, enabledAgentTypes, manualTrackerTypes, retryAgents]);
 
   const handleRerunSingleTracker = useCallback(
     async (agentType: string) => {
       if (!activeChatId || isStreaming || agentProcessing) return;
-      if (!BUILT_IN_TRACKER_AGENT_ID_SET.has(agentType) || !enabledAgentTypes.has(agentType)) return;
+      if (!isBuiltInTrackerAgentType(agentType) || !enabledAgentTypes.has(agentType)) return;
       await retryAgents(activeChatId, [agentType]);
     },
     [activeChatId, isStreaming, agentProcessing, enabledAgentTypes, retryAgents],
@@ -1830,11 +2168,22 @@ export function ChatArea() {
   );
 
   const handleBranch = useCallback(
-    (messageId: string) => {
-      if (!activeChatId || branchChat.isPending) return;
+    async (messageId: string) => {
+      const chatId = activeChatId;
+      if (!chatId || branchChat.isPending || branchPendingRef.current) return;
+      branchPendingRef.current = true;
+      const confirmed = await showConfirmDialog({
+        title: "Create a new branch?",
+        message: "This will copy the chat through this message and open the new branch.",
+        confirmLabel: "Create branch",
+      });
+      if (!confirmed || useChatStore.getState().activeChatId !== chatId) {
+        branchPendingRef.current = false;
+        return;
+      }
       const branchToastId = toast.loading("Creating branch...");
       branchChat.mutate(
-        { chatId: activeChatId, upToMessageId: messageId },
+        { chatId, upToMessageId: messageId },
         {
           onSuccess: (newChat) => {
             if (newChat) useChatStore.getState().setActiveChatId(newChat.id);
@@ -1844,6 +2193,7 @@ export function ChatArea() {
             toast.error(error instanceof Error ? `Branch failed: ${error.message}` : "Branch failed.");
           },
           onSettled: () => {
+            branchPendingRef.current = false;
             toast.dismiss(branchToastId);
           },
         },
@@ -1863,21 +2213,24 @@ export function ChatArea() {
   // Peek prompt state
   const [peekPromptData, setPeekPromptData] = useState<PeekPromptData | null>(null);
 
-  const handlePeekPrompt = useCallback(() => {
-    if (!activeChatId) return;
-    peekPrompt.mutate(activeChatId, {
-      onSuccess: (data) => setPeekPromptData(data),
-      onError: (error) => {
-        const message =
-          error instanceof ApiError
-            ? error.message
-            : error instanceof Error
+  const handlePeekPrompt = useCallback(
+    (messageId?: string) => {
+      if (!activeChatId) return;
+      peekPrompt.mutate(messageId ? { chatId: activeChatId, messageId } : activeChatId, {
+        onSuccess: (data) => setPeekPromptData(data),
+        onError: (error) => {
+          const message =
+            error instanceof ApiError
               ? error.message
-              : "Could not assemble the prompt preview.";
-        toast.error(message);
-      },
-    });
-  }, [activeChatId, peekPrompt]);
+              : error instanceof Error
+                ? error.message
+                : "Could not assemble the prompt preview.";
+          toast.error(message);
+        },
+      });
+    },
+    [activeChatId, peekPrompt],
+  );
 
   // Find the last assistant message for peek-prompt eligibility
   const lastAssistantMessageId = useMemo(() => {
@@ -2126,6 +2479,7 @@ export function ChatArea() {
   const userScrolledAtRef = useRef(0);
   const forcedBottomScrollRef = useRef<{ requestedAt: number; behavior: ScrollBehavior } | null>(null);
   const openedAtBottomChatIdRef = useRef<string | null>(null);
+  const streamScrollFrameRef = useRef(0);
   const scrollToMessagesBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const el = scrollRef.current;
     if (el) {
@@ -2134,6 +2488,23 @@ export function ChatArea() {
     }
     messagesEndRef.current?.scrollIntoView({ behavior });
   }, []);
+  const scheduleStreamScrollToBottom = useCallback(() => {
+    if (streamScrollFrameRef.current) return;
+    streamScrollFrameRef.current = requestAnimationFrame(() => {
+      streamScrollFrameRef.current = 0;
+      if (isLoadingMoreRef.current || !isNearBottomRef.current || userScrolledAwayRef.current) return;
+      // Streaming already animates the text every frame. Starting a new smooth
+      // scroll for every character queues competing animations and makes both
+      // the typewriter and bottom-follow motion stutter.
+      scrollToMessagesBottom("auto");
+    });
+  }, [scrollToMessagesBottom]);
+  useEffect(
+    () => () => {
+      if (streamScrollFrameRef.current) cancelAnimationFrame(streamScrollFrameRef.current);
+    },
+    [],
+  );
   const scheduleScrollToMessagesBottom = useCallback(
     (behavior: ScrollBehavior = "smooth") => {
       scrollToMessagesBottom(behavior);
@@ -2165,10 +2536,21 @@ export function ChatArea() {
     if (openedAtBottomChatIdRef.current === activeChatId) return;
     if (isLoading && loadedMessageCount === 0) return;
 
-    openedAtBottomChatIdRef.current = activeChatId;
-    userScrolledAwayRef.current = false;
-    isNearBottomRef.current = true;
-    scheduleScrollToMessagesBottom("auto");
+    let frame = 0;
+    const scrollWhenSurfaceIsReady = () => {
+      if (!scrollRef.current && !messagesEndRef.current) {
+        frame = requestAnimationFrame(scrollWhenSurfaceIsReady);
+        return;
+      }
+
+      openedAtBottomChatIdRef.current = activeChatId;
+      userScrolledAwayRef.current = false;
+      isNearBottomRef.current = true;
+      scheduleScrollToMessagesBottom("auto");
+    };
+
+    scrollWhenSurfaceIsReady();
+    return () => cancelAnimationFrame(frame);
   }, [activeChatId, isFetchingNextPage, isLoading, loadedMessageCount, scheduleScrollToMessagesBottom]);
 
   useEffect(() => {
@@ -2227,6 +2609,20 @@ export function ChatArea() {
   const chatModeRef = useRef(chatMode);
   chatModeRef.current = chatMode;
   const prevIsStreamingRef = useRef(false);
+  const ttsGenerationRef = useRef<{
+    chatId: string;
+    beforeRevision: string | null;
+    failed: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const handleGenerationError = (event: Event) => {
+      const chatId = (event as CustomEvent<{ chatId?: string }>).detail?.chatId;
+      const generation = ttsGenerationRef.current;
+      if (chatId && generation?.chatId === chatId) generation.failed = true;
+    };
+    window.addEventListener("marinara:generation-error", handleGenerationError);
+    return () => window.removeEventListener("marinara:generation-error", handleGenerationError);
+  }, []);
   const resolveTTSCharacterId = useCallback(
     (speaker?: string | null) => {
       const normalizedSpeaker = normalizeTTSCharacterName(speaker);
@@ -2241,7 +2637,22 @@ export function ChatArea() {
   useEffect(() => {
     const wasStreaming = prevIsStreamingRef.current;
     prevIsStreamingRef.current = isStreaming;
+    if (!wasStreaming && isStreaming) {
+      const msgs = messagesRef.current ?? [];
+      ttsGenerationRef.current = activeChatId
+        ? {
+            chatId: activeChatId,
+            beforeRevision: getTTSAutoplayRevision(findLatestTTSAutoplayMessage(msgs)),
+            failed: false,
+          }
+        : null;
+      return;
+    }
     if (!wasStreaming || isStreaming) return; // only fire on true → false transition
+
+    const generation = ttsGenerationRef.current;
+    ttsGenerationRef.current = null;
+    if (!activeChatId || generation?.chatId !== activeChatId) return;
 
     const cfg = ttsConfigRef.current;
     if (!cfg?.enabled) return;
@@ -2252,15 +2663,16 @@ export function ChatArea() {
     if (!shouldAutoplay) return;
 
     const msgs = messagesRef.current ?? [];
-    let lastMsg: (typeof msgs)[number] | undefined;
-    for (let index = msgs.length - 1; index >= 0; index -= 1) {
-      const candidate = msgs[index];
-      if (candidate.role === "assistant" || candidate.role === "narrator") {
-        lastMsg = candidate;
-        break;
-      }
-    }
-    if (!lastMsg?.content) return;
+    const lastMsg = findLatestTTSAutoplayMessage(msgs);
+    if (
+      !lastMsg ||
+      !shouldAutoplayGeneratedTTS({
+        beforeRevision: generation.beforeRevision,
+        message: lastMsg,
+        generationFailed: generation.failed,
+      })
+    )
+      return;
 
     const fallbackSpeaker =
       lastMsg.role === "narrator"
@@ -2281,7 +2693,7 @@ export function ChatArea() {
       progressive: cfg.progressivePlayback,
       volume: ttsLineVolume / 100,
     });
-  }, [characterMap, isStreaming, resolveTTSCharacterId, ttsLineVolume]);
+  }, [activeChatId, characterMap, isStreaming, resolveTTSCharacterId, ttsLineVolume]);
 
   const newestMsgId = msgData?.pages[0]?.[msgData.pages[0].length - 1]?.id;
   const newestMsgSwipeIndex = msgData?.pages[0]?.[msgData.pages[0].length - 1]?.activeSwipeIndex;
@@ -2315,13 +2727,25 @@ export function ChatArea() {
     const unsub = useChatStore.subscribe((state) => {
       if (state.streamBuffer !== prev) {
         prev = state.streamBuffer;
-        if (!isLoadingMoreRef.current && isNearBottomRef.current && !userScrolledAwayRef.current) {
-          scrollToMessagesBottom("smooth");
-        }
+        scheduleStreamScrollToBottom();
       }
     });
     return unsub;
-  }, [scrollToMessagesBottom]);
+  }, [scheduleStreamScrollToBottom]);
+
+  // The stream-buffer subscription runs before React necessarily commits the
+  // corresponding text. Observe the rendered transcript as well so long
+  // typewriter rewrites follow the actual growing DOM instead of scrolling to
+  // the previous frame's height. The normal near-bottom/user-scroll guards in
+  // scheduleStreamScrollToBottom still let readers disengage auto-follow.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!isStreaming || !el || typeof MutationObserver === "undefined") return;
+
+    const observer = new MutationObserver(() => scheduleStreamScrollToBottom());
+    observer.observe(el, { childList: true, characterData: true, subtree: true });
+    return () => observer.disconnect();
+  }, [isStreaming, scheduleStreamScrollToBottom]);
 
   // Preserve scroll position when older messages are prepended
   const pageCount = msgData?.pages.length ?? 0;
@@ -2448,20 +2872,26 @@ export function ChatArea() {
       <>
         <HomeCreditsModal open={creditsOpen} onClose={() => setCreditsOpen(false)} />
         <div
+          ref={homeViewportRef}
           data-component="ChatArea.EmptyState"
           className={cn(
             "mari-app-background-paint mari-chrome-token-scope relative isolate flex flex-1 flex-col items-center",
-            homeProfessorChatActive ? "overflow-hidden p-0 sm:p-3 lg:p-3" : "overflow-y-auto p-1.5 sm:p-3 lg:p-3",
+            homeProfessorChatActive ? "overflow-hidden p-0 sm:p-3 lg:p-3" : "overflow-hidden p-1.5 sm:p-3 lg:p-3",
           )}
         >
           {showEmptyStateEffects && !homeProfessorChatActive && <HomeStarfield />}
           <div
+            ref={homeContentRef}
+            data-component="ChatArea.HomeContent"
             className={cn(
               "relative z-[1] flex w-full flex-col items-center",
               homeProfessorChatActive
                 ? "min-h-0 flex-1 max-w-none gap-0 py-0"
-                : "max-w-5xl gap-1.5 py-0 sm:gap-2 lg:pt-0 lg:pb-2",
+                : "home-viewport-fit-content max-w-5xl shrink-0 gap-1.5 py-0 sm:gap-2 lg:pt-0 lg:pb-2",
             )}
+            style={
+              homeProfessorChatActive ? undefined : ({ "--mari-home-fit-scale": String(homeFitScale) } as CSSProperties)
+            }
           >
             {!homeProfessorChatActive && (
               <>
@@ -2733,9 +3163,12 @@ export function ChatArea() {
             characters={gameCharacters}
             personaInfo={personaInfo}
             chatBackground={chatBackground}
+            connectedChatName={connectedChatName}
             onOpenSettings={handleOpenSettingsPanel}
             onCloseSettings={handleCloseSettingsPanel}
+            onSwitchChat={chat.connectedChatId ? () => setActiveChatId(chat.connectedChatId!) : undefined}
             onDeleteMessage={handleDelete}
+            onPeekPrompt={handlePeekPrompt}
             multiSelectMode={multiSelectMode}
             selectedMessageIds={selectedMessageIds}
           />
@@ -2863,6 +3296,13 @@ export function ChatArea() {
             lastAssistantMessageId={lastAssistantMessageId}
           />
         </Suspense>
+        <ImagePromptReviewModal
+          open={conversationSelfieReviewItems.length > 0}
+          items={conversationSelfieReviewItems}
+          isSubmitting={conversationSelfieReviewSubmitting}
+          onCancel={() => closeConversationSelfiePromptReview(null)}
+          onConfirm={confirmConversationSelfiePromptReview}
+        />
         {pendingNewChatMode && (
           <NewChatConnectionGate
             mode={pendingNewChatMode}
@@ -2911,6 +3351,7 @@ export function ChatArea() {
           fullBodySpriteOpacity={fullBodySpriteOpacity}
           spriteArrangeMode={spriteArrangeMode}
           enabledAgentTypes={enabledAgentTypes}
+          manualTrackersActive={hasManualTrackerAgents}
           chatCharIds={chatCharIds}
           characterMap={characterMap}
           characterNames={characterNames}
@@ -3007,11 +3448,26 @@ export function ChatArea() {
         />
       )}
       <ImagePromptReviewModal
+        open={!!illustratorPromptReview}
+        items={illustratorPromptReview ? [illustratorPromptReview.item] : []}
+        isSubmitting={illustratorPromptReviewSubmitting}
+        onCancel={handleCloseIllustratorPromptReview}
+        onConfirm={(overrides) => void handleContinueIllustratorPromptReview(overrides)}
+      />
+      <ImagePromptReviewModal
         open={roleplayBackgroundReviewItems.length > 0}
         items={roleplayBackgroundReviewItems}
         isSubmitting={roleplayBackgroundReviewSubmitting}
         onCancel={() => closeRoleplayBackgroundPromptReview(null)}
-        onConfirm={(overrides) => closeRoleplayBackgroundPromptReview(overrides)}
+        onConfirm={confirmRoleplayBackgroundPromptReview}
+      />
+      <ImagePromptReviewModal
+        open={roleplayVideoReviewItems.length > 0}
+        items={roleplayVideoReviewItems}
+        isSubmitting={roleplayVideoReviewSubmitting}
+        mediaType="video"
+        onCancel={() => closeRoleplayVideoPromptReview(null)}
+        onConfirm={confirmRoleplayVideoPromptReview}
       />
       {pendingNewChatMode && (
         <NewChatConnectionGate
@@ -3020,18 +3476,6 @@ export function ChatArea() {
         />
       )}
     </>
-  );
-}
-
-/** Animated typing indicator — three bouncing dots (currently unused, kept for future) */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function TypingIndicator() {
-  return (
-    <div className="flex items-center gap-1 px-4 py-3">
-      <div className="flex items-center gap-1 rounded-xl bg-[var(--secondary)] px-4 py-2.5">
-        <PendingTypingDots dotClassName="bg-[var(--muted-foreground)]/60" />
-      </div>
-    </div>
   );
 }
 

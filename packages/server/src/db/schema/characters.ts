@@ -1,9 +1,9 @@
 // ──────────────────────────────────────────────
 // Schema: Characters, Personas & Character Groups
 // ──────────────────────────────────────────────
-import { sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { fileTable, text } from "../file-schema.js";
 
-export const characters = sqliteTable("characters", {
+export const characters = fileTable("characters", {
   id: text("id").primaryKey(),
   /** Full CharacterData V2 as JSON */
   data: text("data").notNull(),
@@ -15,7 +15,7 @@ export const characters = sqliteTable("characters", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const characterCardVersions = sqliteTable("character_card_versions", {
+export const characterCardVersions = fileTable("character_card_versions", {
   id: text("id").primaryKey(),
   characterId: text("character_id")
     .notNull()
@@ -33,7 +33,7 @@ export const characterCardVersions = sqliteTable("character_card_versions", {
   createdAt: text("created_at").notNull(),
 });
 
-export const personas = sqliteTable("personas", {
+export const personas = fileTable("personas", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   /** Short comment shown under the name (for disambiguation) */
@@ -69,11 +69,17 @@ export const personas = sqliteTable("personas", {
   tags: text("tags").notNull().default("[]"),
   /** Saved Conversation mode activity/status text options (JSON array of strings) */
   savedStatusOptions: text("saved_status_options").notNull().default("[]"),
+  /** Conversation mode ONLY: display name shown in Convo (empty = fall back to name) */
+  convoDisplayName: text("convo_display_name").notNull().default(""),
+  /** Conversation mode ONLY: public "about me" profile (cross-chat default) */
+  aboutMe: text("about_me").notNull().default(""),
+  /** Conversation mode ONLY: behavior directive + insertion strategy (JSON, empty = unset) */
+  convoBehavior: text("convo_behavior").notNull().default(""),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
 
-export const personaCardVersions = sqliteTable("persona_card_versions", {
+export const personaCardVersions = fileTable("persona_card_versions", {
   id: text("id").primaryKey(),
   personaId: text("persona_id")
     .notNull()
@@ -91,7 +97,7 @@ export const personaCardVersions = sqliteTable("persona_card_versions", {
   createdAt: text("created_at").notNull(),
 });
 
-export const characterGroups = sqliteTable("character_groups", {
+export const characterGroups = fileTable("character_groups", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
@@ -102,7 +108,7 @@ export const characterGroups = sqliteTable("character_groups", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const personaGroups = sqliteTable("persona_groups", {
+export const personaGroups = fileTable("persona_groups", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),

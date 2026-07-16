@@ -49,6 +49,11 @@ interface LoadedGame {
 }
 
 const HUMAN_FALLBACK_SEAT = "human";
+const CHARACTER_FALLBACK_NAME = "Character";
+
+function readTrimmedString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 function humanSeatIdFromChat(chat: { personaId: string | null }): string {
   return chat.personaId || HUMAN_FALLBACK_SEAT;
@@ -61,13 +66,20 @@ async function resolveCharacterName(
   try {
     const row = await characters.getById(characterId);
     if (row?.data) {
-      const data = JSON.parse(row.data) as { name?: unknown };
-      if (typeof data.name === "string" && data.name.trim()) return data.name.trim();
+      try {
+        const data = JSON.parse(row.data) as Record<string, unknown>;
+        const name = readTrimmedString(data.name) ?? readTrimmedString(data.character_name) ?? readTrimmedString(data.displayName);
+        if (name) return name;
+      } catch {
+        // fall through to comment/fallback below
+      }
     }
+    const comment = readTrimmedString((row as { comment?: unknown } | null)?.comment);
+    if (comment) return comment;
   } catch {
-    // best-effort — fall through to the id
+    // best-effort — fall through to a displayable fallback
   }
-  return characterId;
+  return CHARACTER_FALLBACK_NAME;
 }
 
 async function resolveSeats(
@@ -285,8 +297,20 @@ export async function applyTurnGameMove(
     };
   }
 
+  let nextState = result.state;
+  let events = result.events;
+  const nextSeatId = engine.currentSeat(nextState);
+  if (engine.gameType === "rock-paper-scissors" && nextSeatId && nextSeatId !== viewer) {
+    const botMove = engine.pickFallbackMove(nextState, nextSeatId);
+    const botResult = engine.applyMove(nextState, nextSeatId, botMove);
+    if (botResult.ok) {
+      nextState = botResult.state;
+      events = [...(events ?? []), ...(botResult.events ?? [])];
+    }
+  }
+
   const storage = createGameEngineStateStorage(db);
-  const serialized = JSON.stringify(result.state);
+  const serialized = JSON.stringify(nextState);
   if (anchor?.messageId) {
     // Anchor to the latest visible assistant message so this state is what a read
     // (or a regenerate of the following turn) resolves to.
@@ -314,14 +338,14 @@ export async function applyTurnGameMove(
     });
   }
 
-  const terminal = engine.isTerminal(result.state);
+  const terminal = engine.isTerminal(nextState);
   return {
     ok: true,
-    view: engine.publicView(result.state, viewer),
-    events: result.events,
+    view: engine.publicView(nextState, viewer),
+    events,
     finished: terminal.done,
     winnerSeatId: terminal.winnerSeatId ?? null,
-    currentSeatId: engine.currentSeat(result.state),
+    currentSeatId: engine.currentSeat(nextState),
   };
 }
 
@@ -343,6 +367,17 @@ export async function getActiveTurnGame(db: DB, chatId: string): Promise<LoadedG
   const loaded = await loadGame(db, chatId, null);
   if (!loaded) return null;
   return loaded.engine.isTerminal(loaded.state).done ? null : loaded;
+}
+
+/**
+ * Load the chat's latest game snapshot regardless of terminal status — unlike
+ * `getActiveTurnGame`, this returns a FINISHED game too. Used by the bot-turn
+ * loop's post-loop announcement drain: a showdown/game_over event queued by the
+ * last bot move needs to be voiced even though the game is now finished (at
+ * which point `getActiveTurnGame` would return null and hide it).
+ */
+export async function loadTurnGameForDrain(db: DB, chatId: string): Promise<LoadedGame | null> {
+  return loadGame(db, chatId, null);
 }
 
 /**

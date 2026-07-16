@@ -911,11 +911,11 @@ export function PresetsPanel() {
                     deletePreset.mutate(preset.id);
                   }
                 }}
-                className="mari-chrome-control mari-chrome-control--small mari-chrome-control--danger p-1.5"
+                className="mari-chrome-control mari-chrome-control--small p-1.5"
                 title="Delete"
                 aria-label="Delete preset"
               >
-                <Trash2 size="0.75rem" className="text-[var(--destructive)]" />
+                <Trash2 size="0.75rem" />
               </button>
             </div>
           )}
@@ -1137,11 +1137,11 @@ export function PresetsPanel() {
                           if (expandedFolderId === folder.id) setExpandedFolderId(null);
                         });
                       }}
-                      className="mari-chrome-control mari-chrome-control--small mari-chrome-control--danger p-1"
+                      className="mari-chrome-control mari-chrome-control--small p-1"
                       title="Delete folder"
                       aria-label="Delete folder"
                     >
-                      <Trash2 size="0.6875rem" className="text-[var(--destructive)]" />
+                      <Trash2 size="0.6875rem" />
                     </button>
                   </div>
                 </div>
@@ -1456,18 +1456,21 @@ function RegexSection({
                   onClick={() => openRegexDetail(script.id)}
                 >
                   <div className="text-xs font-medium">{script.name}</div>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
+                  <div className="mt-0.5 flex min-w-0 items-center gap-1">
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[0.5625rem] text-[var(--muted-foreground)]"
+                      title={`/${script.findRegex}/${script.flags}`}
+                    >
+                      /{script.findRegex}/{script.flags}
+                    </span>
                     {placements.map((placement) => (
                       <span
                         key={placement}
-                        className="rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]"
+                        className="shrink-0 rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]"
                       >
                         {placement === "ai_output" ? "AI" : "User"}
                       </span>
                     ))}
-                    <span className="min-w-0 max-w-full truncate font-mono text-[0.5625rem] text-[var(--muted-foreground)]">
-                      /{script.findRegex}/{script.flags}
-                    </span>
                   </div>
                 </button>
                 <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1496,7 +1499,7 @@ function RegexSection({
                   </button>
                   <button
                     type="button"
-                    className="mari-chrome-control mari-chrome-control--small mari-chrome-control--danger shrink-0 p-1"
+                    className="mari-chrome-control mari-chrome-control--small shrink-0 p-1"
                     title="Delete regex"
                     aria-label="Delete regex"
                     onClick={async () => {
@@ -1512,7 +1515,7 @@ function RegexSection({
                       }
                     }}
                   >
-                    <Trash2 size="0.8125rem" className="text-[var(--destructive)]" />
+                    <Trash2 size="0.8125rem" />
                   </button>
                 </div>
               </div>
@@ -1704,16 +1707,18 @@ function FunctionsSection({
                   className="min-w-0 flex-1 basis-[min(100%,10rem)] text-left"
                   onClick={() => openToolDetail(tool.id)}
                 >
-                  <div className="truncate font-mono text-xs font-medium">{tool.name}</div>
-                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1">
-                    <span className="rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]">
+                  <div className="flex min-w-0 items-center gap-1">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium" title={tool.name}>
+                      {tool.name}
+                    </span>
+                    <span className="shrink-0 rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]">
                       {formatFunctionExecutionType(tool.executionType)}
                     </span>
-                    <span className="rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]">
+                    <span className="shrink-0 rounded bg-[var(--secondary)] px-1 py-0.5 text-[0.5rem] text-[var(--muted-foreground)]">
                       {parameterCount} param{parameterCount === 1 ? "" : "s"}
                     </span>
                     {scriptUnavailable && (
-                      <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[0.5rem] text-amber-400">
+                      <span className="shrink-0 rounded bg-amber-500/10 px-1 py-0.5 text-[0.5rem] text-amber-400">
                         Script disabled
                       </span>
                     )}
@@ -1748,7 +1753,7 @@ function FunctionsSection({
                   </button>
                   <button
                     type="button"
-                    className="mari-chrome-control mari-chrome-control--small mari-chrome-control--danger shrink-0 p-1"
+                    className="mari-chrome-control mari-chrome-control--small shrink-0 p-1"
                     title="Delete function"
                     aria-label="Delete function"
                     onClick={async () => {
@@ -1764,7 +1769,7 @@ function FunctionsSection({
                       }
                     }}
                   >
-                    <Trash2 size="0.8125rem" className="text-[var(--destructive)]" />
+                    <Trash2 size="0.8125rem" />
                   </button>
                 </div>
               </div>

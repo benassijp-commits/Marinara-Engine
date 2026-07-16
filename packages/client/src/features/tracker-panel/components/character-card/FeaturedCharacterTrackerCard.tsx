@@ -4,7 +4,11 @@ import {
   characterCustomFieldTrackerLockKey,
   characterStatTrackerLockKey,
   characterTrackerLockKey,
+  isTrackerFieldHidden,
   isTrackerFieldLocked,
+  normalizeTrackerFieldLocks,
+  normalizeTrackerHiddenFields,
+  removeTrackerFieldLockPrefix,
   renameTrackerFieldLockPrefix,
   type PresentCharacter,
 } from "@marinara-engine/shared";
@@ -14,6 +18,12 @@ import type {
   TrackerThoughtBubbleDisplay,
 } from "../../../../stores/ui.store";
 import { cn } from "../../../../lib/utils";
+import { trackerEditableText } from "../../lib/tracker-display";
+import {
+  makeUniqueCharacterCustomFieldName,
+  normalizeCharacterCustomFieldName,
+  resolveCharacterCustomFieldName,
+} from "../../lib/character-custom-field-names";
 import {
   FEATURED_CHARACTER_PORTRAIT_ROOMY_STAGE_REM,
   FEATURED_CHARACTER_PORTRAIT_STAGE_REM,
@@ -29,7 +39,7 @@ import {
 } from "../../lib/tracker-profile-layout";
 import { getFeaturedCharacterStatDensity, trackerStatStackHeight } from "../../lib/tracker-stat-layout";
 import { getCharacterAmbienceStyle, type TrackerProfileColors } from "../../lib/tracker-profile-style";
-import { InlineEdit } from "../controls/InlineControls";
+import { InlineAddRow, InlineEdit } from "../controls/InlineControls";
 import {
   TRACKER_PROFILE_BODY_BOTTOM_RULE_CLASS,
   TRACKER_PROFILE_BODY_TONE_OVERLAY_CLASS,
@@ -87,6 +97,7 @@ export function FeaturedCharacterTrackerCard({
   characterIndex = 0,
   deleteMode,
   addMode,
+  hideMode,
   onToggleFeatured,
   onUploadAvatar,
 }: {
@@ -106,17 +117,22 @@ export function FeaturedCharacterTrackerCard({
   characterIndex?: number;
   deleteMode: boolean;
   addMode: boolean;
+  hideMode: boolean;
   onToggleFeatured?: () => void;
   onUploadAvatar?: () => void;
 }) {
-  const { fieldLocks, lockMode, onToggleFieldLock, onUpdateFieldLocks } = useTrackerLockContext();
+  const { fieldLocks, hiddenTrackerFields, lockMode, onToggleFieldLock, onUpdateFieldLocks, onUpdateHiddenFields } =
+    useTrackerLockContext();
   const thoughtAnchorRef = useRef<HTMLDivElement | null>(null);
   const thoughtBubbleRef = useRef<HTMLDivElement | null>(null);
   const thoughtControlRef = useRef<HTMLButtonElement | null>(null);
   const [thoughtsOpen, setThoughtsOpen] = useState(false);
-  const customFields = Object.entries(character.customFields ?? {});
+  const customFields = Object.entries((character.customFields ?? {}) as Record<string, unknown>).map(
+    ([name, value]) => [name, value, trackerEditableText(value)] as const,
+  );
   const characterStats = Array.isArray(character.stats) ? character.stats : [];
   const hasEditableStatAdd = !!onUpdate && addMode;
+  const hasEditableCustomFieldAdd = !!onUpdate && addMode;
   const featuredStatColumnHeightRem =
     trackerPanelSizeProfile === "expanded"
       ? FEATURED_CHARACTER_PORTRAIT_ROOMY_STAGE_REM
@@ -129,7 +145,26 @@ export function FeaturedCharacterTrackerCard({
   const characterStatsOverflowPortrait =
     trackerStatStackHeight(characterStats.length, "tight", hasEditableStatAdd) > featuredStatColumnHeightRem;
   const hasDeleteAction = !!onRemove && deleteMode;
-  const hasThoughtsControl = !!(character.thoughts || onUpdate);
+  const thoughtsKey = characterTrackerLockKey(character, characterIndex, "thoughts");
+  const thoughtsHidden = isTrackerFieldHidden(hiddenTrackerFields, thoughtsKey);
+  const toggleThoughtsHidden = () => {
+    if (!onUpdate) return;
+    const nextHidden = !isTrackerFieldHidden(hiddenTrackerFields, thoughtsKey);
+    onUpdateHiddenFields?.((hiddenFields) => {
+      const next = normalizeTrackerHiddenFields(hiddenFields);
+      if (nextHidden) next[thoughtsKey] = true;
+      else delete next[thoughtsKey];
+      return next;
+    });
+    onUpdateFieldLocks?.((locks) => {
+      const next = normalizeTrackerFieldLocks(locks);
+      if (nextHidden) next[thoughtsKey] = true;
+      else delete next[thoughtsKey];
+      return next;
+    });
+    if (nextHidden) onUpdate({ ...character, thoughts: null });
+  };
+  const hasThoughtsControl = !!(character.thoughts || onUpdate) && (!thoughtsHidden || hideMode);
   const hasFeaturedFields = !!(character.mood || character.appearance || character.outfit || onUpdate);
   const hasCharacterStatBlock = characterStats.length > 0 || (onUpdate && addMode);
   const useFeaturedStatColumns = characterStats.length >= 2;
@@ -193,14 +228,38 @@ export function FeaturedCharacterTrackerCard({
       stats: [...characterStats, { name: "New Stat", value: 0, max: 100, color: "var(--primary)" }],
     });
   };
-  const updateCustomField = (oldName: string, nextName: string, nextValue: string) => {
+  const addCustomField = () => {
     if (!onUpdate) return;
-    const nextFields = { ...(character.customFields ?? {}) };
-    const trimmedName = nextName.trim();
-    if (trimmedName && trimmedName !== oldName && Object.prototype.hasOwnProperty.call(nextFields, trimmedName)) {
+    const name = makeUniqueCharacterCustomFieldName(character.customFields);
+    onUpdate({ ...character, customFields: { ...(character.customFields ?? {}), [name]: "" } });
+  };
+  const removeCustomField = (name: string) => {
+    if (!onUpdate) return;
+    const nextFields: Record<string, unknown> = { ...(character.customFields ?? {}) };
+    delete nextFields[name];
+    onUpdateFieldLocks?.((locks) =>
+      removeTrackerFieldLockPrefix(
+        locks,
+        characterCustomFieldTrackerLockKey(character, characterIndex, name, "name").replace(/\.name$/, ""),
+      ),
+    );
+    onUpdate({ ...character, customFields: nextFields as Record<string, string> });
+  };
+  const updateCustomField = (oldName: string, nextName: string, nextValue: unknown) => {
+    if (!onUpdate) return;
+    const nextFields: Record<string, unknown> = { ...(character.customFields ?? {}) };
+    const trimmedName = resolveCharacterCustomFieldName(nextName, oldName);
+    if (
+      trimmedName !== oldName &&
+      Object.keys(nextFields).some(
+        (name) =>
+          name !== oldName &&
+          normalizeCharacterCustomFieldName(name) === normalizeCharacterCustomFieldName(trimmedName),
+      )
+    ) {
       return;
     }
-    if (trimmedName && trimmedName !== oldName) {
+    if (trimmedName !== oldName) {
       onUpdateFieldLocks?.((locks) =>
         renameTrackerFieldLockPrefix(
           locks,
@@ -210,8 +269,8 @@ export function FeaturedCharacterTrackerCard({
       );
     }
     delete nextFields[oldName];
-    if (trimmedName) nextFields[trimmedName] = nextValue;
-    onUpdate({ ...character, customFields: nextFields });
+    nextFields[trimmedName] = nextValue;
+    onUpdate({ ...character, customFields: nextFields as Record<string, string> });
   };
 
   return (
@@ -304,6 +363,9 @@ export function FeaturedCharacterTrackerCard({
               tailSide={featuredPortraitSide}
               variant="featured"
               lockKey={characterTrackerLockKey(character, characterIndex, "thoughts")}
+              hidden={thoughtsHidden}
+              hideMode={hideMode}
+              onToggleHidden={onUpdate ? toggleThoughtsHidden : undefined}
             />
           )}
           <div className={FEATURED_DETAILS_FIELDS_CLASS}>
@@ -343,18 +405,28 @@ export function FeaturedCharacterTrackerCard({
           onSave={onUpdate ? (thoughts) => onUpdate({ ...character, thoughts: thoughts || null }) : undefined}
           panelSide={trackerPanelSide}
           lockKey={characterTrackerLockKey(character, characterIndex, "thoughts")}
+          hidden={thoughtsHidden}
+          hideMode={hideMode}
+          onToggleHidden={onUpdate ? toggleThoughtsHidden : undefined}
         />
       )}
 
-      {customFields.length > 0 && (
+      {(customFields.length > 0 || hasEditableCustomFieldAdd) && (
         <div className={FEATURED_CUSTOM_FIELD_LIST_CLASS}>
-          {customFields.map(([name, value]) => (
-            <div key={name} className={FEATURED_CUSTOM_FIELD_ROW_CLASS}>
+          {customFields.map(([name, rawValue, displayValue]) => (
+            <div
+              key={name}
+              className={cn(
+                FEATURED_CUSTOM_FIELD_ROW_CLASS,
+                deleteMode && "grid-cols-[minmax(3rem,0.38fr)_minmax(0,1fr)_1.25rem]",
+              )}
+            >
               {onUpdate ? (
                 <InlineEdit
                   value={name}
-                  onSave={(nextName) => updateCustomField(name, nextName, value)}
+                  onSave={(nextName) => updateCustomField(name, nextName, rawValue)}
                   placeholder="Field"
+                  ariaLabel={`${name} field name`}
                   className="min-w-0 px-0.5 py-0 font-medium"
                   scrollOnHover
                   locked={isTrackerFieldLocked(
@@ -374,9 +446,10 @@ export function FeaturedCharacterTrackerCard({
               )}
               {onUpdate ? (
                 <InlineEdit
-                  value={value}
+                  value={displayValue}
                   onSave={(nextValue) => updateCustomField(name, name, nextValue)}
                   placeholder="Value"
+                  ariaLabel={`${name} value`}
                   className="min-w-0 px-0.5 py-0"
                   scrollOnHover
                   locked={isTrackerFieldLocked(
@@ -394,10 +467,24 @@ export function FeaturedCharacterTrackerCard({
                   }
                 />
               ) : (
-                <span className="min-w-0 truncate text-[color:var(--tracker-profile-text)]">{value}</span>
+                <span className="min-w-0 truncate text-[color:var(--tracker-profile-text)]">{displayValue}</span>
+              )}
+              {deleteMode && onUpdate && (
+                <button
+                  type="button"
+                  onClick={() => removeCustomField(name)}
+                  title={`Remove ${name}`}
+                  aria-label={`Remove ${name}`}
+                  className="flex h-5 w-5 items-center justify-center justify-self-end rounded text-[var(--destructive)] transition-all hover:bg-[var(--destructive)]/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-90 [@media(pointer:coarse)]:h-6 [@media(pointer:coarse)]:w-6"
+                >
+                  <X size="0.625rem" />
+                </button>
               )}
             </div>
           ))}
+          {hasEditableCustomFieldAdd && (
+            <InlineAddRow title="Add custom field" onClick={addCustomField} className="col-span-full" />
+          )}
         </div>
       )}
     </article>

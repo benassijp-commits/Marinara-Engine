@@ -5,6 +5,7 @@ import { applyProviderMaxTokensOverride } from "../../services/generation/genera
 import { getLocalSidecarProvider } from "../../services/llm/local-sidecar.js";
 import type { BaseLLMProvider } from "../../services/llm/base-provider.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
+import { withConnectionFallbackProvider } from "../../services/llm/connection-fallback-provider.js";
 import {
   appendReadableAttachmentsToContent,
   createLocalSidecarGenerationConnection,
@@ -18,7 +19,7 @@ import {
 } from "./generate-route-utils.js";
 
 export type ImageCaptionConnection = {
-  id?: string | null;
+  id: string;
   name?: string | null;
   provider: string;
   apiKey: string;
@@ -64,6 +65,7 @@ export async function resolveImageCaptioningRuntime(args: {
   connections: {
     listRandomPool(): Promise<Array<{ id?: string | null }>>;
     getWithKey(connectionId: string): Promise<ImageCaptionConnection | null>;
+    getFallbackForAgents(): Promise<ImageCaptionConnection | null>;
   };
 }): Promise<ImageCaptioningRuntime> {
   const { chatMeta, connections } = args;
@@ -119,6 +121,15 @@ export async function resolveImageCaptioningRuntime(args: {
         captionConnection.treatAsLocalEndpoint === "true",
       );
     }
+
+    const fallbackConnection = await connections.getFallbackForAgents();
+    captionProvider = withConnectionFallbackProvider({
+      primary: captionProvider,
+      primaryConnectionId: captionConnectionId,
+      fallbackConnection,
+      fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
+      category: "agents",
+    });
 
     return {
       enabled: true,
@@ -176,14 +187,13 @@ function appendImageCaptionBlocksToContent(content: string, blocks: string[]): s
   return `${content}${content.trim() ? "\n\n" : ""}${blocks.join("\n\n")}`;
 }
 
-async function generateImageCaptionForAttachment(
-  attachment: PromptAttachment,
+export async function generateImageCaptionForDataUrl(
+  filename: string,
   imageDataUrl: string,
   imageCaptioning: ImageCaptioningRuntime,
   signal: AbortSignal,
 ): Promise<string | null> {
   if (!imageCaptioning.provider || !imageCaptioning.connection) return null;
-  const filename = getAttachmentFilename(attachment);
   try {
     const result = await imageCaptioning.provider.chatComplete(
       [
@@ -251,7 +261,12 @@ export async function resolvePromptAttachmentInputs(args: {
       let caption = readCachedImageCaption(attachment, imageCaptioning);
       let updatedAttachment: PromptAttachment | null = null;
       if (!caption) {
-        caption = await generateImageCaptionForAttachment(attachment, imageDataUrl, imageCaptioning, signal);
+        caption = await generateImageCaptionForDataUrl(
+          getAttachmentFilename(attachment),
+          imageDataUrl,
+          imageCaptioning,
+          signal,
+        );
         if (caption) {
           updatedAttachment = {
             ...attachment,

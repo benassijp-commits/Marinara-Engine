@@ -2,7 +2,7 @@
 // Routes: Backup
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { basename, dirname, join, relative } from "path";
+import { dirname, join, relative } from "path";
 import { createReadStream, createWriteStream, existsSync, readdirSync, statSync } from "fs";
 import type { WriteStream } from "fs";
 import { cp, mkdir, copyFile, readFile, readdir, writeFile, stat, mkdtemp, rm, open } from "fs/promises";
@@ -12,18 +12,17 @@ import { pipeline } from "stream/promises";
 import { createHash } from "crypto";
 import { inflateRawSync } from "zlib";
 import AdmZip from "adm-zip";
-import { is } from "drizzle-orm";
-import { SQLiteTable, getTableConfig } from "drizzle-orm/sqlite-core";
 import { FILE_BACKED_TABLES } from "../db/file-backed-store.js";
+import { getFileTableConfig, isFileTable, type AnyFileTable } from "../db/file-schema.js";
 import * as schema from "../db/schema/index.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createThemesStorage } from "../services/storage/themes.storage.js";
-import type { ExportEnvelope } from "@marinara-engine/shared";
+import { canReparentFolder, type ExportEnvelope } from "@marinara-engine/shared";
 import { getDataDir } from "../utils/data-dir.js";
-import { getDatabaseFilePath, getFileStorageDir } from "../config/runtime-config.js";
+import { getFileStorageDir } from "../config/runtime-config.js";
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
 import { flushDB } from "../db/connection.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
@@ -362,24 +361,17 @@ function redactAgentSecrets(agent: any) {
   return { ...agent, settings: redactSettings(agent.settings) };
 }
 
-function isSchemaTable(value: unknown): value is SQLiteTable {
-  return is(value, SQLiteTable);
+function schemaTableName(table: AnyFileTable) {
+  return getFileTableConfig(table).name;
 }
 
-function schemaTableName(table: SQLiteTable) {
-  return getTableConfig(table).name;
+function schemaPrimaryKeyColumn(table: AnyFileTable) {
+  return getFileTableConfig(table).columns.find((column) => column.primary) ?? null;
 }
 
-function schemaPrimaryKeyColumn(table: SQLiteTable) {
-  const config = getTableConfig(table);
-  const columnPrimary = config.columns.find((column) => column.primary === true);
-  if (columnPrimary) return columnPrimary;
-  return config.primaryKeys[0]?.columns[0] ?? null;
-}
-
-const profileTableObjects = new Map<string, SQLiteTable>();
+const profileTableObjects = new Map<string, AnyFileTable>();
 for (const candidate of Object.values(schema)) {
-  if (!isSchemaTable(candidate)) continue;
+  if (!isFileTable(candidate)) continue;
   const tableName = schemaTableName(candidate);
   if (tableName && FILE_BACKED_TABLES.includes(tableName as (typeof FILE_BACKED_TABLES)[number])) {
     profileTableObjects.set(tableName, candidate);
@@ -405,7 +397,7 @@ export function sanitizeProfileTableRows(tableName: string, rows: Array<Record<s
 }
 
 // Secret-bearing columns to omit on the conflict-UPDATE path so an existing row
-// keeps its stored secret (Drizzle leaves an unmentioned column untouched); only
+// keeps its stored secret (the file store leaves an unmentioned column untouched); only
 // the fresh-insert path carries the export's redacted values. For
 // api_connections/custom_tools the export blanks the whole column; for
 // agent_configs the export redacts secret keys *inside* the settings JSON, so we
@@ -417,10 +409,7 @@ const REDACTED_UPDATE_COLUMNS: Record<string, string> = {
   custom_tools: "webhookUrl",
 };
 
-export function buildProfileUpdateSet(
-  tableName: string,
-  cleanRow: Record<string, unknown>,
-): Record<string, unknown> {
+export function buildProfileUpdateSet(tableName: string, cleanRow: Record<string, unknown>): Record<string, unknown> {
   const updateSet: Record<string, unknown> = { ...cleanRow };
   const secretColumn = REDACTED_UPDATE_COLUMNS[tableName];
   if (secretColumn) delete updateSet[secretColumn];
@@ -1625,7 +1614,7 @@ function buildBackupRestoreNotes() {
     "",
     "This archive contains a raw filesystem backup for manual recovery.",
     "Treat it as sensitive: full backups include local secret material such as .encryption-key when that file exists.",
-    "Restore .encryption-key together with the database/storage files to keep saved API keys decryptable.",
+    "Restore .encryption-key together with the storage files to keep saved API keys decryptable.",
     "If this install used an ENCRYPTION_KEY environment variable instead of a persisted key file, restore that environment variable separately.",
     "",
     "For one-click import inside Marinara:",
@@ -1672,7 +1661,6 @@ export async function backupRoutes(app: FastifyInstance) {
     try {
       await flushDB();
       const dataDir = getDataDir();
-      const dbPath = getDatabaseFilePath();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
       const backupName = `marinara-backup-${timestamp}`;
       const backupsRoot = join(dataDir, "backups");
@@ -1686,21 +1674,9 @@ export async function backupRoutes(app: FastifyInstance) {
       await writeFile(join(backupDir, "marinara-profile.json"), JSON.stringify(profileEnvelope, null, 2), "utf8");
       await writeFile(join(backupDir, "RESTORE.txt"), buildBackupRestoreNotes(), "utf8");
 
-      // 1. Copy the database file (respects DATABASE_URL)
-      if (dbPath && existsSync(dbPath)) {
-        const dbName = basename(dbPath);
-        await copyFile(dbPath, join(backupDir, dbName));
-        // Also copy WAL/SHM if they exist (for a complete backup)
-        for (const ext of ["-wal", "-shm"]) {
-          const walSrc = dbPath + ext;
-          if (existsSync(walSrc)) {
-            await copyFile(walSrc, join(backupDir, dbName + ext));
-          }
-        }
-      }
       await copyPersistedEncryptionKey(dataDir, backupDir);
 
-      // 2. Copy data directories
+      // Copy data directories.
       for (const dirName of BACKUP_DIRS) {
         const src = resolveBackupDir(dataDir, dirName);
         if (existsSync(src)) {
@@ -1725,7 +1701,6 @@ export async function backupRoutes(app: FastifyInstance) {
     try {
       await flushDB();
       const dataDir = getDataDir();
-      const dbPath = getDatabaseFilePath();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
       const backupName = `marinara-backup-${timestamp}`;
 
@@ -1737,19 +1712,7 @@ export async function backupRoutes(app: FastifyInstance) {
       zip.addFile(`${backupName}/marinara-profile.json`, Buffer.from(JSON.stringify(profileEnvelope, null, 2), "utf8"));
       zip.addFile(`${backupName}/RESTORE.txt`, Buffer.from(buildBackupRestoreNotes(), "utf8"));
 
-      // 1. Add the database file (and WAL/SHM if present)
-      if (dbPath && existsSync(dbPath)) {
-        const dbName = basename(dbPath);
-        zip.addFile(`${backupName}/${dbName}`, await readFile(dbPath));
-        for (const ext of ["-wal", "-shm"]) {
-          const walSrc = dbPath + ext;
-          if (existsSync(walSrc)) {
-            zip.addFile(`${backupName}/${dbName}${ext}`, await readFile(walSrc));
-          }
-        }
-      }
-
-      // 2. Recursively add each data directory under backupName/<dir>/...
+      // Recursively add each data directory under backupName/<dir>/...
       for (const dirName of BACKUP_DIRS) {
         const src = resolveBackupDir(dataDir, dirName);
         if (!existsSync(src)) continue;
@@ -2046,6 +2009,9 @@ export async function backupRoutes(app: FastifyInstance) {
                     typeof p.savedStatusOptions === "string"
                       ? p.savedStatusOptions
                       : JSON.stringify(p.savedStatusOptions ?? []),
+                  convoDisplayName: typeof p.convoDisplayName === "string" ? p.convoDisplayName : "",
+                  aboutMe: typeof p.aboutMe === "string" ? p.aboutMe : "",
+                  convoBehavior: typeof p.convoBehavior === "string" ? p.convoBehavior : "",
                   avatarCrop: typeof p.avatarCrop === "string" ? p.avatarCrop : JSON.stringify(p.avatarCrop ?? null),
                 },
                 normalizeTimestampOverrides({ createdAt: p.createdAt, updatedAt: p.updatedAt }),
@@ -2102,6 +2068,7 @@ export async function backupRoutes(app: FastifyInstance) {
               );
               const folderIdMap = new Map<string, string>();
               if (created && Array.isArray(lb.folders)) {
+                // Pass 1: create all folders without parent references
                 for (const folder of lb.folders) {
                   const oldId = typeof folder.id === "string" ? folder.id : null;
                   const createdFolder = (await lbs.createFolder((created as any).id, {
@@ -2111,6 +2078,42 @@ export async function backupRoutes(app: FastifyInstance) {
                     order: folder.order ?? 0,
                   })) as { id?: string } | null;
                   if (oldId && createdFolder?.id) folderIdMap.set(oldId, createdFolder.id);
+                }
+                // Pass 2: restore nesting using the fully-populated map (same
+                // parent→child pattern as the preset group import below). lbs
+                // writes through storage without the PATCH route's validation,
+                // so each move is gated with canReparentFolder against a mirror
+                // of the applied state — a malformed export cannot persist a
+                // self-parent or cycle; an invalid link leaves that folder at root.
+                const folderRows = Array.from(folderIdMap.values()).map((id) => ({
+                  id,
+                  lorebookId: (created as any).id as string,
+                  parentFolderId: null as string | null,
+                }));
+                const rowById = new Map(folderRows.map((row) => [row.id, row]));
+                for (const folder of lb.folders) {
+                  const oldId = typeof folder.id === "string" ? folder.id : null;
+                  const oldParentId = typeof folder.parentFolderId === "string" ? folder.parentFolderId : null;
+                  if (!oldId || !oldParentId) continue;
+                  const newId = folderIdMap.get(oldId);
+                  const newParentId = folderIdMap.get(oldParentId);
+                  if (!newId || !newParentId) continue;
+                  const check = canReparentFolder(folderRows, newId, newParentId);
+                  if (!check.ok) {
+                    logger.warn(
+                      "[backup] Skipping invalid folder parent link in legacy import (folder %s): %s",
+                      oldId,
+                      check.reason,
+                    );
+                    continue;
+                  }
+                  try {
+                    await lbs.updateFolder(newId, { parentFolderId: newParentId }, (created as any).id);
+                    const row = rowById.get(newId);
+                    if (row) row.parentFolderId = newParentId;
+                  } catch (err) {
+                    logger.warn(err, "[backup] Failed to restore folder nesting during legacy import");
+                  }
                 }
               }
               if (created && Array.isArray(lb.entries)) {

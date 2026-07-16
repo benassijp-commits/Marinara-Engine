@@ -59,12 +59,14 @@ import { ttsService } from "../../lib/tts-service";
 import { useTTSConfig } from "../../hooks/use-tts";
 import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
 import { DIALOGUE_QUOTE_PATTERN_SOURCE, HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE } from "../../lib/dialogue-quotes";
+import { resolveMessageRewriteVersions } from "../../lib/message-rewrite-versions";
 import DOMPurify from "dompurify";
 import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
 import { GenerationReplayDetailsModal, hasGenerationReplayDetails } from "./GenerationReplayDetailsModal";
 import type { ChatImage } from "../../hooks/use-gallery";
 import { ChatImageLightbox } from "./ChatImageLightbox";
 import { SwipeJumpControl } from "./SwipeJumpControl";
+import { toast } from "sonner";
 import {
   NEUTRAL_PANEL_HEADER,
   NEUTRAL_PANEL_SCROLL_AREA,
@@ -797,7 +799,7 @@ function renderContent(
     .replace(new RegExp(ATTR_NL_PLACEHOLDER, "g"), "\n");
 
   // Convert markdown images to <img> before sanitization so DOMPurify validates them.
-  // Keep tags minimal (no class/loading) — styling is via .mari-message-content img in CSS
+  // Keep tags minimal (no class, only loading/decoding attrs) — styling is via .mari-message-content img in CSS
   // to avoid the dialogue-bolding regex mangling attribute quotes.
   const withImages = normalizeCardAssetImageSyntax(withBreaks).replace(MD_IMAGE_HTML_RE, (_m, alt: string, url: string) => {
     const src = escapeHtmlAttr(resolveCardAssetUrl(url));
@@ -1005,7 +1007,7 @@ export const ChatMessage = memo(function ChatMessage({
   const [showGenerationReplay, setShowGenerationReplay] = useState(false);
   const [showActions, setShowActions] = useState(false);
   const [manuallyExpandedHidden, setManuallyExpandedHidden] = useState(false);
-  const [restoringProseGuardianOriginal, setRestoringProseGuardianOriginal] = useState(false);
+  const [switchingRewriteVersion, setSwitchingRewriteVersion] = useState(false);
   const collapseHiddenMessages = useUIStore((s) => s.summaryPopoverSettings.collapseHiddenMessages);
   const [imageLightbox, setImageLightbox] = useState<ChatMessageImageLightboxState | null>(null);
   const scrollRestoreRef = useRef<{ el: HTMLElement; top: number } | null>(null);
@@ -1246,13 +1248,11 @@ export const ChatMessage = memo(function ChatMessage({
   const generationReplay = hasGenerationReplayDetails(extra.generationReplay) ? extra.generationReplay : null;
   const diceRollResult = isDiceRollResult(extra.diceRollResult) ? extra.diceRollResult : null;
   const canCreateNextSwipe = Boolean(onRegenerate && !isUser);
-  const proseGuardianOriginalText =
-    !isUser &&
-    typeof extra.proseGuardianOriginalText === "string" &&
-    extra.proseGuardianOriginalText.length > 0 &&
-    extra.proseGuardianOriginalText !== message.content
-      ? extra.proseGuardianOriginalText
-      : null;
+  const rewriteVersions = resolveMessageRewriteVersions(message.content, extra, isUser);
+  const proseGuardianOriginalText = rewriteVersions.originalText;
+  const proseGuardianRewrittenText = rewriteVersions.rewrittenText;
+  const hasRewriteVersions = rewriteVersions.hasVersions;
+  const showingProseGuardianOriginal = rewriteVersions.showingOriginal;
 
   useEffect(() => {
     setManuallyExpandedHidden(false);
@@ -1268,14 +1268,20 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Remove an attachment from this message (keeps it in gallery)
   const qc = useQueryClient();
-  const handleRestoreProseGuardianOriginal = useCallback(async () => {
-    if (!proseGuardianOriginalText || restoringProseGuardianOriginal) return;
-    setRestoringProseGuardianOriginal(true);
+  const handleToggleProseGuardianVersion = useCallback(async () => {
+    if (!hasRewriteVersions || !proseGuardianOriginalText || !proseGuardianRewrittenText || switchingRewriteVersion)
+      return;
+    setSwitchingRewriteVersion(true);
 
     const msgKey = chatKeys.messages(message.chatId);
-    const clearedProseGuardianExtra = {
-      proseGuardianOriginalText: null,
-      proseGuardianRewrittenAt: null,
+    const targetContent = rewriteVersions.alternateText;
+    if (!targetContent) {
+      setSwitchingRewriteVersion(false);
+      return;
+    }
+    const rewriteVersionExtra = {
+      proseGuardianOriginalText,
+      proseGuardianRewrittenText,
     };
 
     qc.setQueryData<InfiniteData<Message[]>>(msgKey, (old) => {
@@ -1288,8 +1294,8 @@ export const ChatMessage = memo(function ChatMessage({
             const ex = typeof m.extra === "string" ? JSON.parse(m.extra) : (m.extra ?? {});
             return {
               ...m,
-              content: proseGuardianOriginalText,
-              extra: { ...ex, ...clearedProseGuardianExtra },
+              content: targetContent,
+              extra: { ...ex, ...rewriteVersionExtra },
             } as Message;
           }),
         ),
@@ -1297,27 +1303,34 @@ export const ChatMessage = memo(function ChatMessage({
     });
 
     try {
+      // Save the alternate version before changing content. This also upgrades
+      // older one-way restore metadata without risking loss of the rewrite.
+      await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, rewriteVersionExtra);
       const updated = await api.patch<Message>(`/chats/${message.chatId}/messages/${message.id}`, {
-        content: proseGuardianOriginalText,
+        content: targetContent,
       });
       rememberRecentMessageContentEdit(
         message.chatId,
         message.id,
-        updated?.content ?? proseGuardianOriginalText,
+        updated?.content ?? targetContent,
         updated?.activeSwipeIndex ?? message.activeSwipeIndex ?? null,
       );
-      await api.patch(`/chats/${message.chatId}/messages/${message.id}/extra`, clearedProseGuardianExtra);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not switch message versions.");
     } finally {
-      setRestoringProseGuardianOriginal(false);
+      setSwitchingRewriteVersion(false);
       qc.invalidateQueries({ queryKey: msgKey });
     }
   }, [
+    hasRewriteVersions,
     message.activeSwipeIndex,
     message.chatId,
     message.id,
     proseGuardianOriginalText,
+    proseGuardianRewrittenText,
     qc,
-    restoringProseGuardianOriginal,
+    rewriteVersions.alternateText,
+    switchingRewriteVersion,
   ]);
 
   const handleRemoveAttachment = useCallback(
@@ -1346,7 +1359,6 @@ export const ChatMessage = memo(function ChatMessage({
   );
 
   // Model name display
-  const _modelName = !isUser && showModelName ? (extra.generationInfo?.model ?? null) : null;
   const genInfo = !isUser && (showModelName || showTokenUsage) ? extra.generationInfo : null;
   const genLabel = useMemo(() => {
     if (!genInfo) return null;
@@ -1618,7 +1630,7 @@ export const ChatMessage = memo(function ChatMessage({
       return raw || fallbackPalette[i % fallbackPalette.length]!;
     });
   }, [isMergedGroup, characterMap, chatCharacterIds]);
-  // Cycle index for merged group avatars/names — driven by a ref + RAF to avoid re-renders
+  // Cycle index for merged group avatars/names — driven by a ref + 2s setInterval to avoid re-renders
   const cycleIndexRef = useRef(0);
   const cycleTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mergedNameRef = useRef<HTMLSpanElement>(null);
@@ -2333,18 +2345,19 @@ export const ChatMessage = memo(function ChatMessage({
                 dark
               />
               <ActionBtn icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />} onClick={startEditing} title="Edit" dark />
-              {proseGuardianOriginalText && (
+              {hasRewriteVersions && (
                 <ActionBtn
                   icon={
-                    restoringProseGuardianOriginal ? (
+                    switchingRewriteVersion ? (
                       <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
                     ) : (
                       <Shield size={MESSAGE_ACTION_ICON_SIZE} />
                     )
                   }
-                  onClick={handleRestoreProseGuardianOriginal}
-                  title="Restore original before rewrite"
-                  disabled={restoringProseGuardianOriginal}
+                  onClick={handleToggleProseGuardianVersion}
+                  title={showingProseGuardianOriginal ? "Show rewritten version" : "Show original before rewrite"}
+                  className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
+                  disabled={switchingRewriteVersion}
                   dark
                 />
               )}
@@ -2781,18 +2794,19 @@ export const ChatMessage = memo(function ChatMessage({
               title={translatedText ? "Hide translation" : "Translate"}
             />
             <ActionBtn icon={<Pencil size={MESSAGE_ACTION_ICON_SIZE} />} onClick={startEditing} title="Edit" />
-            {proseGuardianOriginalText && (
+            {hasRewriteVersions && (
               <ActionBtn
                 icon={
-                  restoringProseGuardianOriginal ? (
+                  switchingRewriteVersion ? (
                     <Loader2 size={MESSAGE_ACTION_ICON_SIZE} className="animate-spin" />
                   ) : (
                     <Shield size={MESSAGE_ACTION_ICON_SIZE} />
                   )
                 }
-                onClick={handleRestoreProseGuardianOriginal}
-                title="Restore original before rewrite"
-                disabled={restoringProseGuardianOriginal}
+                onClick={handleToggleProseGuardianVersion}
+                title={showingProseGuardianOriginal ? "Show rewritten version" : "Show original before rewrite"}
+                className={showingProseGuardianOriginal ? MESSAGE_CHROME_ACTIVE_ICON_CLASS : undefined}
+                disabled={switchingRewriteVersion}
               />
             )}
             <ActionBtn

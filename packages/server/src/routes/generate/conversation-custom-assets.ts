@@ -11,6 +11,7 @@ import { logger } from "../../lib/logger.js";
 import { cosineSimilarity } from "../../services/lorebook/embeddings.js";
 import { isLocalEmbedderAvailable, localEmbed } from "../../services/local-embedder.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
+import { withConnectionFallbackProvider } from "../../services/llm/connection-fallback-provider.js";
 import type { GenerationPromptMessage } from "../../services/generation/prompt-message-scope.js";
 import type { createConnectionsStorage } from "../../services/storage/connections.storage.js";
 import { appendToFirstSystemMessage, latestHistoryUserContent } from "./conversation-prompt-formatting.js";
@@ -105,14 +106,21 @@ export async function selectCustomAssetNamesByToolCall(
   try {
     const conn = await connections.getWithKey(connectionId);
     if (!conn?.model) return null;
-    const provider = createLLMProvider(
-      conn.provider,
-      resolveBaseUrl(conn),
-      conn.apiKey,
-      conn.maxContext,
-      conn.openrouterProvider,
-      conn.maxTokensOverride,
-    );
+    const fallbackConnection = await connections.getFallbackForAgents();
+    const provider = withConnectionFallbackProvider({
+      primary: createLLMProvider(
+        conn.provider,
+        resolveBaseUrl(conn),
+        conn.apiKey,
+        conn.maxContext,
+        conn.openrouterProvider,
+        conn.maxTokensOverride,
+      ),
+      primaryConnectionId: conn.id,
+      fallbackConnection,
+      fallbackBaseUrl: fallbackConnection ? resolveBaseUrl(fallbackConnection) : "",
+      category: "agents",
+    });
     const result = await provider.chatComplete(
       [
         {
@@ -175,6 +183,13 @@ export async function appendConversationCustomAssetAdvertisements(args: {
   characterGallery: Required<Pick<GalleryAssetStore, "listByCharacterId">>;
   connections: ReturnType<typeof createConnectionsStorage>;
   conversationCustomEmojiUrlByName: Map<string, string>;
+  /**
+   * When set, the preset contains a {{replyRules}} macro: render the emoji/sticker
+   * reply advertisements at that macro instead of appending them automatically
+   * (parity with {{reactRules}}). Receives the combined block (empty string when
+   * there are no advertisements, so the macro token is still stripped). #3438
+   */
+  replyRulesMacroPlacement?: (content: string) => void;
 }): Promise<void> {
   if (args.chatMode !== "conversation") return;
 
@@ -241,22 +256,18 @@ export async function appendConversationCustomAssetAdvertisements(args: {
   for (const info of respondingConversationChars) {
     const images = await args.characterGallery.listByCharacterId(info.charId);
     const emojiNames = uniqueEmojiNames(
-      images
-        .filter((img) => img.customKind === "emoji" && img.customName)
-        .map((img) => img.customName as string),
+      images.filter((img) => img.customKind === "emoji" && img.customName).map((img) => img.customName as string),
     );
     for (const img of images) {
       if (img.customKind === "emoji" && img.customName && img.filePath) {
         args.conversationCustomEmojiUrlByName.set(
-          String(img.customName),
+          buildConversationCustomEmojiKey("character", info.charId, String(img.customName)),
           buildCharacterGalleryEmojiUrl(info.charId, getStoredFilename(String(img.filePath))),
         );
       }
     }
     const stickerNames = uniqueEmojiNames(
-      images
-        .filter((img) => img.customKind === "sticker" && img.customName)
-        .map((img) => img.customName as string),
+      images.filter((img) => img.customKind === "sticker" && img.customName).map((img) => img.customName as string),
     );
     if (emojiNames.length > 0) ownEmojisByChar.set(info.charId, emojiNames);
     if (stickerNames.length > 0) ownStickersByChar.set(info.charId, stickerNames);
@@ -264,16 +275,16 @@ export async function appendConversationCustomAssetAdvertisements(args: {
 
   const assetQuery = latestHistoryUserContent(args.finalMessages) || args.currentUserInputContent() || "";
 
+  // Built below, then either placed at a {{replyRules}} macro (parity with
+  // {{reactRules}}) or appended to the first system message (#3438).
+  let emojiAdvertisement: string | null = null;
+  let stickerAdvertisement: string | null = null;
+
   if (sharedEmojiNames.length > 0 || ownEmojisByChar.size > 0) {
     const emojiPrefs = normalizeCustomEmojiSelection(args.chatMeta.customEmojiSelection);
-    let emojiAdvertisement: string | null = null;
     let toolSelectionHandled = false;
 
-    if (
-      emojiPrefs.mode === "tool-call" &&
-      emojiPrefs.toolConnectionId &&
-      respondingConversationChars.length === 1
-    ) {
+    if (emojiPrefs.mode === "tool-call" && emojiPrefs.toolConnectionId && respondingConversationChars.length === 1) {
       const responder = respondingConversationChars[0]!;
       const candidates = uniqueEmojiNames([...(ownEmojisByChar.get(responder.charId) ?? []), ...sharedEmojiNames]);
       const picked = await selectCustomAssetNamesByToolCall(
@@ -311,13 +322,10 @@ export async function appendConversationCustomAssetAdvertisements(args: {
         emojiPrefs.maxCount,
       );
     }
-
-    if (emojiAdvertisement) appendToFirstSystemMessage(args.finalMessages, emojiAdvertisement);
   }
 
   if (sharedStickerNames.length > 0 || ownStickersByChar.size > 0) {
     const stickerPrefs = normalizeCustomEmojiSelection(args.chatMeta.customEmojiSelection);
-    let stickerAdvertisement: string | null = null;
     let toolSelectionHandled = false;
 
     if (
@@ -326,10 +334,7 @@ export async function appendConversationCustomAssetAdvertisements(args: {
       respondingConversationChars.length === 1
     ) {
       const responder = respondingConversationChars[0]!;
-      const candidates = uniqueEmojiNames([
-        ...(ownStickersByChar.get(responder.charId) ?? []),
-        ...sharedStickerNames,
-      ]);
+      const candidates = uniqueEmojiNames([...(ownStickersByChar.get(responder.charId) ?? []), ...sharedStickerNames]);
       const picked = await selectCustomAssetNamesByToolCall(
         "sticker",
         "sticker:name:",
@@ -365,7 +370,17 @@ export async function appendConversationCustomAssetAdvertisements(args: {
         stickerPrefs.maxCount,
       );
     }
+  }
 
+  // When the preset places a {{replyRules}} macro, render the emoji/sticker reply
+  // advertisements there (suppressing the automatic append) — mirroring how
+  // {{reactRules}} relocates the react-rules block (#3438). Otherwise keep the
+  // historical behavior: append each advertisement to the first system message,
+  // emoji then sticker.
+  if (args.replyRulesMacroPlacement) {
+    args.replyRulesMacroPlacement([emojiAdvertisement, stickerAdvertisement].filter(Boolean).join("\n\n"));
+  } else {
+    if (emojiAdvertisement) appendToFirstSystemMessage(args.finalMessages, emojiAdvertisement);
     if (stickerAdvertisement) appendToFirstSystemMessage(args.finalMessages, stickerAdvertisement);
   }
 }
@@ -466,16 +481,17 @@ export function annotateContentWithReactions(
   reactions: unknown,
   knownSpeakersByNorm: Map<string, string>,
   resolveReactorName: (reactorId: string) => string,
+  leadingSpeaker?: string | null,
 ): string {
   if (!Array.isArray(reactions) || reactions.length === 0) return promptContent;
   const knownNames = new Set(knownSpeakersByNorm.keys());
   const clientGroups: GroupedSegment[] | null =
     clientShapeContent.length <= REACTION_ANNOTATION_CONTENT_CAP
-      ? parseGroupedSpeakerSegments(clientShapeContent, knownNames)
+      ? parseGroupedSpeakerSegments(clientShapeContent, knownNames, leadingSpeaker)
       : null;
   const promptGroups: GroupedSegment[] | null =
     promptContent.length <= REACTION_ANNOTATION_CONTENT_CAP
-      ? parseGroupedSpeakerSegments(promptContent, knownNames)
+      ? parseGroupedSpeakerSegments(promptContent, knownNames, leadingSpeaker)
       : null;
 
   const promptGroupFor = (clientIndex: number): GroupedSegment | null => {
@@ -542,9 +558,7 @@ export function annotateContentWithReactions(
     const wanted = storedSpeaker !== null ? normalizeTextForMatch(storedSpeaker) : null;
     const segIdx = typeof entry.segment === "number" && Number.isInteger(entry.segment) ? entry.segment : null;
     const seg =
-      clientGroups && segIdx !== null && segIdx >= 0 && segIdx < clientGroups.length
-        ? clientGroups[segIdx]
-        : undefined;
+      clientGroups && segIdx !== null && segIdx >= 0 && segIdx < clientGroups.length ? clientGroups[segIdx] : undefined;
     const segSpeakerNorm = seg?.speaker != null ? normalizeTextForMatch(seg.speaker) : null;
     const segAligned =
       seg !== undefined &&
@@ -600,11 +614,7 @@ export function annotateContentWithReactions(
   const endParts: string[] = [];
   for (const note of notes) {
     if (note.kind !== "end") continue;
-    if (
-      note.staleTwinShape &&
-      note.speakerNorm !== null &&
-      inlineKeys.has(`${note.phrase}\u0000${note.speakerNorm}`)
-    ) {
+    if (note.staleTwinShape && note.speakerNorm !== null && inlineKeys.has(`${note.phrase}\u0000${note.speakerNorm}`)) {
       continue;
     }
     endParts.push(note.text);

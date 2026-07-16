@@ -21,6 +21,7 @@ import { useUIStore } from "../stores/ui.store";
 import type {
   GameActiveState,
   GameMap,
+  GameInitialSetupLabels,
   GameSetupConfig,
   GameNpc,
   DiceRollResult,
@@ -30,6 +31,9 @@ import type {
   CombatPlayerAction,
   HudWidget,
   GameBlueprint,
+  TacticalCombatState,
+  TacticalAction,
+  TacticalEvent,
 } from "@marinara-engine/shared";
 import type { Chat } from "@marinara-engine/shared";
 
@@ -133,6 +137,15 @@ interface MapMoveResponse {
   activeGameMapId?: string | null;
 }
 
+export type UpdateGameMapBindingInput =
+  | { target: "map"; chatId: string; mapId: string; spatialLocationId: string | null }
+  | { target: "cell"; chatId: string; mapId: string; x: number; y: number; spatialLocationId: string | null }
+  | { target: "node"; chatId: string; mapId: string; nodeId: string; spatialLocationId: string | null };
+
+interface UpdateGameMapBindingResponse extends MapMoveResponse {
+  sessionChat: Chat;
+}
+
 interface UpdateGameWidgetsResponse {
   ok: boolean;
 }
@@ -174,8 +187,9 @@ export function useCreateGame() {
     mutationFn: (data: {
       name: string;
       setupConfig: GameSetupConfig;
+      preferences?: string;
+      shareLabels?: GameInitialSetupLabels;
       connectionId?: string;
-      characterConnectionId?: string;
       promptPresetId?: string;
       chatId?: string;
     }) => api.post<CreateGameResponse>("/game/create", data),
@@ -200,14 +214,23 @@ export function useGameSetup() {
   const store = useGameModeStore;
 
   return useMutation({
-    mutationFn: (data: { chatId: string; connectionId?: string; promptPresetId?: string | null; preferences: string }) =>
+    mutationFn: (data: {
+      chatId: string;
+      connectionId?: string;
+      promptPresetId?: string | null;
+      preferences: string;
+      keepSetupActive?: boolean;
+    }) =>
       api.post<SetupResponse>("/game/setup", {
-        ...data,
+        chatId: data.chatId,
+        connectionId: data.connectionId,
+        promptPresetId: data.promptPresetId,
+        preferences: data.preferences,
         streaming: useUIStore.getState().enableStreaming,
         debugMode: useUIStore.getState().debugMode,
       }),
-    onSuccess: (res) => {
-      store.getState().setSetupActive(false);
+    onSuccess: (res, variables) => {
+      if (!variables.keepSetupActive) store.getState().setSetupActive(false);
       if (Array.isArray(res.gameNpcs)) {
         store.getState().setNpcs(res.gameNpcs);
       }
@@ -312,6 +335,14 @@ export function useConcludeSession() {
       });
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
       qc.invalidateQueries({ queryKey: chatKeys.messages(variables.chatId) });
+      // Game Lorebook Keeper finishes in the background after the conclusion
+      // response. Refresh the chat at bounded intervals so its running/failure
+      // state and retry action appear without requiring a page reload.
+      for (const delay of [1_500, 5_000, 15_000, 30_000, 60_000, 120_000]) {
+        window.setTimeout(() => {
+          void qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
+        }, delay);
+      }
     },
     onError: (err, variables) => {
       console.error("[game/session/conclude] Error:", err);
@@ -591,6 +622,22 @@ export function useMoveOnMap() {
   });
 }
 
+export function useUpdateGameMapBinding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: UpdateGameMapBindingInput) =>
+      api.put<UpdateGameMapBindingResponse>("/game/map/binding", data),
+    onSuccess: (response, variables) => {
+      useGameModeStore.getState().setMaps(response.maps ?? [response.map], response.activeGameMapId);
+      qc.setQueryData(chatKeys.detail(variables.chatId), response.sessionChat);
+      if (useChatStore.getState().activeChatId === variables.chatId) {
+        useChatStore.getState().setActiveChat(response.sessionChat);
+      }
+      void qc.invalidateQueries({ queryKey: chatKeys.list() });
+    },
+  });
+}
+
 export function useUpdateGameWidgets() {
   const qc = useQueryClient();
 
@@ -774,6 +821,36 @@ export function useCombatRound() {
   });
 }
 
+// ── Tactical (grid) combat ──
+// Mirrors useCombatRound's shape: thin mutations over the pure shared engine that
+// lives server-side behind these endpoints. State round-trips through the client
+// exactly like classic combat (no new DB table); the client persists the returned
+// snapshot to chat metadata.
+
+/** Start a fresh tactical battle. Server builds the seeded grid + spawns. */
+export function useTacticalCombatStart() {
+  return useMutation({
+    mutationFn: (data: {
+      chatId: string;
+      party: Combatant[];
+      enemies: Combatant[];
+      seed?: number;
+      /** Blueprint scene context — themes the terrain (styleNotes.environmentType). */
+      environment?: string;
+      /** Blueprint battlefield.formation — drives spawn placement. */
+      formation?: string;
+    }) => api.post<{ state: TacticalCombatState }>("/game/combat/tactical/start", data),
+  });
+}
+
+/** Apply one tactical action; server validates + resolves, running the enemy phase if it flips. */
+export function useTacticalCombatAction() {
+  return useMutation({
+    mutationFn: (data: { chatId: string; state: TacticalCombatState; action: TacticalAction }) =>
+      api.post<{ state: TacticalCombatState; events: TacticalEvent[] }>("/game/combat/tactical/action", data),
+  });
+}
+
 export function useCombatLoot() {
   return useMutation({
     mutationFn: async (data: { chatId: string; enemyCount: number }) => {
@@ -840,15 +917,6 @@ export function useUpdateWeather() {
   });
 }
 
-export function useRollEncounter() {
-  return useMutation({
-    mutationFn: (data: { chatId: string; action: string; location?: string }) =>
-      api.post<{ encounter: { triggered: boolean; type: string | null; hint: string }; enemyCount: number }>(
-        "/game/encounter/roll",
-        data,
-      ),
-  });
-}
 
 export function useUpdateReputation() {
   const qc = useQueryClient();
@@ -864,16 +932,6 @@ export function useUpdateReputation() {
   });
 }
 
-export function useJournalEntry() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { chatId: string; type: string; data: Record<string, unknown> }) =>
-      api.post<{ journal: unknown }>("/game/journal/entry", data),
-    onSuccess: (_, variables) => {
-      qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
-    },
-  });
-}
 
 export function useGameJournal(chatId: string | null) {
   return useQuery({

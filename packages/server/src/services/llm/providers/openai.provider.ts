@@ -13,15 +13,24 @@ import {
   type LLMUsage,
 } from "../base-provider.js";
 import { parseTextualToolCalls } from "../textual-tool-call-parser.js";
-import { isClaudeAdaptiveOnlyNoSamplingModel, shouldSuppressUnknownModelParameters } from "@marinara-engine/shared";
+import {
+  isClaudeAdaptiveOnlyNoSamplingModel,
+  isOpenAIGpt56Model,
+  isOpenAIGpt56SolProAlias,
+  isXaiAutoReasoningModel,
+  isXaiConfigurableReasoningModel,
+  resolveOpenAIGpt56ModelForRequest,
+  shouldSuppressUnknownModelParameters,
+} from "@marinara-engine/shared";
 import { logger } from "../../../lib/logger.js";
+import { applyGlmThinkingParameters } from "./glm-request-compat.js";
 
 /**
  * Models that ONLY support the Responses API (`/responses`) and not Chat Completions.
- * GPT-5.5, GPT-5.4 variants (base, pro, mini, dated snapshots), and Codex models use Responses.
+ * GPT-5.6, GPT-5.5, GPT-5.4 variants (base, pro, mini, dated snapshots), and Codex models use Responses.
  * Matching is case-insensitive.
  */
-const RESPONSES_ONLY_PREFIXES = ["gpt-5.5", "gpt-5.4", "codex-"];
+const RESPONSES_ONLY_PREFIXES = ["gpt-5.6", "gpt-5.5", "gpt-5.4", "codex-"];
 const RESPONSES_ONLY_SUFFIXES = ["-codex", "-codex-max", "-codex-mini"];
 
 type ChatCompletionsUsagePayload = {
@@ -66,6 +75,32 @@ type OpenAIProviderKind =
   | "custom"
   | "openai-chatgpt"
   | "local-sidecar";
+
+export function normalizeOpenAIChatCompletionsResponseFormat(
+  responseFormat: { type: string; [key: string]: unknown } | undefined,
+): unknown | undefined {
+  if (!responseFormat) return undefined;
+
+  if (responseFormat.type === "json_schema") {
+    if (responseFormat.json_schema && typeof responseFormat.json_schema === "object") return responseFormat;
+    if (
+      typeof responseFormat.name === "string" &&
+      responseFormat.schema &&
+      typeof responseFormat.schema === "object"
+    ) {
+      return {
+        type: "json_schema",
+        json_schema: {
+          name: responseFormat.name,
+          schema: responseFormat.schema,
+          strict: responseFormat.strict === true,
+        },
+      };
+    }
+  }
+
+  return responseFormat;
+}
 
 /**
  * Handles OpenAI, OpenRouter, Mistral, Cohere, and any OpenAI-compatible endpoint.
@@ -170,14 +205,27 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private static extractSseJsonPayload(raw: string): string | null {
     const lines = raw.split(/\r?\n/);
+    let fallbackPayload: string | null = null;
     for (const line of lines) {
       const trimmed = line.trim();
       const payload = OpenAIProvider.extractSseData(trimmed);
       if (payload == null) continue;
       if (!payload || payload === "[DONE]") continue;
-      return payload;
+      fallbackPayload = payload;
+      try {
+        const parsed = JSON.parse(payload) as Record<string, unknown>;
+        const firstChoice = Array.isArray(parsed.choices)
+          ? (parsed.choices[0] as { message?: { content?: unknown }; delta?: { content?: unknown } } | undefined)
+          : undefined;
+        const content = firstChoice?.message?.content ?? firstChoice?.delta?.content;
+        if ((typeof content === "string" && content.trim()) || (Array.isArray(content) && content.length > 0)) {
+          return payload;
+        }
+      } catch {
+        // Keep scanning. parseJsonBody reports the detailed error if recovery fails.
+      }
     }
-    return null;
+    return fallbackPayload;
   }
 
   private static extractSseData(trimmedLine: string): string | null {
@@ -237,13 +285,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private normalizeChatCompletionsResponseFormat(responseFormat?: { type: string }): unknown | undefined {
-    if (!responseFormat) return undefined;
-
-    if (this.isGenericCustomProvider() && responseFormat.type === "json_object") {
-      return { type: "json_schema", json_schema: { name: "response", schema: { type: "object" }, strict: true } };
-    }
-
-    return responseFormat;
+    return normalizeOpenAIChatCompletionsResponseFormat(responseFormat);
   }
 
   /**
@@ -481,7 +523,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
   }
 
-  /** Build standard request headers, adding OpenRouter app tracking when applicable. */
+  /** Build standard request headers. OpenRouter attribution is enforced by safeFetch. */
   private buildHeaders(): Record<string, string> {
     const apiKey = this.apiKey.trim();
     const h: Record<string, string> = {
@@ -492,10 +534,6 @@ export class OpenAIProvider extends BaseLLMProvider {
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
       ...(this.extraHeaders ?? {}),
     };
-    if (!this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai")) {
-      h["HTTP-Referer"] = "https://github.com/Pasta-Devs/Marinara-Engine";
-      h["X-Title"] = "Marinara Engine";
-    }
     return h;
   }
 
@@ -544,13 +582,21 @@ export class OpenAIProvider extends BaseLLMProvider {
     return model.toLowerCase().startsWith("gpt-5.5");
   }
 
+  private isOpenAIGpt55Or56Model(model: string): boolean {
+    const normalized = model.toLowerCase();
+    return normalized.startsWith("gpt-5.5") || isOpenAIGpt56Model(normalized);
+  }
+
   private isResponsesStreamingUnsupportedModel(model: string): boolean {
-    return model.toLowerCase().startsWith("gpt-5.5-pro");
+    const normalized = model.toLowerCase();
+    // GPT-5.6 Pro mode is an execution mode that returns a single final answer;
+    // only our app-level Sol Pro alias opts into it automatically.
+    return normalized.startsWith("gpt-5.5-pro") || isOpenAIGpt56SolProAlias(normalized);
   }
 
   /** Check if a model ID represents an OpenAI reasoning model */
   private isReasoningModel(model: string): boolean {
-    if (this.isGenericCustomProvider() && !this.isGpt55Model(model)) return false;
+    if (this.isGenericCustomProvider() && !this.isOpenAIGpt55Or56Model(model)) return false;
     const m = model.toLowerCase();
     return /^(o1|o3|o4)/.test(m) || m.startsWith("gpt-5");
   }
@@ -574,15 +620,35 @@ export class OpenAIProvider extends BaseLLMProvider {
     return model.toLowerCase() === "grok-4.20-multi-agent";
   }
 
+  private isNativeXAIConfigurableReasoningModel(model: string): boolean {
+    return this.isXAIEndpoint() && isXaiConfigurableReasoningModel(model);
+  }
+
   private isXAIReasoningModel(model: string): boolean {
     if (!this.isXAIEndpoint() && !this.isOpenRouterXAIModel(model)) return false;
     const m = model.toLowerCase();
     return (
       m.startsWith("x-ai/grok-") ||
-      m.startsWith("grok-4.3") ||
-      m.startsWith("grok-4-1-fast") ||
+      isXaiConfigurableReasoningModel(m) ||
+      isXaiAutoReasoningModel(m) ||
       this.isXAIMultiAgentModel(model)
     );
+  }
+
+  private resolveXAIReasoningEffort(reasoningEffort?: string | null): "none" | "low" | "medium" | "high" | null {
+    switch (reasoningEffort) {
+      case "none":
+      case "low":
+      case "medium":
+      case "high":
+        return reasoningEffort;
+      case "xhigh":
+      case "max":
+      case "maximum":
+        return "high";
+      default:
+        return null;
+    }
   }
 
   private shouldSendStopSequences(model: string): boolean {
@@ -596,13 +662,14 @@ export class OpenAIProvider extends BaseLLMProvider {
   /**
    * Check if a model/config does NOT support temperature/topP.
    * o-series models never do.
-   * GPT-5.5 rejects sampling params entirely; older GPT-5.x models only reject
-   * them when reasoning effort is active.
+   * GPT-5.6/GPT-5.5 reject sampling params entirely; older GPT-5.x models only
+   * reject them when reasoning effort is active.
    */
   private isNoTemperatureModel(model: string, reasoningEffort?: string): boolean {
-    if (this.isGenericCustomProvider() && !this.isGpt55Model(model)) return false;
+    if (this.isGenericCustomProvider() && !this.isOpenAIGpt55Or56Model(model)) return false;
     const m = model.toLowerCase();
     if (/^(o1|o3|o4)/.test(m)) return true;
+    if (isOpenAIGpt56Model(m)) return true;
     if (this.isGpt55Model(model)) return true;
     if (m.startsWith("gpt-5") && reasoningEffort && reasoningEffort !== "none") return true;
     // Claude adaptive-only models forbid all sampling params (covers reverse proxies).
@@ -618,30 +685,6 @@ export class OpenAIProvider extends BaseLLMProvider {
     delete body.min_p;
     delete body.frequency_penalty;
     delete body.presence_penalty;
-  }
-
-  /** GLM variants on Z.AI/BigModel use a boolean thinking toggle instead of effort-based reasoning config. */
-  private isGLMModel(model: string): boolean {
-    return model.toLowerCase().includes("glm");
-  }
-
-  private isNativeGLMEndpoint(): boolean {
-    try {
-      const hostname = new URL(this.baseUrl).hostname.toLowerCase();
-      return (
-        hostname === "api.z.ai" ||
-        hostname.endsWith(".api.z.ai") ||
-        hostname === "open.bigmodel.cn" ||
-        hostname.endsWith(".open.bigmodel.cn")
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  private shouldSendGLMEnableThinking(model: string): boolean {
-    if (this.isGenericCustomProvider() || !this.isGLMModel(model)) return false;
-    return this.isNativeGLMEndpoint() || this.providerKind === "nanogpt";
   }
 
   private hasActiveReasoningEffort(reasoningEffort?: string | null): boolean {
@@ -679,14 +722,26 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private applyChatCompletionsReasoning(body: Record<string, unknown>, options: ChatOptions): void {
+    if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
+      const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
+      if (effort) body.reasoning_effort = effort;
+      return;
+    }
+
     if (this.isXAIReasoningModel(options.model)) {
       return;
     }
 
-    if (this.shouldSendGLMEnableThinking(options.model)) {
-      body.enable_thinking = this.hasActiveReasoningEffort(options.reasoningEffort);
+    if (
+      applyGlmThinkingParameters(body, {
+        model: options.model,
+        baseUrl: this.baseUrl,
+        providerKind: this.providerKind,
+        enableThinking: options.enableThinking,
+        reasoningEffort: options.reasoningEffort,
+      })
+    )
       return;
-    }
 
     if (
       this.supportsOpenRouterUnifiedReasoning(options.model) &&
@@ -709,22 +764,44 @@ export class OpenAIProvider extends BaseLLMProvider {
       return;
     }
 
+    if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
+      const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
+      if (effort) body.reasoning = { effort };
+      return;
+    }
+
     if (this.isXAIReasoningModel(options.model)) {
       return;
     }
 
-    if (this.shouldSendGLMEnableThinking(options.model)) {
-      body.enable_thinking = this.hasActiveReasoningEffort(options.reasoningEffort);
+    if (
+      applyGlmThinkingParameters(body, {
+        model: options.model,
+        baseUrl: this.baseUrl,
+        providerKind: this.providerKind,
+        enableThinking: options.enableThinking,
+        reasoningEffort: options.reasoningEffort,
+      })
+    )
       return;
-    }
 
     if (!this.isReasoningModel(options.model)) {
       return;
     }
 
     const reasoning: Record<string, unknown> = {};
-    if (this.hasActiveReasoningEffort(options.reasoningEffort)) {
+    if (
+      this.shouldSendParameter(options, "reasoningEffort") &&
+      this.hasActiveReasoningEffort(options.reasoningEffort)
+    ) {
       reasoning.effort = options.reasoningEffort;
+    }
+    const normalizedModel = options.model.toLowerCase();
+    if (isOpenAIGpt56SolProAlias(normalizedModel)) {
+      reasoning.mode = "pro";
+    }
+    if (isOpenAIGpt56Model(normalizedModel) && options.excludePastReasoning !== undefined) {
+      reasoning.context = options.excludePastReasoning ? "current_turn" : "all_turns";
     }
     if (options.enableThinking) {
       reasoning.summary = "auto";
@@ -769,7 +846,9 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private supportsGpt5Verbosity(model: string): boolean {
     if (this.isOpenAIChatGPTProvider()) return false;
-    return (!this.isGenericCustomProvider() || this.isGpt55Model(model)) && model.toLowerCase().startsWith("gpt-5");
+    return (
+      (!this.isGenericCustomProvider() || this.isOpenAIGpt55Or56Model(model)) && model.toLowerCase().startsWith("gpt-5")
+    );
   }
 
   private applyResponsesTextOptions(body: Record<string, unknown>, options: ChatOptions): void {
@@ -1110,27 +1189,35 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             continue;
           }
-          const choice0 = parsed.choices[0] as { finish_reason?: string | null } | undefined;
+          const choice0 = parsed.choices[0] as
+            | {
+                finish_reason?: string | null;
+                delta?: Record<string, unknown> & { content?: string | unknown[]; refusal?: string };
+                message?: Record<string, unknown> & { content?: string | unknown[] | null; refusal?: string };
+              }
+            | undefined;
           if (choice0?.finish_reason) finishReason = choice0.finish_reason;
-          const delta = (
-            parsed.choices[0] as
-              | { delta?: Record<string, unknown> & { content?: string | unknown[]; refusal?: string } }
-              | undefined
-          )?.delta;
-          OpenAIProvider.appendReasoningMetadata(reasoningMetadata, delta);
-          const reasoning = OpenAIProvider.extractReasoning(delta);
+          const delta = choice0?.delta;
+          const message = choice0?.message;
+          OpenAIProvider.appendReasoningMetadata(reasoningMetadata, delta ?? message);
+          const reasoning = OpenAIProvider.extractReasoning(delta ?? message);
           if (reasoning && options.onThinking) {
             options.onThinking(reasoning);
           }
           // Handle OpenRouter content block arrays (Anthropic-style)
-          const blocks = OpenAIProvider.extractContentBlocks(delta?.content);
+          const content = delta?.content ?? message?.content;
+          const refusal =
+            (typeof delta?.refusal === "string" && delta.refusal) ||
+            (typeof message?.refusal === "string" && message.refusal) ||
+            "";
+          const blocks = OpenAIProvider.extractContentBlocks(content);
           if (blocks) {
             if (!reasoning && blocks.thinking && options.onThinking) options.onThinking(blocks.thinking);
             if (blocks.text) yield blocks.text;
-          } else if (delta?.content) {
-            yield delta.content as string;
-          } else if (typeof delta?.refusal === "string" && delta.refusal) {
-            yield delta.refusal;
+          } else if (typeof content === "string" && content) {
+            yield content;
+          } else if (refusal) {
+            yield refusal;
           }
         }
         if (done) break;
@@ -1396,9 +1483,14 @@ export class OpenAIProvider extends BaseLLMProvider {
 
           const choice = (
             parsed.choices as Array<{
-              delta: Record<string, unknown> & {
+              delta?: Record<string, unknown> & {
                 content?: string | unknown[];
+                refusal?: string;
                 tool_calls?: unknown;
+              };
+              message?: Record<string, unknown> & {
+                content?: string | unknown[] | null;
+                refusal?: string;
               };
               finish_reason?: string;
             }>
@@ -1410,28 +1502,34 @@ export class OpenAIProvider extends BaseLLMProvider {
           }
 
           const delta = choice.delta;
-          OpenAIProvider.appendReasoningMetadata(reasoningMetadata, delta);
+          const message = choice.message;
+          OpenAIProvider.appendReasoningMetadata(reasoningMetadata, delta ?? message);
 
           // Stream reasoning/thinking
-          const reasoning = OpenAIProvider.extractReasoning(delta);
+          const reasoning = OpenAIProvider.extractReasoning(delta ?? message);
           if (reasoning && options.onThinking) {
             options.onThinking(reasoning);
           }
 
           // Handle OpenRouter content block arrays (Anthropic-style)
-          const blocks = OpenAIProvider.extractContentBlocks(delta?.content);
+          const textContent = delta?.content ?? message?.content;
+          const refusal =
+            (typeof delta?.refusal === "string" && delta.refusal) ||
+            (typeof message?.refusal === "string" && message.refusal) ||
+            "";
+          const blocks = OpenAIProvider.extractContentBlocks(textContent);
           if (blocks) {
             if (!reasoning && blocks.thinking && options.onThinking) options.onThinking(blocks.thinking);
             if (blocks.text) {
               content += blocks.text;
               await options.onToken?.(blocks.text);
             }
-          } else if (delta?.content) {
-            content += delta.content as string;
-            await options.onToken?.(delta.content as string);
-          } else if (typeof delta?.refusal === "string" && delta.refusal) {
-            content += delta.refusal;
-            await options.onToken?.(delta.refusal);
+          } else if (typeof textContent === "string" && textContent) {
+            content += textContent;
+            await options.onToken?.(textContent);
+          } else if (refusal) {
+            content += refusal;
+            await options.onToken?.(refusal);
           }
 
           // Accumulate tool call deltas. Some OpenAI-compatible backends (including llama.cpp)
@@ -1661,7 +1759,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
 
     const body: Record<string, unknown> = {
-      model: options.model,
+      model: resolveOpenAIGpt56ModelForRequest(options.model),
       input,
       store: false, // don't persist responses on OpenAI side
     };
@@ -1704,7 +1802,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       if (topP != null) body.top_p = topP;
     }
 
-    if (!isOpenAIChatGPT && !suppressModelParameters && this.shouldSendParameter(options, "reasoningEffort")) {
+    if (!isOpenAIChatGPT && !suppressModelParameters) {
       this.applyResponsesReasoning(body, options);
     }
 

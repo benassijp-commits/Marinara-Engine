@@ -4,19 +4,36 @@
 import { create } from "zustand";
 import type { AvatarCropValue } from "../lib/utils";
 import { subscribeWithSelector } from "zustand/middleware";
-import type { Chat, ChatMode, ConversationCallSession, ConversationPresenceStatus, Message } from "@marinara-engine/shared";
+import type {
+  Chat,
+  ChatMode,
+  ConversationCallSession,
+  ConversationPresenceStatus,
+  Message,
+  PendingSpatialTransition,
+  SpatialDestinationRelation,
+} from "@marinara-engine/shared";
 import type { CharacterMap, PersonaInfo } from "../components/chat/chat-area.types";
 import { useAgentStore } from "./agent.store";
 import { useGameStateStore } from "./game-state.store";
 
 const STORAGE_KEY = "marinara-active-chat-id";
 const DRAFTS_KEY = "marinara-input-drafts";
+const SPATIAL_TRANSITIONS_KEY = "marinara-pending-spatial-transitions";
 const NOTIFICATION_AUTODISMISS_MS = 8000;
 
 type NotificationAvatarCrop = AvatarCropValue | null;
 type ChatNotificationKind = "message" | "call";
 
 type DelayedCharacterStatus = ConversationPresenceStatus;
+
+export type PendingSpatialTransitionDraft = {
+  transition: PendingSpatialTransition;
+  destinationName: string;
+  relation: SpatialDestinationRelation;
+  label?: string;
+  status: "ready" | "needs_review";
+};
 
 export type DelayedCharacterInfo = {
   name: string;
@@ -57,6 +74,38 @@ function saveDrafts(m: Map<string, string>) {
     if (m.size === 0) localStorage.removeItem(DRAFTS_KEY);
     else localStorage.setItem(DRAFTS_KEY, JSON.stringify([...m]));
     sessionStorage.removeItem(DRAFTS_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function loadPendingSpatialTransitions(): Map<string, PendingSpatialTransitionDraft> {
+  try {
+    const raw = localStorage.getItem(SPATIAL_TRANSITIONS_KEY);
+    if (!raw) return new Map();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Map();
+    return new Map(
+      parsed.filter(
+        (entry): entry is [string, PendingSpatialTransitionDraft] =>
+          Array.isArray(entry) &&
+          typeof entry[0] === "string" &&
+          !!entry[1] &&
+          typeof entry[1] === "object" &&
+          typeof (entry[1] as PendingSpatialTransitionDraft).transition?.commandId === "string" &&
+          typeof (entry[1] as PendingSpatialTransitionDraft).transition?.destinationId === "string" &&
+          typeof (entry[1] as PendingSpatialTransitionDraft).destinationName === "string",
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+function savePendingSpatialTransitions(m: Map<string, PendingSpatialTransitionDraft>) {
+  try {
+    if (m.size === 0) localStorage.removeItem(SPATIAL_TRANSITIONS_KEY);
+    else localStorage.setItem(SPATIAL_TRANSITIONS_KEY, JSON.stringify([...m]));
   } catch {
     /* ignore */
   }
@@ -122,6 +171,8 @@ interface ChatState {
   streamBuffers: Map<string, string>;
   /** Chat IDs whose live stream has been replaced by the saved message while agents continue. */
   committedStreamChatIds: Set<string>;
+  /** Persisted assistant row currently represented by each chat's live streaming row. */
+  streamedMessageIds: Map<string, string>;
   thinkingBuffer: string;
   /** Per-chat live thinking text for active generations. */
   thinkingBuffers: Map<string, string>;
@@ -154,6 +205,8 @@ interface ChatState {
   pendingNewChatMode: Exclude<ChatMode, "visual_novel"> | null;
   /** Per-chat draft input text so typing isn't lost when navigating away. */
   inputDrafts: Map<string, string>;
+  /** Per-chat structured movement staged for the next accepted owner turn. */
+  pendingSpatialTransitions: Map<string, PendingSpatialTransitionDraft>;
   /** Current chat input */
   currentInput: string;
   /** Per-chat unread message count (from autonomous messages). */
@@ -189,6 +242,7 @@ interface ChatState {
   updateLastMessage: (content: string) => void;
   setStreaming: (streaming: boolean, chatId?: string) => void;
   setStreamCommitted: (chatId: string, committed: boolean) => void;
+  setStreamedMessageId: (chatId: string, messageId: string | null) => void;
   setMariPhase: (chatId: string, phase: "thinking" | "updating" | "idle") => void;
   setAbortController: (chatId: string, controller: AbortController | null) => void;
   stopGeneration: (chatId?: string) => void;
@@ -217,6 +271,9 @@ interface ChatState {
   setPendingNewChatMode: (mode: Exclude<ChatMode, "visual_novel"> | null) => void;
   setInputDraft: (chatId: string, text: string) => void;
   clearInputDraft: (chatId: string) => void;
+  setPendingSpatialTransition: (chatId: string, draft: PendingSpatialTransitionDraft) => void;
+  clearPendingSpatialTransition: (chatId: string, commandId?: string) => void;
+  setPendingSpatialTransitionStatus: (chatId: string, status: PendingSpatialTransitionDraft["status"]) => void;
   setCurrentInput: (text: string) => void;
   incrementUnread: (chatId: string) => void;
   hydrateUnread: (
@@ -273,6 +330,7 @@ export const useChatStore = create<ChatState>()(
     streamBuffer: "",
     streamBuffers: new Map(),
     committedStreamChatIds: new Set(),
+    streamedMessageIds: new Map(),
     thinkingBuffer: "",
     thinkingBuffers: new Map(),
     abortControllers: new Map(),
@@ -290,6 +348,7 @@ export const useChatStore = create<ChatState>()(
     shouldOpenWizardInShortcutMode: false,
     pendingNewChatMode: null,
     inputDrafts: loadDrafts(),
+    pendingSpatialTransitions: loadPendingSpatialTransitions(),
     currentInput: "",
     unreadCounts: new Map(),
     chatNotifications: new Map(),
@@ -324,6 +383,7 @@ export const useChatStore = create<ChatState>()(
       set({
         activeChatId: id,
         swipeIndex: new Map(),
+        ...(id !== prev && { generationPhase: null }),
         ...(!id && { activeChat: null }),
         ...(activeCall ? { conversationCallExpanded: id === activeCall.session.chatId } : {}),
       });
@@ -385,12 +445,15 @@ export const useChatStore = create<ChatState>()(
     setStreaming: (streaming, chatId) =>
       set((state) => {
         const committed = new Set(state.committedStreamChatIds);
+        const streamedMessageIds = new Map(state.streamedMessageIds);
         const targetChatId = chatId ?? state.streamingChatId;
         if (targetChatId) committed.delete(targetChatId);
+        if (targetChatId) streamedMessageIds.delete(targetChatId);
         return {
           isStreaming: streaming,
           streamingChatId: streaming ? (chatId ?? null) : null,
           committedStreamChatIds: committed,
+          streamedMessageIds,
           ...(!streaming ? { generationPhase: null } : {}),
         };
       }),
@@ -400,6 +463,13 @@ export const useChatStore = create<ChatState>()(
         if (committed) next.add(chatId);
         else next.delete(chatId);
         return { committedStreamChatIds: next };
+      }),
+    setStreamedMessageId: (chatId, messageId) =>
+      set((state) => {
+        const next = new Map(state.streamedMessageIds);
+        if (messageId) next.set(chatId, messageId);
+        else next.delete(chatId);
+        return { streamedMessageIds: next };
       }),
     setMariPhase: (chatId, phase) =>
       set((state) => {
@@ -638,6 +708,32 @@ export const useChatStore = create<ChatState>()(
         return { inputDrafts: m };
       }),
 
+    setPendingSpatialTransition: (chatId, draft) =>
+      set((state) => {
+        const m = new Map(state.pendingSpatialTransitions);
+        m.set(chatId, draft);
+        savePendingSpatialTransitions(m);
+        return { pendingSpatialTransitions: m };
+      }),
+    clearPendingSpatialTransition: (chatId, commandId) =>
+      set((state) => {
+        const existing = state.pendingSpatialTransitions.get(chatId);
+        if (!existing || (commandId && existing.transition.commandId !== commandId)) return state;
+        const m = new Map(state.pendingSpatialTransitions);
+        m.delete(chatId);
+        savePendingSpatialTransitions(m);
+        return { pendingSpatialTransitions: m };
+      }),
+    setPendingSpatialTransitionStatus: (chatId, status) =>
+      set((state) => {
+        const existing = state.pendingSpatialTransitions.get(chatId);
+        if (!existing || existing.status === status) return state;
+        const m = new Map(state.pendingSpatialTransitions);
+        m.set(chatId, { ...existing, status });
+        savePendingSpatialTransitions(m);
+        return { pendingSpatialTransitions: m };
+      }),
+
     setCurrentInput: (text) => set({ currentInput: text }),
 
     incrementUnread: (chatId: string) =>
@@ -818,6 +914,7 @@ export const useChatStore = create<ChatState>()(
         streamBuffer: "",
         streamBuffers: new Map(),
         committedStreamChatIds: new Set(),
+        streamedMessageIds: new Map(),
         thinkingBuffer: "",
         thinkingBuffers: new Map(),
         abortControllers: new Map(),
@@ -832,6 +929,7 @@ export const useChatStore = create<ChatState>()(
         swipeIndex: new Map(),
         pendingNewChatMode: null,
         inputDrafts: new Map(),
+        pendingSpatialTransitions: new Map(),
         currentInput: "",
         unreadCounts: new Map(),
         chatNotifications: new Map(),
@@ -842,6 +940,7 @@ export const useChatStore = create<ChatState>()(
       });
       try {
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(SPATIAL_TRANSITIONS_KEY);
         localStorage.removeItem(DRAFTS_KEY);
         sessionStorage.removeItem(DRAFTS_KEY);
       } catch {

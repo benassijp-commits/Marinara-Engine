@@ -1,9 +1,9 @@
 // ──────────────────────────────────────────────
 // Schema: Game State Snapshots
 // ──────────────────────────────────────────────
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
+import { fileTable, text, integer } from "../file-schema.js";
 
-export const gameStateSnapshots = sqliteTable("game_state_snapshots", {
+export const gameStateSnapshots = fileTable("game_state_snapshots", {
   id: text("id").primaryKey(),
   chatId: text("chat_id").notNull(),
   /** FK to messages.id — cascade handled at application level */
@@ -15,6 +15,8 @@ export const gameStateSnapshots = sqliteTable("game_state_snapshots", {
   location: text("location"),
   weather: text("weather"),
   temperature: text("temperature"),
+  /** JSON array of user-defined world fields */
+  worldCustomFields: text("world_custom_fields").notNull().default("[]"),
 
   /** JSON array of PresentCharacter objects */
   presentCharacters: text("present_characters").notNull().default("[]"),
@@ -29,6 +31,8 @@ export const gameStateSnapshots = sqliteTable("game_state_snapshots", {
   manualOverrides: text("manual_overrides"),
   /** JSON object of tracker field lock keys → enabled. */
   fieldLocks: text("field_locks"),
+  /** JSON object of tracker field keys hidden from the UI. */
+  hiddenTrackerFields: text("hidden_tracker_fields"),
 
   /** Whether this snapshot has been "committed" (user sent a follow-up message). */
   committed: integer("committed").notNull().default(0),

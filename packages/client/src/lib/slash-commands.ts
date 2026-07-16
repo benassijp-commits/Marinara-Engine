@@ -4,17 +4,15 @@
 import { api } from "./api-client";
 import { useChatStore } from "../stores/chat.store";
 import { useUIStore } from "../stores/ui.store";
-import { useUnoGameStore } from "../stores/uno-game.store";
-import { useChessGameStore } from "../stores/chess-game.store";
+import { useConversationGamesStore } from "../stores/conversation-games.store";
 import { useGalleryStore } from "../stores/gallery.store";
 import { toast } from "sonner";
+import { startSceneWithPromptPreferences } from "./scene-generation";
 import {
   SUPPORTED_MACROS,
   buildGuidedGenerationInstructionMessage,
   buildNarratorInstructionMessage,
   normalizeTextForMatch,
-  type SceneCreateResponse,
-  type ScenePlanResponse,
 } from "@marinara-engine/shared";
 
 export interface SlashCommand {
@@ -22,6 +20,10 @@ export interface SlashCommand {
   aliases?: string[];
   description: string;
   usage: string;
+  /** Capability package that must be active before this command is advertised or executed. */
+  requiredCapabilityId?: string;
+  /** Chat surfaces where this command is relevant. */
+  modes?: Array<"conversation" | "roleplay">;
   /** If true, command is executed locally and doesn't send to the LLM */
   local?: boolean;
   /** Execute the command. Returns a string result, or null if it dispatches an action elsewhere. */
@@ -74,6 +76,23 @@ export interface SlashCommandContext {
   setSpriteExpression?: (characterId: string, expression: string) => void | Promise<void>;
   /** Trigger the same image illustration action exposed in the chat Gallery. */
   illustrate?: () => void | Promise<void>;
+  /** Trigger the same Conversation selfie action exposed in the chat Gallery. */
+  selfie?: (characterId?: string) => void | Promise<void>;
+  /** Active downloadable capability packages available to this composer. */
+  availableCapabilityIds?: ReadonlySet<string>;
+}
+
+export interface SlashCommandAvailability {
+  mode?: "conversation" | "roleplay";
+  availableCapabilityIds?: ReadonlySet<string>;
+}
+
+function isSlashCommandAvailable(command: SlashCommand, availability: SlashCommandAvailability = {}): boolean {
+  if (command.requiredCapabilityId && availability.availableCapabilityIds) {
+    if (!availability.availableCapabilityIds.has(command.requiredCapabilityId)) return false;
+  }
+  if (command.modes && availability.mode && !command.modes.includes(availability.mode)) return false;
+  return true;
 }
 
 function quoteCommandArgument(value: string): string {
@@ -250,10 +269,13 @@ function withSlashCommandTimeout<T>(promise: Promise<T>, timeoutMs: number, mess
   });
 }
 
-function buildSlashHelpText(): string {
-  return ["Available Commands:", "", ...COMMANDS.map((command) => `${command.usage} - ${command.description}`)].join(
-    "\n",
-  );
+function buildSlashHelpText(availability: SlashCommandAvailability): string {
+  const availableCommands = COMMANDS.filter((command) => isSlashCommandAvailable(command, availability));
+  return [
+    "Available Commands:",
+    "",
+    ...availableCommands.map((command) => `${command.usage} - ${command.description}`),
+  ].join("\n");
 }
 
 function parseImpersonatePromptArg(args: string): string {
@@ -530,6 +552,18 @@ function isMessageHidden(msg: { extra?: unknown }): boolean {
 
 const COMMANDS: SlashCommand[] = [
   {
+    name: "help",
+    description: "Show available slash commands",
+    usage: "/help",
+    local: true,
+    async execute(_args, ctx) {
+      return {
+        handled: true,
+        feedback: buildSlashHelpText({ mode: ctx.mode, availableCapabilityIds: ctx.availableCapabilityIds }),
+      };
+    },
+  },
+  {
     name: "roll",
     aliases: ["r", "dice"],
     description: "Roll dice (e.g. 2d6, 1d20+5)",
@@ -553,28 +587,24 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
-    name: "uno",
-    description: "Start a game of UNO with the characters in this chat",
-    usage: "/uno",
+    name: "games",
+    aliases: ["game", "play"],
+    description: "Choose a conversation game to start",
+    usage: "/games",
     local: true,
-    async execute(_args, ctx) {
+    async execute(args, ctx) {
       if (ctx.mode === "roleplay") {
-        return { handled: true, feedback: "UNO can only be played in conversation chats." };
+        return { handled: true, feedback: "Conversation games can only be played in conversation chats." };
       }
-      useUnoGameStore.getState().openSetup(ctx.chatId);
-      return { handled: true };
-    },
-  },
-  {
-    name: "chess",
-    description: "Start a one-on-one chess game with a character in this chat",
-    usage: "/chess",
-    local: true,
-    async execute(_args, ctx) {
-      if (ctx.mode === "roleplay") {
-        return { handled: true, feedback: "Chess can only be played in conversation chats." };
+
+      if (args.trim()) {
+        return {
+          handled: true,
+          feedback: "Use an installed game's own slash command, or /games to choose one.",
+        };
       }
-      useChessGameStore.getState().openSetup(ctx.chatId);
+
+      useConversationGamesStore.getState().openPicker(ctx.chatId);
       return { handled: true };
     },
   },
@@ -1074,50 +1104,17 @@ const COMMANDS: SlashCommand[] = [
         }
       }
 
-      // Step 1: Ask the LLM to plan the scene (comprehensive plan)
-      const planToastId = toast.loading("Planning scene...", { icon: "🎬" });
-      let planRes: ScenePlanResponse;
-      try {
-        planRes = await api.post<ScenePlanResponse>("/scene/plan", {
-          chatId: ctx.chatId,
-          prompt,
-          connectionId: null,
-        });
-      } catch {
-        toast.dismiss(planToastId);
-        return { handled: true, feedback: "Failed to plan scene. Check your API connection." };
-      }
-
-      if (!planRes.plan) {
-        toast.dismiss(planToastId);
-        return { handled: true, feedback: planRes.error || "Scene planning returned empty result. Try again." };
-      }
-
-      // Step 2: Create the scene chat using the full plan
-      toast.loading("Creating scene...", { id: planToastId, icon: "🎬" });
-      try {
-        const res = await api.post<SceneCreateResponse>("/scene/create", {
-          originChatId: ctx.chatId,
-          initiatorCharId: null, // user-initiated
-          plan: planRes.plan,
-          connectionId: null,
-        });
-
-        // Invalidate chats so the new scene appears + navigate to it
-        ctx.invalidate();
-        useChatStore.getState().setActiveChatId(res.chatId);
-
-        // Apply background if the plan chose one
-        if (res.background) {
-          useUIStore.getState().setChatBackground(`/api/backgrounds/file/${encodeURIComponent(res.background)}`);
-        }
-
-        toast.success(`Scene created: ${res.chatName}`, { id: planToastId, icon: "🎬" });
-        return { handled: true };
-      } catch {
-        toast.dismiss(planToastId);
-        return { handled: true, feedback: "Failed to create scene chat." };
-      }
+      await startSceneWithPromptPreferences({
+        chatId: ctx.chatId,
+        prompt,
+        initiatorCharId: null,
+        connectionId: null,
+        onCreated: () => {
+          // Invalidate chats so the new scene appears in the sidebar.
+          ctx.invalidate();
+        },
+      });
+      return { handled: true };
     },
   },
   {
@@ -1141,6 +1138,8 @@ const COMMANDS: SlashCommand[] = [
     aliases: ["ill"],
     description: "Generate a gallery illustration for the current chat",
     usage: "/illustrate",
+    requiredCapabilityId: "illustrator",
+    modes: ["roleplay"],
     local: true,
     async execute(_args, ctx) {
       if (!ctx.illustrate) {
@@ -1166,12 +1165,45 @@ const COMMANDS: SlashCommand[] = [
     },
   },
   {
-    name: "help",
-    description: "Show available slash commands",
-    usage: "/help",
+    name: "selfie",
+    description: "Generate a Conversation selfie",
+    usage: "/selfie [character]",
+    requiredCapabilityId: "illustrator",
+    modes: ["conversation"],
     local: true,
-    async execute(_args, _ctx) {
-      return { handled: true, feedback: buildSlashHelpText() };
+    async execute(args, ctx) {
+      if (!ctx.selfie) {
+        return { handled: true, feedback: "Selfie generation is not available in this chat." };
+      }
+      if (useGalleryStore.getState().selfieGeneratingChatIds.has(ctx.chatId)) {
+        return { handled: true, feedback: "Selfie generation is already running for this chat." };
+      }
+
+      const requestedCharacter = args.trim();
+      const target = requestedCharacter ? findSceneCharacter(ctx.characters ?? [], requestedCharacter) : null;
+      if (requestedCharacter && !target) {
+        const available = formatAvailableCharacterList(ctx.characters ?? []);
+        return {
+          handled: true,
+          feedback: available
+            ? `Character not found: ${requestedCharacter}\nAvailable: ${available}`
+            : "Add a character to this conversation before generating a selfie.",
+        };
+      }
+
+      useGalleryStore.getState().setChatGeneratingSelfie(ctx.chatId, true);
+      try {
+        await withSlashCommandTimeout(
+          Promise.resolve(ctx.selfie(target?.id)),
+          ILLUSTRATE_SLASH_TIMEOUT_MS,
+          "Selfie generation timed out.",
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Selfie generation failed.");
+      } finally {
+        useGalleryStore.getState().setChatGeneratingSelfie(ctx.chatId, false);
+      }
+      return { handled: true };
     },
   },
   {
@@ -1269,28 +1301,39 @@ const COMMANDS: SlashCommand[] = [
 ];
 
 /** Find a matching command for the given input. */
-export function matchSlashCommand(input: string): { command: SlashCommand; args: string } | null {
+export function matchSlashCommand(
+  input: string,
+  availability: SlashCommandAvailability = {},
+): { command: SlashCommand; args: string } | null {
   if (!input.startsWith("/")) return null;
   const spaceIdx = input.indexOf(" ");
   const cmdName = (spaceIdx === -1 ? input.slice(1) : input.slice(1, spaceIdx)).toLowerCase();
   const args = spaceIdx === -1 ? "" : input.slice(spaceIdx + 1);
 
   for (const cmd of COMMANDS) {
-    if (cmd.name === cmdName || cmd.aliases?.includes(cmdName)) {
+    if ((cmd.name === cmdName || cmd.aliases?.includes(cmdName)) && isSlashCommandAvailable(cmd, availability)) {
       return { command: cmd, args };
     }
   }
   return null;
 }
 
+/** Keep Quick Replies' Post Only action from saving a real slash command as plain chat text. */
+export function shouldExecuteQuickPostAsCommand(input: string, availability: SlashCommandAvailability = {}): boolean {
+  return matchSlashCommand(input.trim(), availability) !== null;
+}
+
 /** Get all commands that match a partial prefix (for autocomplete). */
-export function getSlashCompletions(partial: string): SlashCommand[] {
+export function getSlashCompletions(partial: string, availability: SlashCommandAvailability = {}): SlashCommand[] {
   if (!partial.startsWith("/")) return [];
   const rawPrefix = partial.slice(1);
   if (rawPrefix.includes(" ")) return [];
   const prefix = rawPrefix.trim().toLowerCase();
-  if (!prefix) return COMMANDS;
-  return COMMANDS.filter((c) => c.name.startsWith(prefix) || c.aliases?.some((a) => a.startsWith(prefix)));
+  const availableCommands = COMMANDS.filter((command) => isSlashCommandAvailable(command, availability));
+  if (!prefix) return availableCommands;
+  return availableCommands.filter(
+    (command) => command.name.startsWith(prefix) || command.aliases?.some((alias) => alias.startsWith(prefix)),
+  );
 }
 
 export { COMMANDS as SLASH_COMMANDS };

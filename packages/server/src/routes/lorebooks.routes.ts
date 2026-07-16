@@ -11,6 +11,7 @@ import {
   updateLorebookSchema,
   createLorebookEntrySchema,
   updateLorebookEntrySchema,
+  bulkUpdateLorebookEntriesSchema,
   createLorebookFolderSchema,
   updateLorebookFolderSchema,
   LOCAL_SIDECAR_CONNECTION_ID,
@@ -30,6 +31,7 @@ import { createGameStateStorage } from "../services/storage/game-state.storage.j
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { filterRelevantLorebooks, processLorebooks } from "../services/lorebook/index.js";
 import { buildLorebookSemanticEmbeddingsById } from "../services/lorebook/embeddings.js";
+import { resolveOwnerSpatialProjection } from "../services/spatial-context/projection.js";
 import { resolveLorebookScopeExclusions } from "../services/lorebook/game-lorebook-scope.js";
 import {
   buildPromptMacroContext,
@@ -147,6 +149,7 @@ type CachedLorebookScanEntry = {
   id: string;
   content: string;
   matchedKeys: string[];
+  activationSources: string[];
   matchType?: "keyword" | "semantic" | "constant" | "sticky";
   semanticScore?: number;
 };
@@ -190,6 +193,9 @@ function normalizeCachedLorebookScan(raw: unknown): CachedLorebookScan | null {
             content: typeof candidate.content === "string" ? candidate.content : "",
             matchedKeys: Array.isArray(candidate.matchedKeys)
               ? candidate.matchedKeys.filter((key): key is string => typeof key === "string")
+              : [],
+            activationSources: Array.isArray(candidate.activationSources)
+              ? candidate.activationSources.filter((source): source is string => typeof source === "string")
               : [],
             ...(candidate.matchType === "keyword" ||
             candidate.matchType === "semantic" ||
@@ -604,6 +610,20 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     }
   });
 
+  app.patch<{ Params: { id: string } }>("/:id/entries/bulk", async (req, reply) => {
+    const input = bulkUpdateLorebookEntriesSchema.parse(req.body);
+    try {
+      const result = await storage.bulkUpdateEntries(req.params.id, input.entryIds, input.changes);
+      await syncCharacterBookFromLorebook(app.db, req.params.id);
+      return result;
+    } catch (err) {
+      if (err instanceof Error && err.message === "One or more selected entries do not belong to this lorebook") {
+        return reply.status(400).send({ error: err.message });
+      }
+      throw err;
+    }
+  });
+
   app.patch<{ Params: { id: string; entryId: string } }>("/:id/entries/:entryId", async (req, reply) => {
     const input = updateLorebookEntrySchema.parse(req.body);
     try {
@@ -871,6 +891,10 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       }
     }
 
+    const lorebookNameById = new Map(
+      ((await storage.list()) as unknown as Array<{ id: string; name: string }>).map((book) => [book.id, book.name]),
+    );
+
     const latestGeneratedMessage = (() => {
       for (let index = chatMessages.length - 1; index >= 0; index--) {
         const message = chatMessages[index]!;
@@ -894,6 +918,9 @@ export async function lorebooksRoutes(app: FastifyInstance) {
         const matchedKeysById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchedKeys]));
         const matchTypeById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.matchType]));
         const semanticScoreById = new Map(cachedScan.activatedEntries.map((entry) => [entry.id, entry.semanticScore]));
+        const activationSourcesById = new Map(
+          cachedScan.activatedEntries.map((entry) => [entry.id, entry.activationSources]),
+        );
         const activeEntries =
           cachedScan.activatedEntries.length > 0
             ? await Promise.all(cachedScan.activatedEntries.map((entry) => storage.getEntry(entry.id))).then(
@@ -912,10 +939,12 @@ export async function lorebooksRoutes(app: FastifyInstance) {
             lorebookId: (e as Record<string, unknown>).lorebookId,
             order: (e as Record<string, unknown>).order,
             constant: (e as Record<string, unknown>).constant,
+            lorebookName: lorebookNameById.get(String((e as Record<string, unknown>).lorebookId)) ?? "Unknown lorebook",
             selective: (e as Record<string, unknown>).selective === true,
             matchedKeys: matchedKeysById.get(String((e as Record<string, unknown>).id)) ?? [],
             matchType: matchTypeById.get(String((e as Record<string, unknown>).id)),
             semanticScore: semanticScoreById.get(String((e as Record<string, unknown>).id)),
+            activationSources: activationSourcesById.get(String((e as Record<string, unknown>).id)) ?? [],
           })),
           totalTokens: cachedScan.totalTokensEstimate,
           totalEntries: cachedScan.totalEntries,
@@ -1027,6 +1056,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     };
     let chatEmbedding: number[] | null = null;
     let semanticEmbeddingsByLorebookId: Map<string, number[] | null> | undefined;
+    let semanticSimilarityBaseline = 0;
     try {
       const activeEntries = (await storage.listActiveEntries(lorebookScopeFilters)) as unknown as LorebookEntry[];
       if (activeEntries.some((entry) => Array.isArray(entry.embedding) && entry.embedding.length > 0)) {
@@ -1044,10 +1074,13 @@ export async function lorebooksRoutes(app: FastifyInstance) {
         });
         chatEmbedding = semanticEmbeddings.defaultEmbedding;
         semanticEmbeddingsByLorebookId = semanticEmbeddings.embeddingsByLorebookId;
+        semanticSimilarityBaseline = semanticEmbeddings.similarityBaseline;
       }
     } catch (err) {
       logger.debug(err, "[lorebooks] Semantic scan preview failed; falling back to keyword-only preview");
     }
+
+    const ownerSpatialProjection = await resolveOwnerSpatialProjection(app.db, chatId);
 
     const result = await processLorebooks(app.db, scanMessages, gameStateForScan, {
       chatId,
@@ -1058,6 +1091,9 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
       chatEmbedding,
       semanticEmbeddingsByLorebookId,
+      semanticSimilarityBaseline,
+      forcedEntryIds:
+        chat?.mode === "conversation" ? [] : (ownerSpatialProjection?.lorebookEntryIds ?? []),
       tokenBudget: typeof chatMeta.lorebookTokenBudget === "number" ? chatMeta.lorebookTokenBudget : undefined,
       entryStateOverrides,
       entryTimingStates,
@@ -1073,6 +1109,9 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     const semanticScoreById = new Map(result.activatedEntries.map((entry) => [entry.id, entry.semanticScore]));
 
     // Fetch full entry data for the activated IDs
+    const activationSourcesById = new Map(
+      result.activatedEntries.map((entry) => [entry.id, entry.activationSources]),
+    );
     const activeEntries =
       result.activatedEntryIds.length > 0
         ? await Promise.all(result.activatedEntryIds.map((id) => storage.getEntry(id))).then((entries) =>
@@ -1092,8 +1131,10 @@ export async function lorebooksRoutes(app: FastifyInstance) {
         constant: (e as Record<string, unknown>).constant,
         selective: (e as Record<string, unknown>).selective === true,
         matchedKeys: matchedKeysById.get(String((e as Record<string, unknown>).id)) ?? [],
+        lorebookName: lorebookNameById.get(String((e as Record<string, unknown>).lorebookId)) ?? "Unknown lorebook",
         matchType: matchTypeById.get(String((e as Record<string, unknown>).id)),
         semanticScore: semanticScoreById.get(String((e as Record<string, unknown>).id)),
+        activationSources: activationSourcesById.get(String((e as Record<string, unknown>).id)) ?? [],
       })),
       totalTokens: result.totalTokensEstimate,
       totalEntries: result.totalEntries,

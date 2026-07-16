@@ -19,6 +19,8 @@ import { createPromptOverridesStorage } from "../services/storage/prompt-overrid
 import { buildBackgroundProviderPrompt, generateChatBackground } from "../services/game/game-asset-generation.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
+import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
+import { resolveGameSetupArtStylePrompt } from "@marinara-engine/shared";
 
 const BG_DIR = join(DATA_DIR, "backgrounds");
 const META_PATH = join(BG_DIR, "meta.json");
@@ -291,6 +293,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
             .catch(() => null)
         : null;
     const imageSettings = await loadImageGenerationUserSettings(app.db);
+    const imageFallback = await resolveImageConnectionFallback(connections, imgConn.id);
     const styleProfileId =
       readTrimmedString(setupConfig.imageStyleProfileId) ?? readTrimmedString(metadata.imageStyleProfileId);
     const locationSlug = input.locationSlug?.trim() || input.reason?.trim() || chat.name || "current-scene";
@@ -302,6 +305,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
         metadata,
         mode,
         imageSettings,
+        imageFallback,
         imgConn,
         gameState,
         setupConfig,
@@ -329,7 +333,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       currentWeather: context.gameState?.weather ?? null,
       currentTimeOfDay: context.gameState?.time ?? null,
       worldOverview: readTrimmedString(context.metadata.gameWorldOverview),
-      artStyle: readTrimmedString(context.setupConfig.artStylePrompt) ?? undefined,
+      artStyle: resolveGameSetupArtStylePrompt(context.setupConfig) || undefined,
       imgModel: context.imgConn.model || "",
       imgBaseUrl: context.imgConn.baseUrl || "https://image.pollinations.ai",
       imgApiKey: context.imgConn.apiKey || "",
@@ -338,6 +342,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       imgEndpointId: context.imgConn.imageEndpointId || undefined,
       imgComfyWorkflow: context.imgConn.comfyuiWorkflow || undefined,
       imgDefaults: resolveConnectionImageDefaults(context.imgConn),
+      imgFallback: context.imageFallback,
       styleProfiles: context.imageSettings.styleProfiles,
       styleProfileId: context.styleProfileId,
       promptOverridesStorage: createPromptOverridesStorage(app.db),
@@ -377,7 +382,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       currentWeather: context.gameState?.weather ?? null,
       currentTimeOfDay: context.gameState?.time ?? null,
       worldOverview: readTrimmedString(context.metadata.gameWorldOverview),
-      artStyle: readTrimmedString(context.setupConfig.artStylePrompt) ?? undefined,
+      artStyle: resolveGameSetupArtStylePrompt(context.setupConfig) || undefined,
       reason: input.reason?.trim() || "Manual Gallery background request",
       sourceMode: context.mode === "game" ? "game" : context.mode === "visual_novel" ? "visual_novel" : "roleplay",
       imgModel: context.imgConn.model || "",
@@ -388,6 +393,7 @@ export async function backgroundsRoutes(app: FastifyInstance) {
       imgEndpointId: context.imgConn.imageEndpointId || undefined,
       imgComfyWorkflow: context.imgConn.comfyuiWorkflow || undefined,
       imgDefaults: resolveConnectionImageDefaults(context.imgConn),
+      imgFallback: context.imageFallback,
       styleProfiles: context.imageSettings.styleProfiles,
       styleProfileId: context.styleProfileId,
       debugLog: context.debugLog,

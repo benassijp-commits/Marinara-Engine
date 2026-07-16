@@ -36,6 +36,7 @@ export type WeekScheduleDraftMode = "rewrite" | "adjust" | "vary" | "repair";
 
 export type WeekScheduleDraftOptions = {
   draftMode?: WeekScheduleDraftMode;
+  timeZone?: string;
 };
 
 const STATUS_KEYWORDS: Record<string, ConversationPresenceStatus> = {
@@ -147,6 +148,7 @@ export async function generateCharacterSchedule(
     `Character: ${characterName}`,
     `Description: ${characterDescription}`,
     `Personality: ${characterPersonality}`,
+    ...(options.timeZone ? [`Schedule timezone: ${options.timeZone}`] : []),
     ``,
     ...getWeekDraftModeInstructions(draftMode),
     ``,
@@ -240,6 +242,7 @@ export async function generateCharacterDaySchedule(
   currentSchedule: WeekSchedule,
   userSchedulePreferences?: string,
   daySchedulePreferences?: string,
+  timeZone?: string,
 ): Promise<{ blocks: DaySchedule; raw: string }> {
   const globalGuidance = userSchedulePreferences?.trim() ?? "";
   const dayGuidance = daySchedulePreferences?.trim() ?? "";
@@ -249,6 +252,7 @@ export async function generateCharacterDaySchedule(
     `Character: ${characterName}`,
     `Description: ${characterDescription}`,
     `Personality: ${characterPersonality}`,
+    ...(timeZone ? [`Schedule timezone: ${timeZone}`] : []),
     ``,
     `Requested day to replace: ${day}`,
     ...(globalGuidance ? [``, `Global routine guidance:`, globalGuidance] : []),
@@ -502,8 +506,8 @@ export function getBusyDelay(
 }
 
 /**
- * Shorter delay for direct user messages (user is actively waiting).
- * Returns 0 for online, shorter delays for idle/dnd than autonomous delays.
+ * Delegates to getConfiguredResponseDelay; currently identical to getBusyDelay
+ * (no direct-message-specific shortening).
  */
 export function getDirectMessageDelay(
   status: ConversationPresenceStatus,

@@ -1,11 +1,21 @@
 // ──────────────────────────────────────────────
 // App: Root component with layout
 // ──────────────────────────────────────────────
-import { Component, lazy, Suspense, useEffect, useMemo, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  type CSSProperties,
+  type ErrorInfo,
+  type ReactNode,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { APP_VERSION } from "@marinara-engine/shared";
 import { CustomThemeInjector } from "./components/layout/CustomThemeInjector";
 import { ModelDownloadModal } from "./components/modals/ModelDownloadModal";
+import { WhatsNewModal } from "./components/modals/WhatsNewModal";
 import { AppDialogRenderer } from "./components/ui/AppDialogRenderer";
 import { ChibiProfessorMariEasterEgg } from "./components/ui/ChibiProfessorMariEasterEgg";
 import { CsrfOriginWarningBanner } from "./components/diagnostics/CsrfOriginWarningBanner";
@@ -17,6 +27,7 @@ import {
   useUIStore,
 } from "./stores/ui.store";
 import { useSidecarStore } from "./stores/sidecar.store";
+import { useDialogStore } from "./stores/dialog.store";
 import { api } from "./lib/api-client";
 import { forceRefreshSpa } from "./lib/browser-runtime";
 import {
@@ -91,6 +102,28 @@ function formatRecoveryError(error: unknown) {
   }
 }
 
+function getRecoveryChromeStyle(): CSSProperties {
+  const { appAccentColor, chatChromeTextColor, theme } = useUIStore.getState();
+  const defaultAccent = getDefaultAppAccentColor(theme);
+  const accentSource = appAccentColor.trim() || defaultAccent;
+  const accent = getCssColorFallback(accentSource, defaultAccent);
+  const accentGradient = isCssGradient(accentSource) ? accentSource : getSolidAccentGradient(accent);
+  const textColor = chatChromeTextColor.trim();
+  const chromeText = textColor
+    ? getCssColorFallback(textColor, getDefaultChatChromeTextColor(theme))
+    : getDefaultChatChromeTextColor(theme);
+
+  return {
+    "--primary": accent,
+    "--ring": accent,
+    "--marinara-app-accent-solid": accent,
+    "--marinara-app-accent-gradient": accentGradient,
+    "--marinara-chat-chrome-accent": accent,
+    "--marinara-chat-chrome-accent-gradient": accentGradient,
+    "--marinara-chat-chrome-text": chromeText,
+  } as CSSProperties;
+}
+
 export class AppRecoveryBoundary extends Component<{ children: ReactNode }, { error: unknown; hasError: boolean }> {
   state: { error: unknown; hasError: boolean } = { error: null, hasError: false };
 
@@ -117,9 +150,13 @@ export class AppRecoveryBoundary extends Component<{ children: ReactNode }, { er
   render() {
     if (!this.state.hasError) return this.props.children;
     const errorMessage = formatRecoveryError(this.state.error);
+    const recoveryChromeStyle = getRecoveryChromeStyle();
 
     return (
-      <div className="mari-chrome-token-scope flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--marinara-chat-chrome-panel-text)]">
+      <div
+        className="mari-chrome-token-scope flex min-h-screen items-center justify-center bg-[var(--background)] px-4 text-[var(--marinara-chat-chrome-panel-text)]"
+        style={recoveryChromeStyle}
+      >
         <div className="w-full max-w-lg rounded-xl border border-[var(--marinara-chat-chrome-accent)] bg-[var(--marinara-chat-chrome-panel-bg)] p-5 shadow-2xl ring-1 ring-[var(--marinara-chat-chrome-focus-ring)]">
           <h1 className="text-lg font-semibold text-[var(--marinara-chat-chrome-panel-title)]">
             Marinara hit a recoverable UI error.
@@ -128,7 +165,7 @@ export class AppRecoveryBoundary extends Component<{ children: ReactNode }, { er
             The app shell crashed while rendering. Reload first; reset local UI state only if the same screen keeps
             returning after restart.
           </p>
-          <pre className="mt-3 max-h-32 overflow-auto rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] p-2 text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
+          <pre className="mt-3 max-h-32 overflow-auto rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] p-2 text-xs text-[var(--marinara-chat-chrome-accent)]">
             {errorMessage}
           </pre>
           <div className="mt-4 flex flex-wrap gap-2">
@@ -265,7 +302,7 @@ function resolveCursorColor(color: string, fallback: string) {
 }
 
 function getAccentCursorColors(accent: string, theme: "dark" | "light") {
-  const fill = resolveCursorColor(accent, theme === "light" ? "#e0709a" : "#d4acfb");
+  const fill = resolveCursorColor(accent, getDefaultAppAccentColor(theme));
   const stroke = theme === "light" ? "#1a1025" : "#050312";
 
   return { fill, stroke };
@@ -439,6 +476,7 @@ export function App() {
   const showDownloadModal = useSidecarStore((s) => s.showDownloadModal);
   const setShowDownloadModal = useSidecarStore((s) => s.setShowDownloadModal);
   const fetchSidecarStatus = useSidecarStore((s) => s.fetchStatus);
+  const hasAppDialogOpen = useDialogStore((s) => s.dialog !== null);
 
   // [#3104 diagnostic] warn on long main-thread tasks (see lib/perf-diagnostics.ts)
   useEffect(() => {
@@ -561,6 +599,13 @@ export function App() {
       ? getCssGradientColorStops(animatedAccentSource, animatedSolidAccent)
       : [animatedSolidAccent];
     const accentAnimationEnabled = appAccentRgbMode || appAccentPulseMode || themeAccentPulseConfig.enabled;
+    const usesTimerDrivenAccentAnimation = accentAnimationEnabled;
+
+    root.style.setProperty("--marinara-app-accent-static", solidAccent);
+    root.style.setProperty(
+      "--marinara-app-accent-static-gradient",
+      accentIsGradient ? accentSource : getSolidAccentGradient(solidAccent),
+    );
 
     let accentAnimationTimer: ReturnType<typeof window.setTimeout> | null = null;
     let cursorRecolorFreezeTimer: ReturnType<typeof window.setTimeout> | null = null;
@@ -647,14 +692,27 @@ export function App() {
           ? getGradientRgbAccent(animatedGradientStops)
           : getSolidRgbAccent(animatedSolidAccent);
 
-      applyAppAccentVariables({
-        root,
-        accent: liveAccent,
-        gradient: getSolidAccentGradient(liveAccent),
-        surfaceAccent: accentIsGradient ? solidAccent : liveAccent,
-        theme,
-        updateCursor: false,
-      });
+      const liveGradient = getSolidAccentGradient(liveAccent);
+      if (appAccentRgbMode) {
+        applyAppAccentVariables({
+          root,
+          accent: liveAccent,
+          gradient: liveGradient,
+          surfaceAccent: accentIsGradient ? solidAccent : liveAccent,
+          theme,
+          updateCursor: false,
+        });
+      } else {
+        // Pulse only the foreground-facing accent tokens. Recomputing surface,
+        // sidebar, and glow tokens on every tick forces Firefox to restyle most
+        // of the app and can briefly starve an otherwise independent canvas.
+        root.style.setProperty("--primary", liveAccent);
+        root.style.setProperty("--ring", liveAccent);
+        root.style.setProperty("--marinara-app-accent-solid", liveAccent);
+        root.style.setProperty("--marinara-app-accent-gradient", liveGradient);
+        root.style.setProperty("--marinara-chat-chrome-accent", liveAccent);
+        root.style.setProperty("--marinara-chat-chrome-accent-gradient", liveGradient);
+      }
       applyCursorAccent(liveAccent, { slow: true });
       setAccentModeDataset();
     };
@@ -686,8 +744,10 @@ export function App() {
     const startAccentAnimation = () => {
       root.dataset.marinaraAccentAnimation =
         animatedAccentIsGradient && animatedGradientStops.length > 1 ? "gradient" : "solid";
-      applyLiveAccent();
-      queueAccentAnimationTick();
+      if (usesTimerDrivenAccentAnimation) {
+        applyLiveAccent();
+        queueAccentAnimationTick();
+      }
     };
 
     const syncAccentAnimationState = () => {
@@ -893,6 +953,7 @@ export function App() {
       <Suspense fallback={null}>
         <LazyAppShell />
       </Suspense>
+      <WhatsNewModal presentationAllowed={!hasModalOpen && !hasAppDialogOpen && (isLite || !showDownloadModal)} />
       {!isLite && <ModelDownloadModal open={showDownloadModal} onClose={() => setShowDownloadModal(false)} />}
       {hasModalOpen && (
         <Suspense fallback={null}>
@@ -915,6 +976,7 @@ export function App() {
       >
         <Toaster
           position="top-center"
+          swipeDirections={["left", "right", "top"]}
           offset="4rem"
           theme={theme}
           closeButton

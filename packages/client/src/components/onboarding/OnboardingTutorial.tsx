@@ -32,6 +32,8 @@ interface TourStep {
   chatMode?: ChatModeShortcut;
   /** Open the chat sidebar without changing its mode */
   openSidebar?: boolean;
+  /** Open the Noodle social timeline while this step is active */
+  openNoodle?: boolean;
   /** Optional settings tab to show when the Settings panel is open */
   settingsTab?: string;
   /** Professor Mari sprite to display */
@@ -47,8 +49,8 @@ const STEPS: TourStep[] = [
   },
   {
     target: "panel-bot-browser",
-    title: "Browser",
-    body: "The Browser allows you to browse and import downloadable character cards and resources. Start here when you want new characters or ready-made material to bring into your library.",
+    title: "Card Browser",
+    body: "The Card Browser lets you find and import downloadable character cards. Start here when you want new characters to add to your library.",
     side: "bottom",
     openPanel: "bot-browser",
     sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
@@ -88,7 +90,7 @@ const STEPS: TourStep[] = [
   {
     target: "panel-agents",
     title: "Agents",
-    body: "Agents work alongside the main model to provide additional functionality on top of chats. They can track state, retrieve knowledge, process messages, trigger images, guide story events, and more depending on what you enable.",
+    body: "Agents add optional features without making the base app heavy. Open Download Agents here to browse and install image and video generation, trackers, writers, maps, audio and video calls, and various chat games, then enable the ones you want for each chat. You can update or uninstall them from the same catalog.",
     side: "bottom",
     openPanel: "agents",
     sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
@@ -137,10 +139,18 @@ const STEPS: TourStep[] = [
   {
     target: "chat-mode-game",
     title: "Game Mode",
-    body: "Game mode turns the chat into a visual novel RPG-style adventure with an AI Game Master. Sit back and enjoy the game, having party members, goals, maps, dice rolls, session history, journals, combat, and custom HUD widgets.",
+    body: "Game mode turns the chat into a cinematic RPG-style adventure with an AI Game Master. Sit back and enjoy the game, having party members, goals, maps, dice rolls, session history, journals, combat, and custom HUD widgets.",
     side: "right",
     chatMode: "game",
     sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+  },
+  {
+    target: "noodle-tab",
+    title: "Noodle",
+    body: "Noodle is a fake social media website where you can see invited characters of your choice interacting with each other, posting about their lives, sharing photos, and discussing your latest chats! You can participate too: like and follow them, and share your hot noodles with them. The timeline can update automatically if you choose. To set it up, head to Settings inside the Noodle tab first.",
+    side: "bottom",
+    openNoodle: true,
+    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
   },
   {
     target: "panel-settings",
@@ -154,7 +164,7 @@ const STEPS: TourStep[] = [
   {
     target: "panel-connections",
     title: "You're All Set!",
-    body: "I'm available from the Home page whenever you need help. For your first real step, set up a Connection. After that, try creating a new chat. Don't worry, I will be there to guide you. Thank you for trying Marinara Engine. Have fun, and please report bugs or rough edges through our Discord or GitHub so we can keep improving it.",
+    body: "I'm available from the Home page whenever you need help, and my starter chips can guide you through common first steps without making you type everything. For your first real step, set up a Connection. After that, try creating a new chat. Don't worry, I will be there to guide you. Thank you for trying Marinara Engine. Have fun, and please report bugs or rough edges through our Discord or GitHub so we can keep improving it.",
     side: "bottom",
     openPanel: "connections",
     sprite: { src: "/sprites/mari/Mari_greet.png" },
@@ -216,32 +226,11 @@ function isPanelTourTarget(target: string | null): boolean {
 }
 
 function isTopbarTourTarget(target: string | null): boolean {
-  return target === "sidebar-toggle" || isPanelTourTarget(target);
+  return target === "sidebar-toggle" || target === "noodle-tab" || isPanelTourTarget(target);
 }
 
 function isChatModeTourTarget(target: string | null): boolean {
   return target?.startsWith("chat-mode-") ?? false;
-}
-
-function _buildClipPath(rect: Rect): string {
-  const t = Math.max(0, rect.top - PAD);
-  const l = Math.max(0, rect.left - PAD);
-  const b = rect.top + rect.height + PAD;
-  const r = rect.left + rect.width + PAD;
-  const rad = 12; // border-radius in px for the cutout
-  // Use inset with round for a nice cutout
-  return `polygon(
-    0% 0%, 100% 0%, 100% 100%, 0% 100%, 0% 0%,
-    ${l}px ${t + rad}px,
-    ${l + rad}px ${t}px,
-    ${r - rad}px ${t}px,
-    ${r}px ${t + rad}px,
-    ${r}px ${b - rad}px,
-    ${r - rad}px ${b}px,
-    ${l + rad}px ${b}px,
-    ${l}px ${b - rad}px,
-    ${l}px ${t + rad}px
-  )`;
 }
 
 // ─── Tooltip position ─────────────────────────
@@ -462,16 +451,10 @@ function TourCardContent({
 
       {/* Buttons */}
       <div className="flex items-center justify-between">
-        <button
-          onClick={onSkip}
-          className={TUTORIAL_SECONDARY_BUTTON_CLASS}
-        >
+        <button onClick={onSkip} className={TUTORIAL_SECONDARY_BUTTON_CLASS}>
           {step === 0 ? "Skip Tutorial" : "Skip"}
         </button>
-        <button
-          onClick={onNext}
-          className={TUTORIAL_PRIMARY_BUTTON_CLASS}
-        >
+        <button onClick={onNext} className={TUTORIAL_PRIMARY_BUTTON_CLASS}>
           {isLast ? "Get Started" : "Next"}
           {!isLast && <ChevronRight size="0.75rem" />}
         </button>
@@ -495,6 +478,8 @@ function OnboardingTutorialInner() {
   const setSettingsTab = useUIStore((s) => s.setSettingsTab);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
   const requestChatModeShortcut = useUIStore((s) => s.requestChatModeShortcut);
+  const openNoodle = useUIStore((s) => s.openNoodle);
+  const closeNoodle = useUIStore((s) => s.closeNoodle);
   const trackAchievement = useTrackAchievement();
 
   const [step, setStep] = useState(0);
@@ -514,26 +499,45 @@ function OnboardingTutorialInner() {
 
   // ── Side-effects when step changes ──
   useEffect(() => {
+    if (currentStep.openNoodle) {
+      closeRightPanel();
+      setSidebarOpen(false);
+      openNoodle();
+      return;
+    }
+
     if (currentStep.chatMode) {
+      closeNoodle();
       closeRightPanel();
       requestChatModeShortcut(currentStep.chatMode);
       return;
     }
 
     if (currentStep.openSidebar) {
+      closeNoodle();
       closeRightPanel();
       setSidebarOpen(true);
       return;
     }
 
     if (currentStep.openPanel) {
+      closeNoodle();
       setSidebarOpen(false);
       openRightPanel(currentStep.openPanel);
       if (currentStep.settingsTab) {
         setSettingsTab(currentStep.settingsTab);
       }
     }
-  }, [closeRightPanel, currentStep, openRightPanel, requestChatModeShortcut, setSettingsTab, setSidebarOpen]);
+  }, [
+    closeNoodle,
+    closeRightPanel,
+    currentStep,
+    openNoodle,
+    openRightPanel,
+    requestChatModeShortcut,
+    setSettingsTab,
+    setSidebarOpen,
+  ]);
 
   // Track the target element position (handles resize/scroll)
   const lastRectRef = useRef<Rect | null>(null);
