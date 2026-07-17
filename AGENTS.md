@@ -77,16 +77,16 @@ Android-specific rule:
 
 ## Local Character Tracker Patches
 
-This checkout carries two independent local Character Tracker fixes: the model-aware NoobAI avatar prompt fix and the tracker avatar removal control. Keep each fix as an isolated commit. Before every Engine update:
+This checkout carries three local Character Tracker behaviors: the model-aware NoobAI avatar prompt fix, contextual avatar staging, and the tracker avatar removal control. Keep the prompt/staging work and removal control in isolated commits. Before every Engine update:
 
-1. Check `upstream/main` and `upstream/staging` for an equivalent fix covering flattened Appearance/Outfit data, portrait compaction under the Off profile, structured identity preservation, and Image Style Profile-aware conversion.
+1. Check `upstream/main` and `upstream/staging` for an equivalent fix covering flattened Appearance/Outfit data, portrait compaction under the Off profile, structured identity preservation, Image Style Profile-aware conversion, and extraction of the current visible action, compatible pose, environment, and relevant objects from scene context.
 2. Create a dated backup branch before merging or rebasing. The original rollback branch is `backup/pre-update-v2.1.1-20260716`.
-3. Preserve both isolated commits while merging or rebasing. If upstream has an equivalent fix, compare behavior and regression coverage before dropping the corresponding local commit; never leave both prompt converters or duplicate avatar-removal actions active.
+3. Preserve the isolated commits while merging or rebasing. If upstream has an equivalent fix, compare behavior and regression coverage before dropping the corresponding local commit; never leave two prompt converters, two scene-staging passes, or duplicate avatar-removal actions active.
 4. If upstream has not fixed it, preserve or adapt the patch without restoring the old portrait prose distiller.
 5. Do not edit downloaded Character Tracker package artifacts under `DATA_DIR/capability-packages`; package updates replace them.
 6. NoobAI is expected to use the **Danbooru / Illustrious** profile. Remove an existing generated NPC avatar before manually testing regeneration.
 7. Check the local `MARINARA_AGENT_CATALOG_URL` override. Keep it only while the live catalog fails Engine schema validation; remove it once the unpinned `/api/capability-packages/catalog` returns HTTP 200 with a valid catalog.
-8. After updating, reinstall dependencies, rebuild, restart, run prompt regressions and Narrative Curator tests, check `/api/health`, and manually confirm that two visually distinct tracker characters produce distinct final ComfyUI prompts.
+8. After updating, reinstall dependencies, rebuild, restart, run prompt regressions and Narrative Curator tests, check `/api/health`, and manually confirm that two visually distinct tracker characters produce distinct final ComfyUI prompts and that a current action/environment produces non-static scene tags without contradicting the pose.
 9. Check upstream for an equivalent tracker avatar removal implementation covering the UI action, physical deletion of every supported file variant, persisted `avatarPath` cleanup, mobile/touch accessibility, and protection of global character art and sprites. Preserve or adapt the local removal commit unless upstream behavior is confirmed equivalent.
 
 The sanitized regression fixture should retain uncommon traits such as `aqua hair`, `vitiligo`, `chartreuse miniskirt`, `cropped cardigan`, and `platform loafers`, so a return of destructive tag loss is obvious.

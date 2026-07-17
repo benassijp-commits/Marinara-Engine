@@ -129,10 +129,35 @@ assert.match(formattedPersonaTimeline, /replyId=reply-b.*accountKey=persona:pers
 assert.match(NOODLE_PERSONA_IDENTITY_INSTRUCTION, /separate user identity/);
 
 const REGRESSION_AGENT_IDS = [
-  "about-me-keeper", "background", "card-evolution-auditor", "character-tracker", "combat", "continuity",
-  "conversation-calls", "custom-tracker", "cyoa", "director", "echo-chamber", "eightball", "expression", "haptic",
-  "html", "illustrator", "knowledge-retrieval", "knowledge-router", "lorebook-keeper", "persona-stats", "poker",
-  "prose-guardian", "quest", "rock-paper-scissors", "spotify", "tic-tac-toe", "uno", "world-state", "chess",
+  "about-me-keeper",
+  "background",
+  "card-evolution-auditor",
+  "character-tracker",
+  "combat",
+  "continuity",
+  "conversation-calls",
+  "custom-tracker",
+  "cyoa",
+  "director",
+  "echo-chamber",
+  "eightball",
+  "expression",
+  "haptic",
+  "html",
+  "illustrator",
+  "knowledge-retrieval",
+  "knowledge-router",
+  "lorebook-keeper",
+  "persona-stats",
+  "poker",
+  "prose-guardian",
+  "quest",
+  "rock-paper-scissors",
+  "spotify",
+  "tic-tac-toe",
+  "uno",
+  "world-state",
+  "chess",
 ] as const;
 
 // The production Engine intentionally carries no optional agent definitions.
@@ -141,31 +166,39 @@ const REGRESSION_AGENT_IDS = [
 const regressionAgentDefinitions = REGRESSION_AGENT_IDS.map((id) => ({
   id,
   name: id === "html" ? "Immersive HTML" : id === "illustrator" ? "Illustrator" : id,
-  description: id === "html"
-    ? "Post-processes the latest Roleplay response with diegetic HTML/CSS/JS visual artifacts without changing the story meaning."
-    : `Regression fixture for ${id}`,
+  description:
+    id === "html"
+      ? "Post-processes the latest Roleplay response with diegetic HTML/CSS/JS visual artifacts without changing the story meaning."
+      : `Regression fixture for ${id}`,
   phase: "post_processing" as const,
   enabledByDefault: false,
   category: "misc" as const,
   defaultTools: [],
-  defaultPromptTemplate: id === "html"
-    ? "You are Immersive HTML, a post-processing visual enhancer. Rewrite only the assistant response."
-    : id === "illustrator"
-      ? "Create an image-generation prompt for a visually important moment."
-      : `Run the ${id} agent.`,
-  ...(id === "html" ? {
-    resultType: "text_rewrite" as const,
-    defaultSettings: { resultType: "text_rewrite", contextSize: 5, maxTokens: 4096, holdForRewrite: true },
-  } : {}),
-  ...(id === "illustrator" ? {
-    defaultSettings: { defaultPromptTemplateId: "default" },
-    promptTemplates: [{
-      id: "background",
-      name: "Background",
-      description: "Background-only plate.",
-      promptTemplate: "Create a background-only prompt with no characters.",
-    }],
-  } : {}),
+  defaultPromptTemplate:
+    id === "html"
+      ? "You are Immersive HTML, a post-processing visual enhancer. Rewrite only the assistant response."
+      : id === "illustrator"
+        ? "Create an image-generation prompt for a visually important moment."
+        : `Run the ${id} agent.`,
+  ...(id === "html"
+    ? {
+        resultType: "text_rewrite" as const,
+        defaultSettings: { resultType: "text_rewrite", contextSize: 5, maxTokens: 4096, holdForRewrite: true },
+      }
+    : {}),
+  ...(id === "illustrator"
+    ? {
+        defaultSettings: { defaultPromptTemplateId: "default" },
+        promptTemplates: [
+          {
+            id: "background",
+            name: "Background",
+            description: "Background-only plate.",
+            promptTemplate: "Create a background-only prompt with no characters.",
+          },
+        ],
+      }
+    : {}),
 }));
 replaceBuiltInAgentDefinitions(regressionAgentDefinitions);
 replaceBuiltInAgentDefinitionsDist(regressionAgentDefinitions);
@@ -424,29 +457,26 @@ const cases: RegressionCase[] = [
         enableAgents: false,
         activeAgentIds: [],
       });
-      assert.deepEqual(withoutLegacyAttachment.map((command) => command.type), [
-        "uno",
-        "chess",
-        "call",
-        "selfie",
-        "note",
-      ]);
+      assert.deepEqual(
+        withoutLegacyAttachment.map((command) => command.type),
+        ["uno", "chess", "call", "selfie", "note"],
+      );
 
       const withUnoDisabled = filterEnabledConversationCommands(commands, {
         enableAgents: false,
         activeAgentIds: [],
         conversationCommandToggles: { uno: false },
       });
-      assert.deepEqual(withUnoDisabled.map((command) => command.type), ["chess", "call", "selfie", "note"]);
+      assert.deepEqual(
+        withUnoDisabled.map((command) => command.type),
+        ["chess", "call", "selfie", "note"],
+      );
     },
   },
   {
     name: "Professor Mari and the public reference cover every official downloadable agent",
     run() {
-      const publicReference = readFileSync(
-        new URL("../../docs/agents/built-in-agents.md", import.meta.url),
-        "utf8",
-      );
+      const publicReference = readFileSync(new URL("../../docs/agents/built-in-agents.md", import.meta.url), "utf8");
       const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
       const seededMariSource = readFileSync(
         new URL("../../packages/server/src/db/seed-mari.ts", import.meta.url),
@@ -562,10 +592,7 @@ const cases: RegressionCase[] = [
         "utf8",
       );
       const gamePromptRuntimeSource = readFileSync(
-        new URL(
-          "../../packages/server/src/services/generation/game-gm-prompt-runtime.ts",
-          import.meta.url,
-        ),
+        new URL("../../packages/server/src/services/generation/game-gm-prompt-runtime.ts", import.meta.url),
         "utf8",
       );
 
@@ -1330,10 +1357,7 @@ const cases: RegressionCase[] = [
       assert.notEqual(storyboardHandlerStart, -1);
       assert.notEqual(storyboardHandlerEnd, -1);
       const storyboardHandlerSource = gameSurfaceSource.slice(storyboardHandlerStart, storyboardHandlerEnd);
-      assert.match(
-        storyboardHandlerSource,
-        /latestTurnStoryboardRendering \|\| manualStoryboardReviewActive/,
-      );
+      assert.match(storyboardHandlerSource, /latestTurnStoryboardRendering \|\| manualStoryboardReviewActive/);
       assert.match(
         storyboardHandlerSource,
         /withTimeout\(\s*\(\) => previewTurnStoryboardPrompts\.mutateAsync\(payload\),\s*GAME_ASSET_PREVIEW_TIMEOUT_MS/,
@@ -1464,7 +1488,10 @@ const cases: RegressionCase[] = [
         GAME_STORYBOARD_STILL_ANIMATION_PROMPT_TEMPLATE_ID,
         GAME_STORYBOARD_ANIME_EPISODE_PROMPT_TEMPLATE_ID,
       );
-      assert.deepEqual([...illustrationIds].filter((id) => animationIds.has(id)), []);
+      assert.deepEqual(
+        [...illustrationIds].filter((id) => animationIds.has(id)),
+        [],
+      );
       assert.ok(
         GAME_STORYBOARD_ILLUSTRATION_PROMPT_TEMPLATES.every(
           (template) => !template.promptTemplate.includes("${durationSeconds}"),
@@ -1526,7 +1553,10 @@ const cases: RegressionCase[] = [
       assert.match(drawerSource, /builtInTemplates\.map\(\(template\) =>/);
       assert.match(gameRouteSource, /getGameStoryboardPromptTemplateKind\(template, selectedAnimationTemplateId\)/);
       assert.match(gameRouteSource, /const builtInTemplates = args\.generateVideos/);
-      assert.match(gameRouteSource, /storyboardImagePromptTemplateId: readTrimmedString\(meta\.gameStoryboardImagePromptTemplateId\)/);
+      assert.match(
+        gameRouteSource,
+        /storyboardImagePromptTemplateId: readTrimmedString\(meta\.gameStoryboardImagePromptTemplateId\)/,
+      );
       assert.match(drawerSource, /title="Edit Illustration Prompt Presets"/);
       assert.match(drawerSource, /title="Edit Video Prompt Presets"/);
       const backgroundViewerStart = gameSurfaceSource.indexOf("const renderStoryboardBackgroundVisual");
@@ -1809,10 +1839,7 @@ const cases: RegressionCase[] = [
         imgApiKey: "",
       });
       assert.match(directCompiled.prompt, /^Lyra standing in a moonlit forest/u);
-      assert.match(
-        directCompiled.prompt,
-        /Final visibility rule: Only depict these named visible characters: Lyra/iu,
-      );
+      assert.match(directCompiled.prompt, /Final visibility rule: Only depict these named visible characters: Lyra/iu);
       assert.match(directCompiled.prompt, /Character appearance notes:\s*Lyra's Appearance:/u);
       assert.match(directCompiled.prompt, /User image instructions: Keep the moon visible/u);
       assert.doesNotMatch(
@@ -2129,7 +2156,10 @@ const cases: RegressionCase[] = [
       for (const memory of [cutsHeadPair, cutsTailPair]) {
         const truncated = truncateRecalledMemory(memory, tokenBudget);
         assert.match(truncated, /\[recalled memory truncated]/);
-        assert.doesNotMatch(JSON.stringify(truncated), /\\u(?:d[89ab][0-9a-f]{2}(?!\\ud[c-f][0-9a-f]{2})|d[c-f][0-9a-f]{2})/i);
+        assert.doesNotMatch(
+          JSON.stringify(truncated),
+          /\\u(?:d[89ab][0-9a-f]{2}(?!\\ud[c-f][0-9a-f]{2})|d[c-f][0-9a-f]{2})/i,
+        );
       }
     },
   },
@@ -2244,11 +2274,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
   {
     name: "agent current game state hides quest progress from non-quest agents",
     run() {
-      const hiddenMoodKey = characterTrackerLockKey(
-        { characterId: "mira", name: "Mira" },
-        0,
-        "mood",
-      );
+      const hiddenMoodKey = characterTrackerLockKey({ characterId: "mira", name: "Mira" }, 0, "mood");
       const gameState = {
         date: "Day 1",
         presentCharacters: [
@@ -2472,7 +2498,8 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       const shortDescription = await buildNpcPortraitProviderPrompt({
         ...request,
         appearance: "man",
-        dynamicPromptGenerator: async () => "Centered portrait of a woman with clean lighting and a readable expression.",
+        dynamicPromptGenerator: async () =>
+          "Centered portrait of a woman with clean lighting and a readable expression.",
       });
       assert.match(shortDescription.prompt, /^Required canonical NPC visual profile: man\./);
 
@@ -2490,10 +2517,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         ...request,
         appearance: narrationAppearance,
       });
-      assert.equal(
-        narrationPrompt.prompt.toLowerCase().split(narrationDescription.toLowerCase()).length - 1,
-        1,
-      );
+      assert.equal(narrationPrompt.prompt.toLowerCase().split(narrationDescription.toLowerCase()).length - 1, 1);
       assert.doesNotMatch(narrationPrompt.prompt, /Canonical NPC profile:/);
     },
   },
@@ -2581,12 +2605,16 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         "barefoot",
         "large penis",
         "large testicles",
+        "sitting",
+        "holding briefcase",
+        "living room",
+        "coffee table",
       ].join(", ");
 
       for (const styleProfileId of ["off", "danbooru"] as const) {
         const compiled = compileImagePrompt({
           kind: "portrait",
-          prompt: "single character, solo, full body, standing, detailed face, high quality",
+          prompt: "single character, solo, full body, detailed face, high quality",
           protectedPositive: identity,
           styleProfiles,
           styleProfileId,
@@ -2599,6 +2627,11 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         assert.match(compiled.prompt, /\bbarefoot\b/);
         assert.match(compiled.prompt, /\blarge penis\b/);
         assert.match(compiled.prompt, /\blarge testicles\b/);
+        assert.match(compiled.prompt, /\bsitting\b/);
+        assert.match(compiled.prompt, /\bholding briefcase\b/);
+        assert.match(compiled.prompt, /\bliving room\b/);
+        assert.match(compiled.prompt, /\bcoffee table\b/);
+        assert.doesNotMatch(compiled.prompt, /\bstanding\b/);
       }
     },
   },
@@ -2609,10 +2642,19 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(parseCharacterTrackerAvatarTags('{"positiveTags":[],"negativeTags":[]}'), null);
       assert.deepEqual(
         parseCharacterTrackerAvatarTags(
-          '```json\n{"positiveTags":["1boy","incredibly muscular","208 cm","large penis","28cm penis","cargo pants"],"negativeTags":["148 kg","bad anatomy"]}\n```',
+          '```json\n{"positiveTags":["1boy","incredibly muscular","208 cm","large penis","28cm penis","cargo pants","kneeling","holding sword","armory","weapon rack"],"negativeTags":["148 kg","bad anatomy"]}\n```',
         ),
         {
-          positiveTags: ["1boy", "incredibly muscular", "large penis", "cargo pants"],
+          positiveTags: [
+            "1boy",
+            "incredibly muscular",
+            "large penis",
+            "cargo pants",
+            "kneeling",
+            "holding sword",
+            "armory",
+            "weapon rack",
+          ],
           negativeTags: ["bad anatomy"],
         },
       );
@@ -3335,10 +3377,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         "utf8",
       );
       const commandSource = readFileSync(
-        new URL(
-          "../../packages/server/src/services/generation/conversation-command-runtime.ts",
-          import.meta.url,
-        ),
+        new URL("../../packages/server/src/services/generation/conversation-command-runtime.ts", import.meta.url),
         "utf8",
       );
       assert.equal(routeSource.includes("each character reacts for themselves"), false);
@@ -3360,10 +3399,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         resolveConversationMembershipHistoryEvent({ role: "system", content: "Arlecchino has left the chat." }),
         "left",
       );
-      assert.equal(
-        resolveConversationMembershipHistoryEvent({ role: "system", content: "Stay in character." }),
-        null,
-      );
+      assert.equal(resolveConversationMembershipHistoryEvent({ role: "system", content: "Stay in character." }), null);
     },
   },
   {
@@ -3418,7 +3454,12 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
           content: legacySetupMembership,
           contextKind: "history" as const,
         },
-        { id: "old-user", role: "user" as const, content: "An older conversation turn.", contextKind: "history" as const },
+        {
+          id: "old-user",
+          role: "user" as const,
+          content: "An older conversation turn.",
+          contextKind: "history" as const,
+        },
         { id: "old-scene", role: "system" as const, content: oldSceneSummary, contextKind: "history" as const },
         {
           id: "authored-system",
@@ -3610,7 +3651,12 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       ];
       preserveTrackerCharacterUiFields(returningCharacters, recurringHistory);
       const matchedCards = applyTrackerCharacterCardIdentity(returningCharacters, [
-        { id: "mira-card", name: "Mira", avatarPath: "/api/avatars/file/mira.png", avatarCrop: { zoom: 2, offsetX: 1, offsetY: 1 } },
+        {
+          id: "mira-card",
+          name: "Mira",
+          avatarPath: "/api/avatars/file/mira.png",
+          avatarCrop: { zoom: 2, offsetX: 1, offsetY: 1 },
+        },
       ]);
       assert.deepEqual(returningCharacters[0]?.stats, [
         { name: "HP", value: 65, max: 100, color: "#ef4444" },
@@ -3769,7 +3815,12 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(calibrateLorebookSimilarity(0.97, 0.97), 0);
       assert.ok(calibrateLorebookSimilarity(0.99, 0.97) > 0.6);
       assert.ok(
-        Math.abs(lorebookSimilarityBaseline([[1, 0], [0.97, Math.sqrt(1 - 0.97 ** 2)]]) - 0.97) < 1e-12,
+        Math.abs(
+          lorebookSimilarityBaseline([
+            [1, 0],
+            [0.97, Math.sqrt(1 - 0.97 ** 2)],
+          ]) - 0.97,
+        ) < 1e-12,
       );
 
       const clusteredIrrelevant = scanForActivatedEntries(

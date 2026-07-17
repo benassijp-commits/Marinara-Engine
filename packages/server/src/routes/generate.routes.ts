@@ -754,9 +754,11 @@ export async function generateRoutes(app: FastifyInstance) {
     const discordWebhookUrl = typeof earlyMeta.discordWebhookUrl === "string" ? earlyMeta.discordWebhookUrl : "";
     let pendingUserDiscordMsg = "";
     let currentTurnUserMessageId: string | null = null;
-    let committedSpatialTransition:
-      | { commandId: string; currentLocationId: string | null; definitionRevision: number }
-      | null = null;
+    let committedSpatialTransition: {
+      commandId: string;
+      currentLocationId: string | null;
+      definitionRevision: number;
+    } | null = null;
 
     // Save user message — skip for impersonate (no real user message to save)
     if (!input.impersonate && (input.userMessage || input.attachments?.length || input.pendingSpatialTransition)) {
@@ -2304,7 +2306,8 @@ export async function generateRoutes(app: FastifyInstance) {
             characterIds: promptCharacterIds,
             personaId,
             activeLorebookIds: chatActiveLorebookIds,
-            forcedEntryIds: ownerSpatialProjection?.ownerMode === "roleplay" ? ownerSpatialProjection.lorebookEntryIds : [],
+            forcedEntryIds:
+              ownerSpatialProjection?.ownerMode === "roleplay" ? ownerSpatialProjection.lorebookEntryIds : [],
             excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
             excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
             tokenBudget: resolveLorebookTokenBudget(chatMeta),
@@ -2663,7 +2666,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 characterIds,
                 personaId,
                 activeLorebookIds: chatActiveLorebookIds,
-                forcedEntryIds: ownerSpatialProjection?.ownerMode === "game" ? ownerSpatialProjection.lorebookEntryIds : [],
+                forcedEntryIds:
+                  ownerSpatialProjection?.ownerMode === "game" ? ownerSpatialProjection.lorebookEntryIds : [],
                 excludedLorebookIds: lorebookScopeExclusions.excludedLorebookIds,
                 excludedSourceAgentIds: lorebookScopeExclusions.excludedSourceAgentIds,
                 tokenBudget: resolveLorebookTokenBudget(chatMeta),
@@ -5691,10 +5695,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     isGenerated: true,
                   })
                 : savedMsg;
-              if (
-                anchoredMsg?.id &&
-                (requestChatMode === "roleplay" || requestChatMode === "game")
-              ) {
+              if (anchoredMsg?.id && (requestChatMode === "roleplay" || requestChatMode === "game")) {
                 await materializeAssistantSpatialState(app.db, {
                   chatId: input.chatId,
                   messageId: anchoredMsg.id,
@@ -7239,7 +7240,7 @@ export async function generateRoutes(app: FastifyInstance) {
                             const protectedPositive = converted
                               ? converted.positiveTags.join(", ")
                               : [appearance, outfit].filter(Boolean).join(", ");
-                            const prompt = "single character, solo, full body, standing, detailed face, high quality";
+                            const prompt = "single character, solo, full body, detailed face, high quality";
                             logger.debug(
                               "[character-tracker] Avatar identity for %s (profile=%s): source appearance=%s; source outfit=%s; protected=%s",
                               npcName,

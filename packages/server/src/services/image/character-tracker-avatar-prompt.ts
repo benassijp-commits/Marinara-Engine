@@ -56,11 +56,13 @@ export async function convertCharacterTrackerAvatarToTags(input: {
   debugMode?: boolean;
 }): Promise<CharacterTrackerAvatarPrompt | null> {
   const system = `${conversionInstruction(input.promptMode)}
-Convert the supplied character identity into tags for a single full-body character image.
+Convert the supplied character and current scene into tags for a single full-body character image.
 Preserve visible physical identity, face, build, current clothing, accessories, and visually relevant adult sexual anatomy.
 Remove all numeric measurements and quantities that do not have a reliable visual tag.
-Use scene context only to resolve mutually exclusive current states such as footwear versus barefoot; do not turn story prose into tags.
-Do not add style, quality, camera, pose, name, personality, or narrative tags.
+Use only the most recent currently depicted moment from scene context. Include the character's visible action and compatible pose, the immediate environment, and concrete objects being held, used, touched, worn, or prominently nearby.
+Resolve mutually exclusive current states such as standing versus sitting or footwear versus barefoot. Do not include superseded actions, off-screen details, memories, plans, thoughts, dialogue, emotions without a visible expression, or other non-visual story prose.
+Do not invent scene details. Do not add style, quality, camera, character name, personality, or abstract narrative tags.
+Order positive tags by priority: physical identity and face, build and anatomy, clothing and accessories, current action and pose, then environment and objects.
 Return JSON only with this exact shape: {"positiveTags":["tag"],"negativeTags":["tag"]}.`;
   const user = JSON.stringify({
     character: input.characterName,
