@@ -7288,7 +7288,7 @@ export async function generateRoutes(app: FastifyInstance) {
                             writeFileSync(join(npcDir, `${safeName}.png`), Buffer.from(imageResult.base64, "base64"));
 
                             // Update the character's avatarPath and stream to client
-                            npc.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}.png`;
+                            npc.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}.png?v=${Date.now()}`;
                             const key = avatarMatchKey(npc);
                             if (key) generatedAvatarPaths.set(key, npc.avatarPath);
                             logger.info(`[character-tracker] Generated avatar for NPC "${npcName}"`);

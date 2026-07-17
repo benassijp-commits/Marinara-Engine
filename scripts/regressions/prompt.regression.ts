@@ -2587,6 +2587,15 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
   {
     name: "character tracker portrait identity bypasses destructive profile distillation",
     run() {
+      const generateRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(
+        generateRouteSource,
+        /npc\.avatarPath = `\/api\/avatars\/npc\/\$\{input\.chatId\}\/\$\{safeName\}\.png\?v=\$\{Date\.now\(\)\}`/,
+      );
+
       const styleProfiles = createDefaultImageStyleProfileSettings();
       const identity = [
         "1boy",
