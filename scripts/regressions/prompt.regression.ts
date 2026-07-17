@@ -3667,6 +3667,23 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(returningCharacters[0]?.avatarPath, "/api/avatars/file/mira.png");
       assert.equal(matchedCards.has("mira-card"), true);
 
+      const characterAfterAvatarRemoval: Array<Record<string, unknown>> = [
+        { characterId: "lyra", name: "Lyra" },
+      ];
+      preserveTrackerCharacterUiFields(characterAfterAvatarRemoval, [
+        {
+          characterId: "lyra",
+          name: "Lyra",
+          avatarPath: "/api/avatars/npc/chat/lyra.png",
+        },
+      ]);
+      preserveTrackerCharacterUiFields(
+        characterAfterAvatarRemoval,
+        [{ characterId: "lyra", name: "Lyra", avatarPath: null }],
+        { authoritativeAvatarPath: true },
+      );
+      assert.equal(characterAfterAvatarRemoval[0]?.avatarPath, null);
+
       assert.equal(resolveCharacterCustomFieldName("  ", "Goal"), "Goal");
       assert.equal(makeUniqueCharacterCustomFieldName({ "New Field": "", "new   field 2": "" }), "New Field 3");
 

@@ -2733,11 +2733,11 @@ async function applyRetryResultEffects(args: {
             previousCharacters = [];
           }
         }
-        preserveTrackerCharacterUiFields(presentCharacters, previousCharacters);
         preserveTrackerCharacterUiFields(
           presentCharacters,
           (agentContext.characterTrackerHistory ?? []) as unknown as Array<Record<string, unknown>>,
         );
+        preserveTrackerCharacterUiFields(presentCharacters, previousCharacters, { authoritativeAvatarPath: true });
         applyTrackerCharacterCardIdentity(presentCharacters, agentContext.characters);
         const lockedCharacterPatch = applyTrackerFieldLocksToGameStatePatch(
           { presentCharacters },

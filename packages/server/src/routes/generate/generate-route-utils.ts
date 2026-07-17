@@ -1466,6 +1466,7 @@ export function applyTrackerCharacterCardIdentity(
 export function preserveTrackerCharacterUiFields(
   nextCharacters: Array<Record<string, unknown>>,
   previousCharacters: Array<Record<string, unknown>>,
+  options: { authoritativeAvatarPath?: boolean } = {},
 ): void {
   const previousByKey = new Map<string, Record<string, unknown>>();
   const previousByName = new Map<string, Record<string, unknown>>();
@@ -1497,7 +1498,9 @@ export function preserveTrackerCharacterUiFields(
       character.customFields = { ...previousCustomFields, ...(nextCustomFields ?? {}) };
     }
     character.stats = mergeTrackerStats(previous?.stats, character.stats);
-    if (
+    if (options.authoritativeAvatarPath && previous && Object.hasOwn(previous, "avatarPath")) {
+      character.avatarPath = isNpcTrackerAvatarPath(previousAvatarPath) ? previousAvatarPath.trim() : null;
+    } else if (
       (typeof character.avatarPath !== "string" || !character.avatarPath.trim()) &&
       isNpcTrackerAvatarPath(previousAvatarPath)
     ) {
