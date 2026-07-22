@@ -424,9 +424,14 @@ function retainBeforeUnloadFlush() {
   };
 }
 
-export function patchGameStateField(chatId: string, field: GameStatePatchField, value: unknown) {
+export function patchGameStateField(
+  chatId: string,
+  field: GameStatePatchField,
+  value: unknown,
+  options?: { allowDuringRefresh?: boolean },
+) {
   const store = useGameStateStore.getState();
-  if (store.isRefreshing) return;
+  if (store.isRefreshing && !options?.allowDuringRefresh) return;
   const prev = getCurrentGameStateForChat(chatId);
   const nextState = { ...(prev ?? createEmptyGameState(chatId)), [field]: value } as GameState;
   store.setGameState(nextState);

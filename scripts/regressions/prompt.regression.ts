@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import {
   ANIME_GAME_PROMPT_TEMPLATE_ID,
   ANIME_GAME_SYSTEM_PROMPT,
@@ -61,12 +64,25 @@ import {
   normalizeGameStoryboardKeyframeCount,
   parseDeferredConditionalPayload,
   selectConditionalPayloadBranch,
+  calculateAvatarBodyControls,
+  cockCmToAvatarSlider,
+  avatarBodyCompositionLabel,
+  avatarBodyControlLabel,
+  avatarBodySizeLabel,
+  DEFAULT_AVATAR_BODY_CONTROLS,
 } from "../../packages/shared/src/index.js";
 import { replaceBuiltInAgentDefinitions as replaceBuiltInAgentDefinitionsDist } from "../../packages/shared/dist/index.js";
 import {
   formatNoodleTimelineForPrompt,
   NOODLE_PERSONA_IDENTITY_INSTRUCTION,
 } from "../../packages/server/src/services/noodle/noodle-prompt.js";
+import {
+  applyAvatarBodyControls,
+  extractComfyAvatarPrompt,
+  getAvatarBodyRuntimeSettings,
+  previewAvatarBodyRuntime,
+} from "../../packages/server/src/services/image/avatar-body-control.js";
+import { findStoredNpcAvatarFile } from "../../packages/server/src/services/game/npc-avatar-utils.js";
 
 const personaA = {
   id: "noodle-account-a",
@@ -293,7 +309,14 @@ import {
   listPromptOverrideKeys,
 } from "../../packages/server/src/services/prompt-overrides/index.js";
 import { buildElevenLabsTextInput } from "../../packages/server/src/routes/tts.routes.js";
-import { parseCharacterTrackerAvatarTags } from "../../packages/server/src/services/image/character-tracker-avatar-prompt.js";
+import {
+  convertCharacterTrackerAvatarToTags,
+  convertCharacterTrackerSceneToTags,
+  parseCharacterTrackerAvatarTags,
+  parseCharacterTrackerDescriptionRefresh,
+  parseCharacterTrackerSceneTags,
+  regenerateCharacterTrackerDescription,
+} from "../../packages/server/src/services/image/character-tracker-avatar-prompt.js";
 import {
   buildCommittedTrackerContextBlock,
   MAX_WORLD_CUSTOM_FIELDS_IN_COMMITTED_CONTEXT,
@@ -2593,8 +2616,35 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       );
       assert.match(
         generateRouteSource,
-        /npc\.avatarPath = `\/api\/avatars\/npc\/\$\{input\.chatId\}\/\$\{safeName\}\.png\?v=\$\{Date\.now\(\)\}`/,
+        /npc\.avatarPath = `\/api\/avatars\/npc\/\$\{input\.chatId\}\/\$\{safeName\}\.png\?v=\$\{avatarRevision\}`/,
       );
+      const avatarRouteSource = readFileSync(
+        new URL("../../packages/server/src/routes/avatars.routes.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(avatarRouteSource, /convertCharacterTrackerAvatarToTags\(\{/);
+      assert.match(avatarRouteSource, /convertCharacterTrackerSceneToTags\(\{/);
+      assert.match(avatarRouteSource, /prompt: "single character, solo, full body, detailed face, high quality"/);
+      assert.doesNotMatch(avatarRouteSource, /centered face-and-shoulders|suitable as a chat avatar/i);
+      assert.doesNotMatch(
+        avatarRouteSource,
+        /mergePromptParts\(imageDefaults\?\.comfyui\?\.promptPrefix, compiledPrompt\.prompt\)/,
+      );
+      assert.match(avatarRouteSource, /positive: compiledPrompt\.prompt/);
+      assert.doesNotMatch(generateRouteSource, /\[imageDefaults\.comfyui\.promptPrefix, compiledPrompt\.prompt\]/);
+      assert.match(generateRouteSource, /findStoredNpcAvatarFile\(join\(NPC_AVATAR_DIR, input\.chatId\), safeName\)/);
+      assert.doesNotMatch(generateRouteSource, /cardCharacterIds\.has/);
+      assert.ok(
+        generateRouteSource.indexOf("findStoredNpcAvatarFile(join(NPC_AVATAR_DIR, input.chatId), safeName)") <
+          generateRouteSource.indexOf("const charsNeedingAvatars = chars.filter"),
+        "stored avatar reassociation must happen before the automatic generation queue is built",
+      );
+      const trackerMutationSource = readFileSync(
+        new URL("../../packages/client/src/features/tracker-panel/hooks/use-tracker-mutations.ts", import.meta.url),
+        "utf8",
+      );
+      assert.match(trackerMutationSource, /\/avatars\/npc\/\$\{encodeURIComponent\(activeChatId\)\}\/regenerate/);
+      assert.doesNotMatch(trackerMutationSource, /\/characters\/avatar-generation/);
 
       const styleProfiles = createDefaultImageStyleProfileSettings();
       const identity = [
@@ -2642,6 +2692,114 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
         assert.match(compiled.prompt, /\bcoffee table\b/);
         assert.doesNotMatch(compiled.prompt, /\bstanding\b/);
       }
+
+      const connectionPromptPrefix = [
+        "masterpiece",
+        "best quality",
+        "amazing quality",
+        "very aesthetic",
+        "highres",
+        "absurdres",
+        "expressive",
+        "detailed background",
+        "detailed pupils",
+        "20r0j_2",
+        "r0kud3n4shi",
+        "mass",
+        "solo",
+        "human",
+      ].join(", ");
+      const compiledWithConnectionBase = compileImagePrompt({
+        kind: "portrait",
+        prompt: "single character, solo, full body, detailed face, high quality",
+        protectedPositive: "1man, adult, brown hair, glasses, black t-shirt",
+        styleProfiles: createDefaultImageStyleProfileSettings(),
+        styleProfileId: "danbooru",
+        imageDefaults: {
+          version: 1,
+          service: "comfyui",
+          seed: -1,
+          comfyui: {
+            promptPrefix: connectionPromptPrefix,
+            negativePromptPrefix: "low quality, bad anatomy",
+            sampler: "dpmpp_2m",
+            scheduler: "karras",
+            steps: 20,
+            cfgScale: 4,
+            denoisingStrength: 1,
+            clipSkip: 2,
+            uploadPlaceholderOnMissingReference: false,
+          },
+        },
+      });
+      const controlledPrompt = applyAvatarBodyControls(
+        { positive: compiledWithConnectionBase.prompt, negative: compiledWithConnectionBase.negativePrompt, seed: -1 },
+        { muscularity: 80, bodyFat: 20, cock: 30, heightCm: 175 },
+      );
+      const positiveTags = controlledPrompt.positive.split(",").map((tag) => tag.trim());
+      for (const tag of ["masterpiece", "best quality", "amazing quality", "human", "20r0j_2", "r0kud3n4shi", "mass"]) {
+        assert.equal(
+          positiveTags.filter((candidate) => candidate === tag).length,
+          1,
+          `${tag} must appear exactly once`,
+        );
+      }
+      assert.equal((controlledPrompt.positive.match(/<lora:furr_mass_SDXL:/g) ?? []).length, 1);
+      assert.equal((controlledPrompt.positive.match(/<lora:Rokudenashi_Style_V2_ILXL:/g) ?? []).length, 1);
+      assert.equal((controlledPrompt.positive.match(/<lora:zoroj_ill11:/g) ?? []).length, 1);
+
+      const categoryFiltered = applyAvatarBodyControls(
+        {
+          positive: [
+            "powerful upper arms",
+            "barrel chest",
+            "corded forearms",
+            "unfamiliar shoulder adjective",
+            "arm tattoo",
+            "mechanical arm",
+            "chest armor",
+            "picture frame",
+            "holding coffee mug",
+            "looking over shoulder",
+            "arms crossed",
+          ].join(", "),
+          negative: "",
+          seed: -1,
+        },
+        { muscularity: 50, bodyFat: 50, cock: 0, heightCm: 175 },
+      );
+      assert.doesNotMatch(
+        categoryFiltered.positive,
+        /powerful upper arms|barrel chest|corded forearms|unfamiliar shoulder adjective/u,
+      );
+      assert.match(categoryFiltered.positive, /arm tattoo/u);
+      assert.match(categoryFiltered.positive, /mechanical arm/u);
+      assert.match(categoryFiltered.positive, /chest armor/u);
+      assert.match(categoryFiltered.positive, /picture frame/u);
+      assert.match(categoryFiltered.positive, /holding coffee mug/u);
+      assert.match(categoryFiltered.positive, /looking over shoulder/u);
+      assert.match(categoryFiltered.positive, /arms crossed/u);
+
+      const avatarRoot = mkdtempSync(join(tmpdir(), "marinara-tracker-avatars-"));
+      try {
+        const pngChat = join(avatarRoot, "png-chat");
+        const webpChat = join(avatarRoot, "webp-chat");
+        mkdirSync(pngChat);
+        mkdirSync(webpChat);
+        writeFileSync(join(pngChat, "josh.png"), "png fixture");
+        writeFileSync(join(webpChat, "damien.webp"), "webp fixture");
+        assert.deepEqual(findStoredNpcAvatarFile(pngChat, "josh"), {
+          extension: ".png",
+          path: join(pngChat, "josh.png"),
+        });
+        assert.deepEqual(findStoredNpcAvatarFile(webpChat, "damien"), {
+          extension: ".webp",
+          path: join(webpChat, "damien.webp"),
+        });
+        assert.equal(findStoredNpcAvatarFile(avatarRoot, "new-npc"), null);
+      } finally {
+        rmSync(avatarRoot, { recursive: true, force: true });
+      }
     },
   },
   {
@@ -2651,13 +2809,13 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(parseCharacterTrackerAvatarTags('{"positiveTags":[],"negativeTags":[]}'), null);
       assert.deepEqual(
         parseCharacterTrackerAvatarTags(
-          '```json\n{"positiveTags":["1boy","incredibly muscular","208 cm","large penis","28cm penis","cargo pants","kneeling","holding sword","armory","weapon rack"],"negativeTags":["148 kg","bad anatomy"]}\n```',
+          '```json\n{"positiveTags":["1boy","incredibly muscular","broad shoulders","wide chest","thick arms","large biceps","thick forearms","erect nipples","stretch marks","208 cm","large penis","28cm penis","cargo pants","kneeling","holding sword","armory","weapon rack"],"negativeTags":["148 kg","skinny","vascular","bad anatomy"]}\n```',
         ),
         {
           positiveTags: [
             "1boy",
-            "incredibly muscular",
-            "large penis",
+            "erect nipples",
+            "stretch marks",
             "cargo pants",
             "kneeling",
             "holding sword",
@@ -2667,6 +2825,82 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
           negativeTags: ["bad anatomy"],
         },
       );
+    },
+  },
+  {
+    name: "character tracker keeps identity and scene tag conversion isolated",
+    async run() {
+      assert.deepEqual(
+        parseCharacterTrackerSceneTags(
+          '{"sceneTags":["drinking coffee","holding mug","cafe interior","2boys","crowd","looking at another","broad shoulders","wide chest","thick arms","large biceps","thick forearms","erect nipples","stretch marks","muscular","180 cm"]}',
+        ),
+        { sceneTags: ["drinking coffee", "holding mug", "cafe interior", "erect nipples", "stretch marks"] },
+      );
+      assert.equal(parseCharacterTrackerSceneTags("not json"), null);
+      assert.deepEqual(
+        parseCharacterTrackerDescriptionRefresh(
+          '{"appearance":"27 years old, aqua hair, vitiligo, green eyes, 172 cm tall","outfit":"cropped cardigan, chartreuse miniskirt, 2 silver bracelets, platform loafers"}',
+        ),
+        {
+          appearance: "aqua hair, vitiligo, green eyes, tall",
+          outfit: "cropped cardigan, chartreuse miniskirt, silver bracelets, platform loafers",
+        },
+      );
+
+      const identityCapture = makeCapturingProvider(
+        '{"positiveTags":["aqua hair","green eyes","cropped cardigan"],"negativeTags":[]}',
+      );
+      await convertCharacterTrackerAvatarToTags({
+        provider: identityCapture.provider as any,
+        model: "regression-model",
+        promptMode: "danbooru",
+        characterName: "Mira",
+        appearance: "Aqua hair, vitiligo, green eyes",
+        outfit: "Cropped cardigan and chartreuse miniskirt",
+      });
+      const identitySystem = identityCapture.calls[0]?.[0]?.content ?? "";
+      const identityUser = identityCapture.calls[0]?.[1]?.content ?? "";
+      assert.match(identitySystem, /Convert only the supplied character appearance and outfit/u);
+      assert.doesNotMatch(identityUser, /sceneContext|drinking coffee/u);
+
+      const sceneCapture = makeCapturingProvider(
+        '{"sceneTags":["drinking coffee","holding mug","sitting","cafe interior"]}',
+      );
+      const scene = await convertCharacterTrackerSceneToTags({
+        provider: sceneCapture.provider as any,
+        model: "regression-model",
+        promptMode: "danbooru",
+        characterName: "Mira",
+        sceneContext: "Mira sits alone at the cafe table and drinks from a ceramic mug.",
+      });
+      assert.deepEqual(scene, {
+        sceneTags: ["drinking coffee", "holding mug", "sitting", "cafe interior"],
+      });
+      const sceneSystem = sceneCapture.calls[0]?.[0]?.content ?? "";
+      assert.match(sceneSystem, /scene-only image tags/u);
+      assert.match(sceneSystem, /exactly one character/u);
+
+      const descriptionCapture = makeCapturingProvider(
+        '{"appearance":"Aqua hair, green eyes, vitiligo across her face and hands.","outfit":"A cropped cardigan, chartreuse miniskirt, and platform loafers."}',
+      );
+      await regenerateCharacterTrackerDescription({
+        provider: descriptionCapture.provider as any,
+        model: "regression-model",
+        characterName: "Mira",
+        cardContext: {
+          canonicalAppearance: "Aqua hair, green eyes, vitiligo",
+          description: "Mira wears a cropped cardigan and chartreuse miniskirt.",
+        },
+        sceneContext: "Mira steps inside wearing platform loafers; rain leaves her aqua hair wet and disheveled.",
+      });
+      const descriptionSystem = descriptionCapture.calls[0]?.[0]?.content ?? "";
+      const descriptionUser = descriptionCapture.calls[0]?.[1]?.content ?? "";
+      assert.match(descriptionSystem, /Write English JSON only/u);
+      assert.match(descriptionSystem, /maximum 350 characters/u);
+      assert.match(descriptionSystem, /Preserve uncommon specifics/u);
+      assert.match(descriptionSystem, /Never output digits/u);
+      assert.match(descriptionUser, /platform loafers/u);
+      assert.doesNotMatch(descriptionUser, /previous tracker appearance|previous tracker outfit/u);
     },
   },
   {
@@ -3676,22 +3910,48 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       assert.equal(returningCharacters[0]?.avatarPath, "/api/avatars/file/mira.png");
       assert.equal(matchedCards.has("mira-card"), true);
 
-      const characterAfterAvatarRemoval: Array<Record<string, unknown>> = [
-        { characterId: "lyra", name: "Lyra" },
+      const trackerAvatarWithAvatarlessCard: Array<Record<string, unknown>> = [
+        {
+          characterId: "josh-card",
+          name: "Josh",
+          avatarPath: "/api/avatars/npc/chat/josh.png?v=123",
+        },
       ];
-      preserveTrackerCharacterUiFields(characterAfterAvatarRemoval, [
+      applyTrackerCharacterCardIdentity(trackerAvatarWithAvatarlessCard, [
+        { id: "josh-card", name: "Josh", avatarPath: null },
+      ]);
+      assert.equal(
+        trackerAvatarWithAvatarlessCard[0]?.avatarPath,
+        "/api/avatars/npc/chat/josh.png?v=123",
+        "an avatarless character card must not erase the per-chat tracker avatar",
+      );
+
+      const charactersAfterSingleAvatarRemoval: Array<Record<string, unknown>> = [
+        { characterId: "lyra", name: "Lyra" },
+        { characterId: "damien", name: "Damien" },
+      ];
+      preserveTrackerCharacterUiFields(charactersAfterSingleAvatarRemoval, [
         {
           characterId: "lyra",
           name: "Lyra",
           avatarPath: "/api/avatars/npc/chat/lyra.png",
         },
+        {
+          characterId: "damien",
+          name: "Damien",
+          avatarPath: "/api/avatars/file/damien.webp",
+        },
       ]);
       preserveTrackerCharacterUiFields(
-        characterAfterAvatarRemoval,
-        [{ characterId: "lyra", name: "Lyra", avatarPath: null }],
+        charactersAfterSingleAvatarRemoval,
+        [
+          { characterId: "lyra", name: "Lyra", avatarPath: null },
+          { characterId: "damien", name: "Damien", avatarPath: "/api/avatars/file/damien.webp" },
+        ],
         { authoritativeAvatarPath: true },
       );
-      assert.equal(characterAfterAvatarRemoval[0]?.avatarPath, null);
+      assert.equal(charactersAfterSingleAvatarRemoval[0]?.avatarPath, null);
+      assert.equal(charactersAfterSingleAvatarRemoval[1]?.avatarPath, "/api/avatars/file/damien.webp");
 
       assert.equal(resolveCharacterCustomFieldName("  ", "Goal"), "Goal");
       assert.equal(makeUniqueCharacterCustomFieldName({ "New Field": "", "new   field 2": "" }), "New Field 3");
@@ -3874,6 +4134,466 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
     },
   },
 ];
+
+cases.push({
+  name: "avatar body controls calculate stats, preserve identity tags, and recover ComfyUI metadata",
+  run: () => {
+    const activeBodySettings = getAvatarBodyRuntimeSettings();
+    assert.deepEqual(activeBodySettings.sizeRules.map((rule) => rule.maxExclusive), [60, 75, 90, 120, 200, null]);
+    assert.deepEqual(activeBodySettings.fatRules.map((rule) => rule.maxExclusive), [10, 16, 22, 35, null]);
+    assert.equal(activeBodySettings.referenceCeilingKg, 600);
+    assert.equal(activeBodySettings.schema, "marinara-avatar-body-settings/v2");
+    assert.equal(activeBodySettings.cells["skinny:muscle100"]?.positive.skinny, 1.3);
+    assert.equal(activeBodySettings.cells["large:muscle100"]?.loras.Hyper_muscles, 0.3);
+    assert.equal(activeBodySettings.cells["extreme:muscle100"]?.positive["hyper muscular"], 1.4);
+    const skinnySurface = previewAvatarBodyRuntime("skinny:muscle100", "positive", "skinny");
+    assert.ok(skinnySurface.surface[0]![1]!.value > skinnySurface.surface[1]![1]!.value);
+    assert.ok(skinnySurface.surface[1]![1]!.value > skinnySurface.surface[2]![1]!.value);
+    assert.ok(
+      Math.abs(
+        skinnySurface.surface[2]![1]!.value - activeBodySettings.interpolation.skinnyExitWeight,
+      ) < 1e-12,
+    );
+    assert.equal(skinnySurface.surface[1]![0]!.value, skinnySurface.surface[1]![2]!.value);
+
+    const configuredControl = (
+      value: number,
+      rules: typeof activeBodySettings.sizeRules,
+      authoredRanges: ReadonlyArray<readonly [number, number]>,
+    ) => {
+      let index = 0;
+      for (let candidate = 1; candidate < authoredRanges.length; candidate += 1) {
+        if (value < authoredRanges[candidate]![0]) break;
+        index = candidate;
+      }
+      const authored = authoredRanges[index]!;
+      const control = rules[index]!.control;
+      const progress = authored[1] === authored[0] ? 0 : (value - authored[0]) / (authored[1] - authored[0]);
+      return control[0] + (control[1] - control[0]) * Math.min(1, Math.max(0, progress));
+    };
+    const configuredBody = (
+      muscularity: number,
+      bodyFat: number,
+      cock: number,
+      extra: { heightCm?: number; weightKg?: number } = {},
+    ) => ({
+      muscularity: configuredControl(muscularity, activeBodySettings.sizeRules, [[0, 9], [10, 29], [30, 49], [50, 69], [70, 89], [90, 100]]),
+      bodyFat: configuredControl(bodyFat, activeBodySettings.fatRules, [[0, 12], [13, 37], [38, 62], [63, 87], [88, 100]]),
+      cock,
+      ...extra,
+    });
+
+    const bodyFatThresholds = [
+      [0, 0, "100% muscular"],
+      [9.99, 16.983, "100% muscular"],
+      [10, 17, "75% muscular / 25% fat"],
+      [15.9, 32.5367, "75% muscular / 25% fat"],
+      [16, 32.8, "50% muscular / 50% fat"],
+      [21.9, 48.3367, "50% muscular / 50% fat"],
+      [22, 48.6, "25% muscular / 75% fat"],
+      [34.9, 66.3623, "25% muscular / 75% fat"],
+      [35, 66.5, "100% fat"],
+      [100, 100, "100% fat"],
+    ] as const;
+    for (const [bodyFat, expectedFatControl, expectedLabel] of bodyFatThresholds) {
+      const values = calculateAvatarBodyControls([
+        { name: "Weight(kg)", value: 95, max: 1000, color: "#fff" },
+        { name: "Height(cm)", value: 175, max: 1000, color: "#fff" },
+        { name: "Body Fat (%)", value: bodyFat, max: 100, color: "#fff" },
+      ]);
+      assert.equal(values.muscularity, 41.695);
+      assert.equal(values.bodyFat, expectedFatControl);
+      assert.equal(avatarBodyCompositionLabel(values.bodyFat), expectedLabel);
+    }
+    const weightThresholds = [
+      [59.9, 0, 14.6456, "Extremely Skinny"],
+      [60, 0, 14.67, "Small"],
+      [74.9, 0, 26.9973, "Small"],
+      [75, 0, 27.08, "Average 1"],
+      [89.9, 0, 39.4172, "Average 1"],
+      [90, 0, 39.5, "Muscular"],
+      [119.9, 0, 52.6261, "Muscular"],
+      [120, 0, 52.67, "Large"],
+      [199.9, 0, 68.3104, "Large"],
+      [200, 0, 68.33, "Extreme"],
+      [600, 0, 100, "Extreme"],
+      [900, 0, 100, "Extreme"],
+      [59.9, 10, 14.67, "Small"],
+    ] as const;
+    for (const [weight, bodyFat, expectedMuscleControl, expectedLabel] of weightThresholds) {
+      const values = calculateAvatarBodyControls([
+        { name: "Weight(kg)", value: weight, max: 1000, color: "#fff" },
+        { name: "Body Fat (%)", value: bodyFat, max: 100, color: "#fff" },
+      ]);
+      assert.equal(values.muscularity, expectedMuscleControl);
+      assert.equal(avatarBodySizeLabel(values), expectedLabel);
+    }
+    const weightWithoutBodyFat = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 92, max: 1000, color: "#fff" },
+    ]);
+    assert.equal(weightWithoutBodyFat.muscularity, 40.378);
+    assert.equal(avatarBodySizeLabel(weightWithoutBodyFat), "Muscular");
+    assert.equal(weightWithoutBodyFat.bodyFat, DEFAULT_AVATAR_BODY_CONTROLS.bodyFat);
+    const averageWeightWithHighBodyFat = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 80, max: 1_000, color: "#fff" },
+      { name: "Height(cm)", value: 175, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 30, max: 100, color: "#fff" },
+    ]);
+    assert.equal(averageWeightWithHighBodyFat.muscularity, 31.22);
+    assert.equal(avatarBodySizeLabel(averageWeightWithHighBodyFat), "Average 1");
+    assert.equal(averageWeightWithHighBodyFat.bodyFat, 59.6154);
+    assert.equal(avatarBodyCompositionLabel(averageWeightWithHighBodyFat.bodyFat), "25% muscular / 75% fat");
+    const representativeMixedNinetyOneKg = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 91, max: 1000, color: "#fff" },
+      { name: "Height(cm)", value: 175, max: 1000, color: "#fff" },
+      { name: "Body Fat (%)", value: 22, max: 100, color: "#fff" },
+    ]);
+    assert.equal(representativeMixedNinetyOneKg.muscularity, 39.939);
+    assert.equal(representativeMixedNinetyOneKg.bodyFat, 48.6);
+    const representativeMixedNinetyTwoKg = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 92, max: 1000, color: "#fff" },
+      { name: "Height(cm)", value: 175, max: 1000, color: "#fff" },
+      { name: "Body Fat (%)", value: 22, max: 100, color: "#fff" },
+    ]);
+    assert.equal(representativeMixedNinetyTwoKg.muscularity, 40.378);
+    assert.equal(representativeMixedNinetyTwoKg.bodyFat, 48.6);
+    assert.ok(cockCmToAvatarSlider(40) < 40);
+    assert.ok(cockCmToAvatarSlider(41) >= 40);
+    assert.ok(cockCmToAvatarSlider(80) < 60);
+    assert.ok(cockCmToAvatarSlider(81) >= 60);
+    assert.ok(cockCmToAvatarSlider(120) < 75);
+    assert.ok(cockCmToAvatarSlider(121) >= 75);
+    assert.ok(Math.round(cockCmToAvatarSlider(150)) >= 90);
+    const zeroCockPrompt = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 18 },
+      { muscularity: 40, bodyFat: 0, cock: 0 },
+    );
+    assert.doesNotMatch(zeroCockPrompt.positive, /bulge|penis|cock|genitalia/);
+    assert.equal(avatarBodyControlLabel("cock", 0), "None");
+
+    const referenceBuildAtBaseHeight = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 332, max: 10_000, color: "#fff" },
+      { name: "Height(cm)", value: 175, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 16, max: 100, color: "#fff" },
+    ]);
+    const sameStatsAtDoubleHeight = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 332, max: 10_000, color: "#fff" },
+      { name: "Height(cm)", value: 350, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 16, max: 100, color: "#fff" },
+    ]);
+    assert.equal(sameStatsAtDoubleHeight.muscularity, referenceBuildAtBaseHeight.muscularity);
+    assert.equal(sameStatsAtDoubleHeight.bodyFat, referenceBuildAtBaseHeight.bodyFat);
+    assert.equal(sameStatsAtDoubleHeight.heightCm, 350);
+    assert.equal(sameStatsAtDoubleHeight.weightKg, 332);
+    const balancedExtremeAtDoubleHeight = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 2_800, max: 10_000, color: "#fff" },
+      { name: "Height(cm)", value: 350, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 40, max: 100, color: "#fff" },
+    ]);
+    assert.equal(balancedExtremeAtDoubleHeight.muscularity, 100);
+    assert.equal(balancedExtremeAtDoubleHeight.bodyFat, 69.0769);
+
+    const controlled = applyAvatarBodyControls(
+      {
+        positive:
+          "male, gray wolf, blue eyes, broad shoulders, incredibly muscular, very fat body, huge penis, detailed face, black tank top, classroom, <lora:style:0.4>, <lora:Teterun:0.30>, <lora:furr_mass_SDXL:0.99>",
+        negative: "female, slim, obese, small penis, watermark, veins",
+        seed: 12345,
+      },
+      configuredBody(100, 50, 45, { heightCm: 350, weightKg: 700 }),
+    );
+    assert.match(controlled.positive, /gray wolf/);
+    assert.doesNotMatch(controlled.positive, /broad shoulders/);
+    assert.match(controlled.positive, /black tank top/);
+    assert.match(controlled.positive, /<lora:style:0\.4>/);
+    assert.match(controlled.positive, /<lora:furr_mass_SDXL:0\.60>/);
+    assert.match(controlled.positive, /<lora:zoroj_ill11:0\.80>/);
+    assert.match(controlled.positive, /hyper muscular:1\.30/);
+    assert.match(controlled.positive, /hyper obese:1\.20/);
+    assert.match(controlled.positive, /\(penis:1\.04\)/);
+    assert.match(controlled.positive, /\(detailed face:1\.2\)/);
+    assert.equal(controlled.positive.match(/detailed face/g)?.length, 1);
+    assert.match(controlled.positive, /<lora:Teterun:0\.30>/);
+    assert.match(controlled.positive, /giant/);
+    assert.doesNotMatch(controlled.positive, /incredibly muscular|very fat body/);
+    assert.doesNotMatch(controlled.positive, /(?:^|, )fat(?:,|$)/);
+    assert.doesNotMatch(controlled.negative, /slim|obese|small penis/);
+    assert.match(controlled.negative, /veins/);
+    assert.match(controlled.negative, /vascular/);
+    assert.match(controlled.negative, /prominent veins/);
+    assert.match(controlled.negative, /muscle definition/);
+    assert.equal(controlled.seed, 12345);
+
+    const belowHeightTagWeight = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 9 },
+      { muscularity: 100, bodyFat: 100, cock: 30, heightCm: 350, weightKg: 599 },
+    );
+    assert.doesNotMatch(belowHeightTagWeight.positive, /(?:tall|giant|colossal|planetary scale)/);
+    const heightTagAtWeightThreshold = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 10 },
+      { muscularity: 100, bodyFat: 100, cock: 30, heightCm: 350, weightKg: 600 },
+    );
+    assert.match(heightTagAtWeightThreshold.positive, /giant/);
+
+    const maximumMuscle = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "", seed: 1 },
+      configuredBody(100, 22, 30),
+    );
+    assert.match(maximumMuscle.positive, /<lora:Hyper_muscles:0\.28>/);
+    assert.doesNotMatch(maximumMuscle.positive, /hyper muscular:2\.00/);
+    const pureExtremeMuscle = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "veins", seed: 2 },
+      { muscularity: 100, bodyFat: 0, cock: 30 },
+    );
+    assert.match(pureExtremeMuscle.positive, /<lora:Hyper_muscles:0\.50>/);
+    assert.match(pureExtremeMuscle.positive, /hyper muscular:1\.40/);
+    // The muscle100 column no longer authors an explicit "fat:0" tag — zero
+    // fat is now expressed by the tag's absence, not by emitting it at zero.
+    assert.doesNotMatch(pureExtremeMuscle.positive, /\(fat:/);
+    assert.doesNotMatch(pureExtremeMuscle.negative, /veins/);
+    assert.match(pureExtremeMuscle.positive, /\(detailed face:1\.2\)/);
+    assert.doesNotMatch(pureExtremeMuscle.positive, /detailed face:(?!1\.2)/);
+    const zeroFatRemainsZeroBeforeAUsingCell = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 19 },
+      configuredBody(80, 8, 30),
+    );
+    assert.doesNotMatch(zeroFatRemainsZeroBeforeAUsingCell.positive, /\(fat:/);
+    assert.doesNotMatch(zeroFatRemainsZeroBeforeAUsingCell.positive, /\((?:chubby|obese|hyper obese):/);
+    const pureExtremeFat = applyAvatarBodyControls(
+      { positive: "male, muscular, blue eyes, <lora:Hyper_muscles:0.9>", negative: "", seed: 3 },
+      { muscularity: 100, bodyFat: 100, cock: 30 },
+    );
+    assert.match(pureExtremeFat.positive, /muscular:-0\.20/);
+    assert.match(pureExtremeFat.positive, /hyper obese:1\.50/);
+    assert.match(pureExtremeFat.positive, /<lora:furr_mass_SDXL:0\.00>/);
+    assert.match(pureExtremeFat.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.15>/);
+    assert.match(pureExtremeFat.positive, /<lora:zoroj_ill11:0\.00>/);
+    assert.doesNotMatch(pureExtremeFat.positive, /<lora:Hyper_muscles:/);
+    assert.match(pureExtremeFat.negative, /veins, vascular, prominent veins/);
+    const skinnyAtZeroFat = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "watermark", seed: 20 },
+      { muscularity: 0, bodyFat: 0, cock: 30 },
+    );
+    assert.match(skinnyAtZeroFat.positive, /\(skinny:1\.30\)/);
+    const skinnyAtHalfFat = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "watermark", seed: 20 },
+      { muscularity: 0, bodyFat: 8.5, cock: 30 },
+    );
+    assert.match(skinnyAtHalfFat.positive, /\(skinny:1\.06\)/);
+    const skinnyAtMaximumFat = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "watermark", seed: 20 },
+      { muscularity: 0, bodyFat: 100, cock: 30 },
+    );
+    // Body fat now also fades the isolated `skinny` tag inside the Extremely
+    // Skinny row, alongside weight, instead of being fully ignored.
+    assert.match(skinnyAtMaximumFat.positive, /\(skinny:0\.10\)/);
+    assert.notDeepEqual(skinnyAtMaximumFat, skinnyAtZeroFat);
+    const testedMisspelling = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 4 },
+      configuredBody(40, 0, 30),
+    );
+    assert.match(testedMisspelling.positive, /atlethic:0\.30/);
+    assert.doesNotMatch(testedMisspelling.positive, /athletic/);
+    // muscle100 no longer authors an explicit "fat:0" tag — zero fat is
+    // expressed by the tag's absence, not by emitting it at zero.
+    assert.doesNotMatch(testedMisspelling.positive, /\(fat:/);
+
+    const joshAutomaticValues = calculateAvatarBodyControls([
+      { name: "Weight (kg)", value: 102, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 10, max: 100, color: "#fff" },
+    ]);
+    assert.equal(joshAutomaticValues.muscularity, 44.768);
+    assert.equal(joshAutomaticValues.bodyFat, 17);
+    const joshAutomaticPrompt = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 21 },
+      joshAutomaticValues,
+    );
+    assert.match(joshAutomaticPrompt.positive, /\(atlethic:0\.11\)/);
+    assert.match(joshAutomaticPrompt.positive, /\(obese:0\.10\)/);
+    assert.match(joshAutomaticPrompt.positive, /<lora:furr_mass_SDXL:0\.27>/);
+    assert.match(joshAutomaticPrompt.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.12>/);
+    assert.match(joshAutomaticPrompt.positive, /<lora:zoroj_ill11:0\.23>/);
+    assert.doesNotMatch(joshAutomaticPrompt.positive, /<lora:Hyper_muscles:/);
+
+    const eightyFiveKgAtTenPercent = calculateAvatarBodyControls([
+      { name: "Weight (kg)", value: 85, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 10, max: 100, color: "#fff" },
+    ]);
+    assert.equal(eightyFiveKgAtTenPercent.muscularity, 35.36);
+    assert.equal(avatarBodySizeLabel(eightyFiveKgAtTenPercent), "Average 1");
+
+    const sameMuscleColumnAtCenter = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 22 },
+      configuredBody(40, 0, 30),
+    );
+    const sameMuscleColumnNearBoundary = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 23 },
+      { ...configuredBody(40, 0, 30), bodyFat: 16.999 },
+    );
+    assert.match(sameMuscleColumnAtCenter.positive, /\(atlethic:0\.30\)/);
+    assert.match(sameMuscleColumnNearBoundary.positive, /\(atlethic:0\.30\)/);
+    assert.doesNotMatch(sameMuscleColumnNearBoundary.positive, /\((?:muscular|chubby):/);
+    const firstPointInsideNextColumn = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 24 },
+      { ...configuredBody(40, 0, 30), bodyFat: 17 },
+    );
+    assert.doesNotMatch(firstPointInsideNextColumn.positive, /\(atlethic:/);
+    assert.match(firstPointInsideNextColumn.positive, /\(muscular:0\.12\)/);
+    assert.match(firstPointInsideNextColumn.positive, /\(chubby:0\.12\)/);
+
+    const zeroCrossingIsAllowed = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 25 },
+      configuredBody(95, 75, 30),
+    );
+    assert.match(zeroCrossingIsAllowed.positive, /\(muscular:0\.00\)/);
+    const uniqueExtremeTagEntry = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 26 },
+      configuredBody(90, 25, 30),
+    );
+    assert.match(uniqueExtremeTagEntry.positive, /\(hyper muscular:0\.80\)/);
+    assert.doesNotMatch(uniqueExtremeTagEntry.positive, /\(muscular:/);
+
+    const physiologicalFiftyIsNotVisualFiftyFifty = calculateAvatarBodyControls([
+      { name: "Weight(kg)", value: 120, max: 1_000, color: "#fff" },
+      { name: "Body Fat (%)", value: 50, max: 100, color: "#fff" },
+    ]);
+    assert.equal(physiologicalFiftyIsNotVisualFiftyFifty.bodyFat, 74.2308);
+
+    const lowPhysiologicalFatSmallVisual = applyAvatarBodyControls(
+      { positive: "male, blue eyes", negative: "watermark", seed: 11 },
+      {
+        muscularity: representativeMixedNinetyOneKg.muscularity,
+        bodyFat: representativeMixedNinetyOneKg.bodyFat,
+        cock: 30,
+      },
+    );
+    assert.match(lowPhysiologicalFatSmallVisual.positive, /\(atlethic:/);
+    assert.match(lowPhysiologicalFatSmallVisual.positive, /\(obese:/);
+    assert.match(lowPhysiologicalFatSmallVisual.positive, /\(full-body fat distribution:/);
+    assert.doesNotMatch(lowPhysiologicalFatSmallVisual.positive, /\((?:lean|chubby|hyper obese):/);
+
+    const belowMagnitudeMidpoint = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 12 },
+      { ...configuredBody(0, 0, 30), muscularity: 27.079 },
+    );
+    assert.match(belowMagnitudeMidpoint.positive, /\(lean:/);
+    assert.doesNotMatch(belowMagnitudeMidpoint.positive, /\(atlethic:/);
+    const atMagnitudeMidpoint = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 13 },
+      configuredBody(30, 0, 30),
+    );
+    assert.match(atMagnitudeMidpoint.positive, /\(atlethic:/);
+    assert.doesNotMatch(atMagnitudeMidpoint.positive, /\(lean:/);
+
+    const belowCompositionMidpoint = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 14 },
+      { ...configuredBody(60, 0, 30), bodyFat: 32.799 },
+    );
+    assert.match(belowCompositionMidpoint.positive, /\(atlethic:/);
+    assert.doesNotMatch(belowCompositionMidpoint.positive, /\(muscular:/);
+    const atCompositionMidpoint = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 15 },
+      { ...configuredBody(60, 0, 30), bodyFat: 32.8 },
+    );
+    assert.match(atCompositionMidpoint.positive, /\(muscular:/);
+    assert.doesNotMatch(atCompositionMidpoint.positive, /\(atlethic:/);
+
+    const exactAverageBalancedCell = applyAvatarBodyControls(
+      { positive: "male", negative: "watermark", seed: 16 },
+      configuredBody(40, 50, 30),
+    );
+    assert.match(exactAverageBalancedCell.positive, /\(muscular:1\.00\)/);
+    assert.match(exactAverageBalancedCell.positive, /\(chubby:1\.00\)/);
+    assert.match(exactAverageBalancedCell.positive, /\(full-body fat distribution:0\.50\)/);
+    assert.match(exactAverageBalancedCell.negative, /watermark, veins, vascular, prominent veins, muscle definition/);
+    assert.doesNotMatch(exactAverageBalancedCell.negative, /\(veins:/);
+
+    const sameCellDifferentWeights = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 17 },
+      configuredBody(48, 40, 30),
+    );
+    assert.match(sameCellDifferentWeights.positive, /\(muscular:/);
+    assert.match(sameCellDifferentWeights.positive, /\(chubby:/);
+    assert.match(sameCellDifferentWeights.positive, /\(full-body fat distribution:/);
+    assert.notEqual(sameCellDifferentWeights.positive, exactAverageBalancedCell.positive);
+
+    const averageFatAutomaticInterpolation = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 27 },
+      { muscularity: 31, bodyFat: 67, cock: 0 },
+    );
+    assert.match(averageFatAutomaticInterpolation.positive, /<lora:furr_mass_SDXL:0\.00>/);
+    assert.match(averageFatAutomaticInterpolation.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.06>/);
+    assert.match(averageFatAutomaticInterpolation.positive, /<lora:zoroj_ill11:0\.00>/);
+    const averageFatSurface = previewAvatarBodyRuntime("average1:fat100", "loras", "Rokudenashi_Style_V2_ILXL");
+    assert.equal(averageFatSurface.neighborhood[1]?.[0]?.cellKey, "average1:muscle25");
+    assert.equal(averageFatSurface.neighborhood[1]?.[0]?.anchor, 0.15);
+    assert.ok((averageFatSurface.surface[1]?.[0]?.value ?? 0) > 0);
+    assert.equal(averageFatSurface.surface[1]?.[1]?.value, 0);
+    assert.ok((averageFatSurface.surface[2]?.[1]?.value ?? 0) > 0);
+    assert.equal(averageFatSurface.surface[1]?.[0]?.trace.horizontal.direction, "left");
+    assert.equal(averageFatSurface.surface[2]?.[1]?.trace.vertical.direction, "below");
+
+    const loraBelowThreshold = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 18 },
+      configuredBody(21, 0, 30),
+    );
+    assert.match(loraBelowThreshold.positive, /<lora:furr_mass_SDXL:0\.00>/);
+    assert.match(loraBelowThreshold.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.10>/);
+    assert.match(loraBelowThreshold.positive, /<lora:zoroj_ill11:0\.11>/);
+    assert.doesNotMatch(loraBelowThreshold.positive, /<lora:Hyper_muscles:/);
+    const clothedBulge = applyAvatarBodyControls(
+      { positive: "male, dressed", negative: "", seed: 5 },
+      configuredBody(20, 20, Math.round(cockCmToAvatarSlider(40)), { heightCm: 175 }),
+    );
+    assert.match(clothedBulge.positive, /bulge/);
+    assert.doesNotMatch(clothedBulge.positive, /(?:big|huge|hyper) penis/);
+    const hyperCock = applyAvatarBodyControls(
+      { positive: "male", negative: "", seed: 6 },
+      configuredBody(20, 20, Math.round(cockCmToAvatarSlider(150)), { heightCm: 175 }),
+    );
+    assert.match(hyperCock.positive, /hyper penis/);
+    const avatarRoutesSource = readFileSync(
+      new URL("../../packages/server/src/routes/avatars.routes.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(avatarRoutesSource, /shouldApplyBodyControls[\s\S]*applyAvatarBodyControls/);
+    assert.match(avatarRoutesSource, /sendsExactFinalPrompt[\s\S]*promptPrefix:\s*""/);
+    const generateRoutesSource = readFileSync(
+      new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+      "utf8",
+    );
+    assert.match(generateRoutesSource, /charsNeedingAvatars[\s\S]*applyAvatarBodyControls/);
+    assert.match(generateRoutesSource, /controlledPrompt[\s\S]*negativePromptPrefix:\s*""/);
+
+    const workflow = JSON.stringify({
+      "5": {
+        class_type: "KSampler",
+        inputs: { seed: 987654, positive: ["3", 0], negative: ["4", 0] },
+      },
+      "3": { class_type: "CLIPTextEncode", inputs: { text: ["25", 2] } },
+      "4": { class_type: "CLIPTextEncode", inputs: { text: "bad anatomy" } },
+      "25": { class_type: "LoraTagLoader", inputs: { text: "male, wolf, full body" } },
+    });
+    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const chunk = (type: string, data: Buffer) => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(data.length);
+      return Buffer.concat([length, Buffer.from(type, "ascii"), data, Buffer.alloc(4)]);
+    };
+    const variants = [
+      chunk("tEXt", Buffer.concat([Buffer.from("prompt\0", "latin1"), Buffer.from(workflow)])),
+      chunk("zTXt", Buffer.concat([Buffer.from("prompt\0\0", "latin1"), deflateSync(Buffer.from(workflow))])),
+      chunk("iTXt", Buffer.concat([Buffer.from("prompt\0\x01\0\0\0", "latin1"), deflateSync(Buffer.from(workflow))])),
+    ];
+    for (const metadataChunk of variants) {
+      assert.deepEqual(extractComfyAvatarPrompt(Buffer.concat([signature, metadataChunk])), {
+        positive: "male, wolf, full body",
+        negative: "bad anatomy",
+        seed: 987654,
+      });
+    }
+  },
+});
 
 let failed = 0;
 

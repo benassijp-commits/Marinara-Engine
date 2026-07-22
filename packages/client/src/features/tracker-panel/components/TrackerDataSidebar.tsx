@@ -13,6 +13,9 @@ import { useGameStatePatcher } from "../../../hooks/use-game-state-patcher";
 import { getCssBackgroundStyle, getCssColorFallback, isCssGradient } from "../../../lib/css-colors";
 import { useRenderTimer } from "../../../lib/perf-diagnostics";
 import { cn } from "../../../lib/utils";
+import { api } from "../../../lib/api-client";
+import { showConfirmDialog } from "../../../lib/app-dialogs";
+import { toast } from "sonner";
 import { useTrackerGameState } from "../hooks/use-tracker-game-state";
 import { useTrackerFieldLockUpdater } from "../hooks/use-tracker-field-lock-updater";
 import { useTrackerPanelModel } from "../hooks/use-tracker-panel-model";
@@ -91,6 +94,7 @@ export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolea
     trackerPanelUseExpressionSprites,
   });
   const [activeEditMode, setActiveEditMode] = useState<TrackerEditMode | null>(null);
+  const [clearingCharacterTracker, setClearingCharacterTracker] = useState(false);
   const deleteMode = activeEditMode === "delete";
   const addMode = activeEditMode === "add";
   const lockMode = activeEditMode === "lock";
@@ -145,6 +149,33 @@ export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolea
           : trackerPanelBackgroundFallback,
       }
     : undefined;
+  const clearCharacterTracker = useCallback(async () => {
+    if (!activeChatId || clearingCharacterTracker) return;
+    const confirmed = await showConfirmDialog({
+      title: "Clear Character Tracker data?",
+      message:
+        "This clears every Character Tracker snapshot, lock, hidden field, agent result, memory, and body-controller setting for this chat. NPC avatar image files are preserved and will be reassociated by name when the tracker runs again.",
+      confirmLabel: "Clear tracker data",
+      cancelLabel: "Cancel",
+    });
+    if (!confirmed) return;
+
+    setClearingCharacterTracker(true);
+    try {
+      await flushPatch();
+      await api.delete(`/chats/${encodeURIComponent(activeChatId)}/character-tracker-data`);
+      const refreshed = await api.get<import("@marinara-engine/shared").GameState | null>(
+        `/chats/${encodeURIComponent(activeChatId)}/game-state`,
+      );
+      useGameStateStore.getState().setGameState(refreshed);
+      setActiveEditMode(null);
+      toast.success("Character Tracker data cleared. Avatar images were preserved.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to clear Character Tracker data.");
+    } finally {
+      setClearingCharacterTracker(false);
+    }
+  }, [activeChatId, clearingCharacterTracker, flushPatch]);
 
   return (
     <section
@@ -176,6 +207,8 @@ export function TrackerDataSidebar({ fillHeight = false }: { fillHeight?: boolea
           onSetEditMode={setActiveEditMode}
           onSetSide={setTrackerPanelSide}
           onSetSizeProfile={setTrackerPanelSizeProfile}
+          onClearCharacterTracker={clearCharacterTracker}
+          clearingCharacterTracker={clearingCharacterTracker}
           onClose={() => setTrackerPanelOpen(false)}
         />
 

@@ -548,5 +548,29 @@ export function createGameStateStorage(db: DB) {
     async deleteForChat(chatId: string) {
       await db.delete(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, chatId));
     },
+
+    /** Clear only Character Tracker data while preserving all other tracker snapshots. */
+    async clearCharacterTrackerForChat(chatId: string) {
+      const rows = await db.select().from(gameStateSnapshots).where(eq(gameStateSnapshots.chatId, chatId));
+      for (const row of rows) {
+        const fieldLocks = Object.fromEntries(
+          Object.entries(parseTrackerFieldLocks(row.fieldLocks)).filter(([key]) => !key.startsWith("characters.")),
+        );
+        const hiddenTrackerFields = Object.fromEntries(
+          Object.entries(parseTrackerHiddenFields(row.hiddenTrackerFields)).filter(
+            ([key]) => !key.startsWith("characters."),
+          ),
+        );
+        await db
+          .update(gameStateSnapshots)
+          .set({
+            presentCharacters: "[]",
+            fieldLocks: serializeFieldLocks(fieldLocks),
+            hiddenTrackerFields: serializeHiddenTrackerFields(hiddenTrackerFields),
+          })
+          .where(eq(gameStateSnapshots.id, row.id));
+      }
+      return rows.length;
+    },
   };
 }

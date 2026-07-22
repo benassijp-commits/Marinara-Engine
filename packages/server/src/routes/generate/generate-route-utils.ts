@@ -1456,7 +1456,9 @@ export function applyTrackerCharacterCardIdentity(
     const card = cardsById.get(trackerCharacterIdKey(character)) ?? cardsByName.get(trackerCharacterNameKey(character));
     if (!card) continue;
     character.characterId = card.id;
-    character.avatarPath = card.avatarPath ?? null;
+    if (typeof card.avatarPath === "string" && card.avatarPath.trim()) {
+      character.avatarPath = card.avatarPath.trim();
+    }
     character.avatarCrop = card.avatarCrop ?? null;
     matchedIds.add(card.id);
   }
@@ -1499,7 +1501,8 @@ export function preserveTrackerCharacterUiFields(
     }
     character.stats = mergeTrackerStats(previous?.stats, character.stats);
     if (options.authoritativeAvatarPath && previous && Object.hasOwn(previous, "avatarPath")) {
-      character.avatarPath = isNpcTrackerAvatarPath(previousAvatarPath) ? previousAvatarPath.trim() : null;
+      character.avatarPath =
+        typeof previousAvatarPath === "string" && previousAvatarPath.trim() ? previousAvatarPath.trim() : null;
     } else if (
       (typeof character.avatarPath !== "string" || !character.avatarPath.trim()) &&
       isNpcTrackerAvatarPath(previousAvatarPath)

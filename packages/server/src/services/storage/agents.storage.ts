@@ -507,6 +507,13 @@ export function createAgentsStorage(db: DB) {
       await db.delete(agentRuns).where(eq(agentRuns.chatId, chatId));
     },
 
+    /** Delete only Character Tracker results for a specific chat. */
+    async clearCharacterTrackerRunsForChat(chatId: string) {
+      await db
+        .delete(agentRuns)
+        .where(and(eq(agentRuns.chatId, chatId), eq(agentRuns.resultType, "character_tracker_update")));
+    },
+
     /** Delete all agent memory entries for a specific chat. */
     async clearMemoryForChat(chatId: string) {
       await db.delete(agentMemory).where(eq(agentMemory.chatId, chatId));

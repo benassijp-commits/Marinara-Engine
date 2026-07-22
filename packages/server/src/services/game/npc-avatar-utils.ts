@@ -1,6 +1,20 @@
 import type { GameNpc } from "@marinara-engine/shared";
+import { existsSync } from "fs";
+import { join } from "path";
 
 export const BUILT_IN_MARI_AVATAR = "/sprites/mari/Mari_profile.png";
+export const NPC_AVATAR_FILE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"] as const;
+
+export function findStoredNpcAvatarFile(directory: string, safeName: string): {
+  extension: (typeof NPC_AVATAR_FILE_EXTENSIONS)[number];
+  path: string;
+} | null {
+  for (const extension of NPC_AVATAR_FILE_EXTENSIONS) {
+    const path = join(directory, `${safeName}${extension}`);
+    if (existsSync(path)) return { extension, path };
+  }
+  return null;
+}
 
 function normalizeNpcName(name: string): string {
   return name

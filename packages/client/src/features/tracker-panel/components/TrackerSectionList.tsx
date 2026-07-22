@@ -21,6 +21,7 @@ import { CustomTrackerPanel } from "./sections/CustomTrackerPanel";
 import { PersonaInventoryPanel } from "./sections/PersonaInventoryPanel";
 import { QuestTrackerPanel } from "./sections/quest-tracker/QuestTrackerPanel";
 import { WorldStatePanel } from "./sections/WorldStatePanel";
+import { AvatarBodyControlModal } from "./character-card/AvatarBodyControlModal";
 
 export function TrackerSectionList({
   activeChatId,
@@ -112,7 +113,10 @@ export function TrackerSectionList({
     handleAvatarFileInputChange,
     openAvatarUpload,
     avatarRemovalKey,
-    removeAvatar,
+    avatarBodyControl,
+    closeAvatarBodyControl,
+    openAvatarBodyControl,
+    updateAvatarPath,
     removeCharacter,
     removeInventoryItem,
     removeQuest,
@@ -245,7 +249,7 @@ export function TrackerSectionList({
             onRemoveCharacter={removeCharacter}
             onAddCharacter={addCharacter}
             onUploadAvatar={openAvatarUpload}
-            onRemoveAvatar={(index) => void removeAvatar(index)}
+            onRemoveAvatar={openAvatarBodyControl}
             avatarRemovalKey={avatarRemovalKey}
             onToggleFeatured={toggleFeaturedCharacterCard}
             deleteMode={deleteMode}
@@ -300,6 +304,27 @@ export function TrackerSectionList({
         onChange={handleAvatarFileInputChange}
       />
       {orderedTrackerSections.map((section) => renderTrackerSection(section))}
+      {avatarBodyControl && (() => {
+        const character = presentCharacters.find((item) => item.characterId === avatarBodyControl.characterId);
+        if (!character) return null;
+        return (
+          <AvatarBodyControlModal
+            activeChatId={activeChatId}
+            character={character}
+            onClose={closeAvatarBodyControl}
+            onAvatarUpdated={async (avatarPath) => {
+              if (!updateAvatarPath(character.characterId, avatarBodyControl.index, avatarPath)) {
+                throw new Error("The character changed before the new avatar could be associated.");
+              }
+              await flushPatch();
+            }}
+            onDescriptionUpdated={async (appearance, outfit) => {
+              updateCharacter(avatarBodyControl.index, { ...character, appearance, outfit });
+              await flushPatch();
+            }}
+          />
+        );
+      })()}
     </>
   );
 }

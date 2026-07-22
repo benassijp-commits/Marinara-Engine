@@ -1,5 +1,5 @@
 import { useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
-import { EyeOff, Lock, PanelLeft, PanelRight, Plus, Settings2, Trash2, Unlock } from "lucide-react";
+import { Eraser, EyeOff, Lock, PanelLeft, PanelRight, Plus, Settings2, Trash2, Unlock } from "lucide-react";
 import { TrackerPanelIcon } from "../../../components/ui/TrackerPanelIcon";
 import { TrackerSizeTierIcon } from "../../../components/ui/TrackerSizeTierIcon";
 import type { TrackerPanelSide, TrackerPanelSizeProfile } from "../../../stores/ui.store";
@@ -19,6 +19,8 @@ export function TrackerSidebarHeader({
   onSetEditMode,
   onSetSide,
   onSetSizeProfile,
+  onClearCharacterTracker,
+  clearingCharacterTracker,
   onClose,
 }: {
   trackerPanelSide: TrackerPanelSide;
@@ -27,6 +29,8 @@ export function TrackerSidebarHeader({
   onSetEditMode: (mode: TrackerEditMode | null) => void;
   onSetSide: (side: TrackerPanelSide) => void;
   onSetSizeProfile: (profile: TrackerPanelSizeProfile) => void;
+  onClearCharacterTracker: () => void;
+  clearingCharacterTracker: boolean;
   onClose: () => void;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -224,6 +228,18 @@ export function TrackerSidebarHeader({
           )}
         >
           <Trash2 size="0.75rem" />
+        </button>
+        <button
+          data-tracker-toolbar-item
+          tabIndex={toolbarFocusIndex === 6 ? 0 : -1}
+          type="button"
+          onClick={onClearCharacterTracker}
+          disabled={clearingCharacterTracker}
+          title="Clear all Character Tracker data for this chat (avatars are preserved)"
+          aria-label="Clear Character Tracker data while preserving avatars"
+          className="flex h-6 w-6 items-center justify-center rounded-sm text-[var(--destructive)]/75 ring-1 ring-transparent transition-all hover:bg-[var(--destructive)]/15 hover:text-[var(--destructive)] hover:ring-[var(--destructive)]/35 disabled:cursor-wait disabled:opacity-40 active:scale-90"
+        >
+          <Eraser size="0.75rem" />
         </button>
       </div>
     </div>

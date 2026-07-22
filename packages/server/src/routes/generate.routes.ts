@@ -2,7 +2,7 @@
 // Routes: Generation (SSE Streaming with Tool Use + Agent Pipeline)
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
   generateRequestSchema,
@@ -79,7 +79,15 @@ import { createRegexScriptsStorage } from "../services/storage/regex-scripts.sto
 import { createCustomEmojisStorage } from "../services/storage/custom-emojis.storage.js";
 import { createCustomStickersStorage } from "../services/storage/custom-stickers.storage.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
-import { convertCharacterTrackerAvatarToTags } from "../services/image/character-tracker-avatar-prompt.js";
+import {
+  convertCharacterTrackerAvatarToTags,
+  convertCharacterTrackerSceneToTags,
+} from "../services/image/character-tracker-avatar-prompt.js";
+import {
+  applyAvatarBodyControls,
+  avatarBodyControlState,
+  getStoredAvatarBodyControl,
+} from "../services/image/avatar-body-control.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { buildLorebookSemanticEmbeddingsById, warmLorebookEntryEmbeddings } from "../services/lorebook/embeddings.js";
@@ -123,7 +131,7 @@ import { executeAgent, normalizeAgentContextSize, resolveAgentResultType } from 
 import { matchCustomAgentActivation } from "./generate/agent-activation.js";
 import { listCharacterSprites } from "../services/game/sprite.service.js";
 import { generateChatBackground } from "../services/game/game-asset-generation.js";
-import { sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
+import { findStoredNpcAvatarFile, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import {
   parseCharacterCommands,
   parseCharacterCommandsBySpeaker,
@@ -7127,7 +7135,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 // 2. Fall back to stored NPC avatars (per-chat generated/uploaded)
                 const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
                 const storedNpcAvatarByName = new Map<string, string>();
-                const cardCharacterIds = applyTrackerCharacterCardIdentity(chars, charInfo);
+                applyTrackerCharacterCardIdentity(chars, charInfo);
                 const gameNpcs = sanitizeGameNpcAvatarUrls((chatMeta.gameNpcs as GameNpc[]) ?? []);
                 if (gameNpcs !== chatMeta.gameNpcs) {
                   chatMeta.gameNpcs = gameNpcs;
@@ -7139,7 +7147,6 @@ export async function generateRoutes(app: FastifyInstance) {
 
                 for (const char of chars) {
                   if (isManualTrackerCharacterId(char.characterId)) continue;
-                  if (cardCharacterIds.has(String(char.characterId))) continue;
                   const name = (char.name as string) ?? "";
                   // Try matching against the chat's character cards (case-insensitive)
                   const matched = charInfo.find((c) => normalizeTextForMatch(c.name) === normalizeTextForMatch(name));
@@ -7162,9 +7169,11 @@ export async function generateRoutes(app: FastifyInstance) {
                     .replace(/[^a-z0-9]+/g, "-")
                     .replace(/(^-|-$)/g, "");
                   if (safeName) {
-                    const npcAvatarPath = join(NPC_AVATAR_DIR, input.chatId, `${safeName}.png`);
-                    if (existsSync(npcAvatarPath)) {
-                      char.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}.png`;
+                    const storedAvatar = findStoredNpcAvatarFile(join(NPC_AVATAR_DIR, input.chatId), safeName);
+                    if (storedAvatar) {
+                      const npcAvatarPath = storedAvatar.path;
+                      const revision = Math.trunc(statSync(npcAvatarPath).mtimeMs).toString(36);
+                      char.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}${storedAvatar.extension}?v=${revision}`;
                     }
                   }
                 }
@@ -7222,23 +7231,43 @@ export async function generateRoutes(app: FastifyInstance) {
                               styleProfile.promptMode === "danbooru" || styleProfile.promptMode === "tagged"
                                 ? styleProfile.promptMode
                                 : null;
+                            let sceneTags: string[] = [];
                             const converted = tagPromptMode
-                              ? await convertCharacterTrackerAvatarToTags({
-                                  provider: charTrackerAgent.provider,
-                                  model: charTrackerAgent.model,
-                                  promptMode: tagPromptMode,
-                                  characterName: npcName,
-                                  appearance,
-                                  outfit,
-                                  sceneContext: combinedResponse,
-                                  debugMode: input.debugMode,
+                              ? await Promise.all([
+                                  convertCharacterTrackerAvatarToTags({
+                                    provider: charTrackerAgent.provider,
+                                    model: charTrackerAgent.model,
+                                    promptMode: tagPromptMode,
+                                    characterName: npcName,
+                                    appearance,
+                                    outfit,
+                                    debugMode: input.debugMode,
+                                  }),
+                                  convertCharacterTrackerSceneToTags({
+                                    provider: charTrackerAgent.provider,
+                                    model: charTrackerAgent.model,
+                                    promptMode: tagPromptMode,
+                                    characterName: npcName,
+                                    sceneContext: combinedResponse,
+                                    debugMode: input.debugMode,
+                                  }).catch((error) => {
+                                    logger.warn(
+                                      error,
+                                      "[character-tracker] Scene tag conversion failed for %s; continuing without scene tags",
+                                      npcName,
+                                    );
+                                    return null;
+                                  }),
+                                ]).then(([identity, scene]) => {
+                                  sceneTags = scene?.sceneTags ?? [];
+                                  return identity;
                                 })
                               : null;
                             if (tagPromptMode && !converted) {
                               throw new Error("Character appearance tag conversion returned no valid tags");
                             }
                             const protectedPositive = converted
-                              ? converted.positiveTags.join(", ")
+                              ? [...converted.positiveTags, ...sceneTags].join(", ")
                               : [appearance, outfit].filter(Boolean).join(", ");
                             const prompt = "single character, solo, full body, detailed face, high quality";
                             logger.debug(
@@ -7254,26 +7283,56 @@ export async function generateRoutes(app: FastifyInstance) {
                               prompt,
                               negativePrompt: converted?.negativeTags.join(", ") || undefined,
                               protectedPositive,
+                              hardNegative:
+                                sceneTags.length > 0
+                                  ? "multiple people, extra person, crowd, disembodied limbs"
+                                  : undefined,
                               styleProfiles: imageSettings.styleProfiles,
                               styleProfileId,
                               imageDefaults,
                             });
+                            const npcBodyControlDir = join(NPC_AVATAR_DIR, input.chatId);
+                            const npcCharacterId = String(npc.characterId ?? npcName).trim();
+                            const controlledPrompt = imageDefaults?.service === "comfyui" && imageDefaults.comfyui
+                              ? applyAvatarBodyControls(
+                                  {
+                                    positive: compiledPrompt.prompt,
+                                    negative: compiledPrompt.negativePrompt,
+                                    seed: imageDefaults.seed,
+                                  },
+                                  avatarBodyControlState(
+                                    getStoredAvatarBodyControl(npcBodyControlDir, npcCharacterId),
+                                    Array.isArray(npc.stats) ? (npc.stats as CharacterStat[]) : [],
+                                    false,
+                                  ).effective,
+                                )
+                              : null;
+                            const avatarImageDefaults = controlledPrompt && imageDefaults?.comfyui
+                              ? {
+                                  ...imageDefaults,
+                                  comfyui: {
+                                    ...imageDefaults.comfyui,
+                                    promptPrefix: "",
+                                    negativePromptPrefix: "",
+                                  },
+                                }
+                              : imageDefaults;
                             logger.debug(
                               "[character-tracker] Final avatar prompt for %s: positive=%s; negative=%s",
                               npcName,
-                              compiledPrompt.prompt,
-                              compiledPrompt.negativePrompt,
+                              controlledPrompt?.positive ?? compiledPrompt.prompt,
+                              controlledPrompt?.negative ?? compiledPrompt.negativePrompt,
                             );
 
                             const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
-                              prompt: compiledPrompt.prompt,
-                              negativePrompt: compiledPrompt.negativePrompt || undefined,
+                              prompt: controlledPrompt?.positive ?? compiledPrompt.prompt,
+                              negativePrompt: controlledPrompt?.negative || compiledPrompt.negativePrompt || undefined,
                               model: imgModel,
                               width: imageSettings.portrait.width,
                               height: imageSettings.portrait.height,
                               imageEndpointId: imgConnFull.imageEndpointId || undefined,
                               comfyWorkflow: imgConnFull.comfyuiWorkflow || undefined,
-                              imageDefaults,
+                              imageDefaults: avatarImageDefaults,
                               fallback: imageFallback,
                               onFallback,
                             });
@@ -7285,10 +7344,21 @@ export async function generateRoutes(app: FastifyInstance) {
                               .replace(/(^-|-$)/g, "");
                             const npcDir = join(NPC_AVATAR_DIR, input.chatId);
                             if (!existsSync(npcDir)) mkdirSync(npcDir, { recursive: true });
-                            writeFileSync(join(npcDir, `${safeName}.png`), Buffer.from(imageResult.base64, "base64"));
+                            const avatarFilePath = join(npcDir, `${safeName}.png`);
+                            const temporaryAvatarPath = join(
+                              npcDir,
+                              `.${safeName}-${Date.now()}-${Math.random().toString(36).slice(2)}.png.tmp`,
+                            );
+                            try {
+                              writeFileSync(temporaryAvatarPath, Buffer.from(imageResult.base64, "base64"));
+                              renameSync(temporaryAvatarPath, avatarFilePath);
+                            } finally {
+                              if (existsSync(temporaryAvatarPath)) rmSync(temporaryAvatarPath, { force: true });
+                            }
 
                             // Update the character's avatarPath and stream to client
-                            npc.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}.png?v=${Date.now()}`;
+                            const avatarRevision = Math.trunc(statSync(avatarFilePath).mtimeMs).toString(36);
+                            npc.avatarPath = `/api/avatars/npc/${input.chatId}/${safeName}.png?v=${avatarRevision}`;
                             const key = avatarMatchKey(npc);
                             if (key) generatedAvatarPaths.set(key, npc.avatarPath);
                             logger.info(`[character-tracker] Generated avatar for NPC "${npcName}"`);

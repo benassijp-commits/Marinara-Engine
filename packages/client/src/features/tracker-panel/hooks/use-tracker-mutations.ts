@@ -21,7 +21,7 @@ import {
 import { api } from "../../../lib/api-client";
 import { showConfirmDialog } from "../../../lib/app-dialogs";
 import { useGameStateStore } from "../../../stores/game-state.store";
-import type { GameStatePatchField } from "../../../hooks/use-game-state-patcher";
+import { patchGameStateField, type GameStatePatchField } from "../../../hooks/use-game-state-patcher";
 import { getCharacterFeatureKey, resolveCharacterTargetIndex } from "../lib/character-tracker-data";
 import { useTrackerFieldLockUpdater } from "./use-tracker-field-lock-updater";
 
@@ -137,6 +137,7 @@ export function useTrackerMutations({
   const avatarUploadSerialRef = useRef(0);
   const avatarUploadTokenByCharacterRef = useRef(new Map<string, number>());
   const [avatarRemovalKey, setAvatarRemovalKey] = useState<string | null>(null);
+  const [avatarBodyControl, setAvatarBodyControl] = useState<{ characterId: string; index: number } | null>(null);
   const updateFieldLocks = useTrackerFieldLockUpdater({ chatId: activeChatId, patchField });
   const updateHiddenTrackerFields = useCallback(
     (updater: (hiddenFields: TrackerHiddenFields | null | undefined) => TrackerHiddenFields) => {
@@ -177,6 +178,29 @@ export function useTrackerMutations({
     [presentCharacters, readPresentCharacters],
   );
 
+  const openAvatarBodyControl = useCallback(
+    (index: number) => {
+      const character = presentCharacters[index] ?? readPresentCharacters()[index];
+      if (!character?.characterId) return;
+      setAvatarBodyControl({ characterId: character.characterId, index });
+    },
+    [presentCharacters, readPresentCharacters],
+  );
+
+  const updateAvatarPath = useCallback(
+    (characterId: string, fallbackIndex: number, avatarPath: string) => {
+      const latestCharacters = readPresentCharacters();
+      const targetIndex = resolveCharacterTargetIndex(latestCharacters, characterId, fallbackIndex);
+      if (targetIndex < 0) return false;
+      const nextCharacters = [...latestCharacters];
+      nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath };
+      if (!activeChatId) return false;
+      patchGameStateField(activeChatId, "presentCharacters", nextCharacters, { allowDuringRefresh: true });
+      return true;
+    },
+    [activeChatId, readPresentCharacters],
+  );
+
   const handleAvatarUpload = useCallback(
     (characterId: string, fallbackIndex: number, file: File) => {
       if (!activeChatId) return;
@@ -202,6 +226,7 @@ export function useTrackerMutations({
 
         try {
           const response = await api.post<{ avatarPath: string }>(`/avatars/npc/${activeChatId}`, {
+            characterId: character.characterId,
             name: character.name,
             avatar: dataUrl,
           });
@@ -255,35 +280,37 @@ export function useTrackerMutations({
       const removalKey = `${character.characterId || "character"}:${index}`;
       if (avatarRemovalKey) return;
       const confirmed = await showConfirmDialog({
-        title: "Remove character avatar?",
-        message: `Remove ${character.name.trim() || "this character"}'s tracker avatar? Manually uploaded images are deleted permanently. A new avatar can be generated after the next message when automatic avatar generation is enabled.`,
-        confirmLabel: "Remove avatar",
+        title: "Regenerate character avatar?",
+        message: `Generate a new avatar for ${character.name.trim() || "this character"} now? The current image remains in place unless generation and saving both succeed.`,
+        confirmLabel: "Regenerate avatar",
         cancelLabel: "Cancel",
-        tone: "destructive",
       });
       if (!confirmed) return;
 
       setAvatarRemovalKey(removalKey);
       try {
-        const storedFilename = character.avatarPath.split("?", 1)[0]?.split("/").pop();
-        const storedAvatarName = storedFilename?.replace(/\.[^.]+$/, "") || character.name;
-        await api.delete(
-          `/avatars/npc/${encodeURIComponent(activeChatId)}?name=${encodeURIComponent(storedAvatarName)}`,
+        const stored = await api.post<{ avatarPath: string }>(
+          `/avatars/npc/${encodeURIComponent(activeChatId)}/regenerate`,
+          {
+          name: character.name,
+            appearance: character.appearance,
+            outfit: character.outfit,
+          },
         );
 
         const latestCharacters = readPresentCharacters();
         const targetIndex = resolveCharacterTargetIndex(latestCharacters, character.characterId, initialIndex);
         if (targetIndex < 0) {
-          toast.error("The character changed before the avatar could be removed.");
+          toast.error("The character changed before the new avatar could be saved.");
           return;
         }
         const nextCharacters = [...latestCharacters];
-        nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath: null };
+        nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath: stored.avatarPath };
         patchField("presentCharacters", nextCharacters);
         await flushPatch();
-        toast.success(`${character.name.trim() || "Character"}'s avatar was removed.`);
+        toast.success(`${character.name.trim() || "Character"}'s avatar was regenerated.`);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Failed to remove the character avatar.");
+        toast.error(error instanceof Error ? error.message : "Failed to regenerate the character avatar.");
       } finally {
         setAvatarRemovalKey(null);
       }
@@ -496,6 +523,10 @@ export function useTrackerMutations({
     handleAvatarFileInputChange,
     openAvatarUpload,
     avatarRemovalKey,
+    avatarBodyControl,
+    closeAvatarBodyControl: () => setAvatarBodyControl(null),
+    openAvatarBodyControl,
+    updateAvatarPath,
     removeAvatar,
     removeCharacter,
     removeInventoryItem,

@@ -47,6 +47,7 @@ import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createGameStateStorage, type GameStateVisibleAnchor } from "../services/storage/game-state.storage.js";
 import {
@@ -69,7 +70,8 @@ import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../servic
 import { newId } from "../utils/id-generator.js";
 import { characters, gameStateSnapshots, memoryChunks } from "../db/schema/index.js";
 import { and, desc, eq, inArray } from "../db/file-query.js";
-import { existsSync } from "fs";
+import { existsSync, statSync } from "fs";
+import { unlink } from "fs/promises";
 import { join } from "path";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
@@ -101,7 +103,7 @@ import {
   resolveMemoryRecallEmbeddingSource,
 } from "../services/memory-recall-embedding.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
-import { sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
+import { findStoredNpcAvatarFile, sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import { buildCommittedTrackerContextBlock } from "../services/generation/committed-tracker-context.js";
 import { parseLorebookWriteApprovalText } from "./generate/agent-write-approval.js";
 import { persistLorebookKeeperUpdates } from "./generate/lorebook-keeper-utils.js";
@@ -1817,6 +1819,28 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     // ── Enrich present characters with avatar paths ──
     // Match NPC names against the chat's known character cards, then fall back to stored NPC avatars on disk.
+    const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
+    const storedNpcAvatarUrl = (name: string) => {
+      const safeName = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+      if (!safeName) return null;
+      const storedAvatar = findStoredNpcAvatarFile(join(NPC_AVATAR_DIR, req.params.id), safeName);
+      if (!storedAvatar) return null;
+      const revision = Math.trunc(statSync(storedAvatar.path).mtimeMs).toString(36);
+      return `/api/avatars/npc/${req.params.id}/${safeName}${storedAvatar.extension}?v=${revision}`;
+    };
+    const npcAvatarPrefix = `/api/avatars/npc/${req.params.id}/`;
+    for (const char of presentCharacters) {
+      if (
+        typeof char.name === "string" &&
+        typeof char.avatarPath === "string" &&
+        char.avatarPath.startsWith(npcAvatarPrefix)
+      ) {
+        char.avatarPath = storedNpcAvatarUrl(char.name) ?? char.avatarPath;
+      }
+    }
     const charsNeedingAvatar = presentCharacters.filter(
       (c) => !c.avatarPath && c.name && !isManualTrackerCharacterId(c.characterId),
     );
@@ -1848,7 +1872,6 @@ export async function chatsRoutes(app: FastifyInstance) {
           }
         }
       }
-      const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
       for (const char of charsNeedingAvatar) {
         const name = char.name as string;
         // 1. Try matching a known character card by name
@@ -1858,14 +1881,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           continue;
         }
         // 2. Try loading a stored NPC avatar from disk
-        const safeName = name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/(^-|-$)/g, "");
-        if (safeName) {
-          const npcPath = join(NPC_AVATAR_DIR, req.params.id, `${safeName}.png`);
-          if (existsSync(npcPath)) char.avatarPath = `/api/avatars/npc/${req.params.id}/${safeName}.png`;
-        }
+        char.avatarPath = storedNpcAvatarUrl(name);
       }
     }
 
@@ -2039,6 +2055,31 @@ export async function chatsRoutes(app: FastifyInstance) {
     const gameStateStore = createGameStateStorage(app.db);
     await gameStateStore.deleteForChat(req.params.id);
     return reply.status(204).send();
+  });
+
+  // Clear Character Tracker state everywhere for this chat, preserving NPC avatar images.
+  app.delete<{ Params: { id: string } }>("/:id/character-tracker-data", async (req, reply) => {
+    const chat = await storage.getById(req.params.id);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+
+    const gameStateStore = createGameStateStorage(app.db);
+    const agentsStore = createAgentsStorage(app.db);
+    const trackerConfig = await agentsStore.getByType("character-tracker");
+
+    const clearedSnapshots = await gameStateStore.clearCharacterTrackerForChat(req.params.id);
+    await agentsStore.clearCharacterTrackerRunsForChat(req.params.id);
+    if (trackerConfig) {
+      await agentsStore.clearMemoryForAgentInChat(trackerConfig.id, req.params.id);
+    }
+
+    const controllerMetadataPath = join(DATA_DIR, "avatars", "npc", req.params.id, ".avatar-body-controls.json");
+    try {
+      await unlink(controllerMetadataPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    return { success: true, clearedSnapshots, avatarsPreserved: true };
   });
 
   // Peek prompt — return an exact saved turn prompt when available, otherwise

@@ -80,12 +80,40 @@ export interface PresentCharacter {
   thoughts: string | null;
 }
 
+export interface AvatarDescriptionPreview {
+  appearance: string | null;
+  outfit: string | null;
+  source: "card_and_scene" | "scene_fallback";
+  warnings: string[];
+}
+
 /** A numeric stat for a character. */
 export interface CharacterStat {
   name: string;
   value: number;
   max: number;
   color: string;
+}
+
+export type AvatarBodyControlMode = "auto" | "manual";
+
+export interface AvatarBodyControlValues {
+  muscularity: number;
+  bodyFat: number;
+  cock: number;
+  /** Internal height context used only for scale tags; it is not a fourth slider. */
+  heightCm?: number;
+  /** Internal weight context used to gate scale tags; it is not a fourth slider. */
+  weightKg?: number;
+}
+
+export interface AvatarBodyControlState {
+  mode: AvatarBodyControlMode;
+  manual: AvatarBodyControlValues;
+  effective: AvatarBodyControlValues;
+  locked: boolean;
+  canLock: boolean;
+  seed: number | null;
 }
 
 /** A user-defined world tracker field. */
