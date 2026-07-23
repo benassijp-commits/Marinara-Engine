@@ -270,8 +270,16 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
       const secretIndex = bible.secrets.findIndex((s) => s.id === id);
       if (secretIndex >= 0) bible.secrets[secretIndex] = { ...bible.secrets[secretIndex]!, knownByCharacterIds: patch.knownByCharacterIds };
     }
-    // Automatic graduation: a secret revealed to everyone relevant retires from active tracking.
-    if (patch.status === "revealed") graduate("secret", id);
+    // Automatic graduation: don't trust the model's "revealed" label alone — a secret only
+    // retires from active tracking once every character in the bible is actually listed as
+    // knowing it. Trusting the label alone let a single over-eager report graduate several
+    // secrets at once that only some characters actually knew.
+    if (patch.status === "revealed") {
+      const secret = bible.secrets.find((s) => s.id === id);
+      const knownBy = new Set(secret?.knownByCharacterIds ?? []);
+      const everyoneKnows = knownIds.character.size > 0 && [...knownIds.character].every((cid) => knownBy.has(cid));
+      if (everyoneKnows) graduate("secret", id);
+    }
   }
 
   for (const [id, patch] of Object.entries(report.storylines ?? {})) {
@@ -349,8 +357,15 @@ export function scrubForbiddenTerms(text: string, memory: CuratorMemory): string
   if (!text.trim()) return text;
   const bible = memory.bible ?? { characters: [], secrets: [], storylines: [], relationships: [] };
   const state = memory.state ?? {};
+  // Graduation deletes the state entry (see applyCuratorTrackerReport's graduate()), so a
+  // graduated secret has no state.status left — falling back to "locked" there would scrub
+  // a secret that is actually fully revealed. Graduated secrets are always safe to mention.
+  const graduatedSecretIds = new Set(
+    (memory.graduated ?? []).filter((g) => g.entityType === "secret").map((g) => g.entityId),
+  );
   let result = text;
   for (const secret of bible.secrets ?? []) {
+    if (graduatedSecretIds.has(secret.id)) continue;
     const status = state[entityKey("secret", secret.id)]?.status ?? "locked";
     if (status === "revealed") continue;
     const terms = [secret.title, ...(secret.forbiddenTerms ?? [])].map((t) => t.trim()).filter((t) => t.length > 2);
