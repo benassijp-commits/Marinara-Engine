@@ -4180,40 +4180,6 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
-          if (curatorTrackerAgent) {
-            const trackerResult = preGenResults.find(
-              (r) => r.agentType === CURATOR_TRACKER_TYPE && r.success && r.type === "curator_state_write",
-            );
-            if (trackerResult?.data) {
-              try {
-                const report = curatorTrackerReportSchema.parse(trackerResult.data);
-                const currentMemory = curatorMemoryForScrub ?? (await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId));
-                const { memory: nextMemory, changedCount, newlyGraduated } = applyCuratorTrackerReport(currentMemory, report);
-                let finalMemory = nextMemory;
-                if (newlyGraduated.length > 0) {
-                  try {
-                    const patch = await promoteGraduatedToLorebook(
-                      lorebooksStore,
-                      input.chatId,
-                      chat.name ?? "",
-                      nextMemory,
-                      newlyGraduated,
-                    );
-                    if (patch.canonLorebookId) finalMemory = { ...nextMemory, ...patch };
-                  } catch (err) {
-                    logger.warn(err, "[narrative-curator] Failed to promote graduated entities to lorebook");
-                  }
-                }
-                if (changedCount > 0) {
-                  await agentsStore.setMemories(curatorTrackerAgent.id, input.chatId, finalMemory);
-                  logger.debug("[narrative-curator] Tracker applied %d change(s)", changedCount);
-                }
-              } catch (err) {
-                logger.warn(err, "[narrative-curator] Failed to apply tracker report");
-              }
-            }
-          }
-
           const shouldReviewWriterAgentOutputs =
             (chatMode === "roleplay" || chatMode === "visual_novel") &&
             requireAgentWriteApproval &&
@@ -6703,6 +6669,40 @@ export async function generateRoutes(app: FastifyInstance) {
                 r.tokensUsed,
                 r.error ? ` — ${r.error}` : "",
               );
+            }
+          }
+
+          if (curatorTrackerAgent) {
+            const trackerResult = postResults.find(
+              (r) => r.agentType === CURATOR_TRACKER_TYPE && r.success && r.type === "curator_state_write",
+            );
+            if (trackerResult?.data) {
+              try {
+                const report = curatorTrackerReportSchema.parse(trackerResult.data);
+                const currentMemory = await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId);
+                const { memory: nextMemory, changedCount, newlyGraduated } = applyCuratorTrackerReport(currentMemory, report);
+                let finalMemory = nextMemory;
+                if (newlyGraduated.length > 0) {
+                  try {
+                    const patch = await promoteGraduatedToLorebook(
+                      lorebooksStore,
+                      input.chatId,
+                      chat.name ?? "",
+                      nextMemory,
+                      newlyGraduated,
+                    );
+                    if (patch.canonLorebookId) finalMemory = { ...nextMemory, ...patch };
+                  } catch (err) {
+                    logger.warn(err, "[narrative-curator] Failed to promote graduated entities to lorebook");
+                  }
+                }
+                if (changedCount > 0) {
+                  await agentsStore.setMemories(curatorTrackerAgent.id, input.chatId, finalMemory);
+                  logger.debug("[narrative-curator] Tracker applied %d change(s)", changedCount);
+                }
+              } catch (err) {
+                logger.warn(err, "[narrative-curator] Failed to apply tracker report");
+              }
             }
           }
 

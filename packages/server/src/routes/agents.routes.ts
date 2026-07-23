@@ -38,7 +38,7 @@ import { promoteGraduatedToLorebook } from "../services/generation/curator-loreb
 
 const CURATOR_AGENT_DEFAULTS: Record<
   string,
-  { name: string; description: string; promptTemplate: string; resultType: string; maxTokens: number }
+  { name: string; description: string; promptTemplate: string; resultType: string; maxTokens: number; phase: "pre_generation" | "post_processing" }
 > = {
   [CURATOR_TRACKER_TYPE]: {
     name: "Narrative Curator — Tracker",
@@ -47,6 +47,10 @@ const CURATOR_AGENT_DEFAULTS: Record<
     resultType: "curator_state_write",
     // Needs room to actually consider every tracked entity, not just whatever's salient.
     maxTokens: 1200,
+    // post_processing, not pre_generation: it runs after the narrator's response exists, so
+    // it reasons about the full exchange (user message + what the narrator just wrote)
+    // instead of only what was known before the response it's meant to help track.
+    phase: "post_processing",
   },
   [CURATOR_SCENE_TYPE]: {
     name: "Narrative Curator — Scene",
@@ -54,6 +58,7 @@ const CURATOR_AGENT_DEFAULTS: Record<
     promptTemplate: CURATOR_SCENE_PROMPT,
     resultType: "context_injection",
     maxTokens: 700,
+    phase: "pre_generation",
   },
 };
 
@@ -205,7 +210,7 @@ export async function agentsRoutes(app: FastifyInstance) {
       type: agentType,
       name: defaults.name,
       description: defaults.description,
-      phase: "pre_generation",
+      phase: defaults.phase,
       connectionId: null,
       imagePath: null,
       promptTemplate: defaults.promptTemplate,
