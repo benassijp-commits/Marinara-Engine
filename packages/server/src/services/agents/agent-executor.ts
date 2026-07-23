@@ -325,36 +325,11 @@ function compactPresentCharactersForHiddenFields(
   return changed ? compacted : presentCharacters;
 }
 
-// The Narrative Curator agents get game state through this generic <current_game_state>
-// block, entirely separate from (and in addition to) their own <Curator Tracker State>
-// block. Character Tracker's mood/appearance/outfit/thoughts are its own directive read of
-// the scene, generated blind to the roleplay prompt's tone — the same reason they were
-// already stripped from the narrator's committed-tracker-context (see
-// committed-tracker-context.ts). Without this, that reasoning never reached this second,
-// unrelated injection path and the Curator could read Character Tracker's raw `thoughts`
-// directly, regardless of the user's own hiddenTrackerFields choice.
+// The Narrative Curator (Tracker + Scene Curator) gets no game state at all — see the
+// exclusions around <current_game_state> and buildCommittedTrackerStateContext below. It has
+// its own <Curator Tracker State> block (bible + live state) and no legitimate use for
+// location/weather/quest/stats/character-tracker data.
 const CURATOR_AGENT_TYPES_NEEDING_CLEAN_GAME_STATE = ["narrative-curator-tracker", "narrative-curator-scene"];
-
-function stripCharacterTrackerDirectiveFieldsForCurator(presentCharacters: unknown, agentTypes: string[]): unknown {
-  if (!Array.isArray(presentCharacters)) return presentCharacters;
-  if (!agentTypes.some((type) => CURATOR_AGENT_TYPES_NEEDING_CLEAN_GAME_STATE.includes(type))) return presentCharacters;
-
-  let changed = false;
-  const compacted = presentCharacters.map((character) => {
-    if (!isRecord(character)) return character;
-    let next: Record<string, unknown> | null = null;
-    for (const field of HIDEABLE_CHARACTER_TRACKER_FIELDS) {
-      if (field in character) {
-        next ??= { ...character };
-        delete next[field];
-        changed = true;
-      }
-    }
-    return next ?? character;
-  });
-
-  return changed ? compacted : presentCharacters;
-}
 
 function omitHiddenFieldLocksForContext(fieldLocks: unknown, hiddenFields: TrackerHiddenFields): unknown {
   if (!isRecord(fieldLocks) || Object.keys(hiddenFields).length === 0) return fieldLocks;
@@ -375,10 +350,7 @@ export function compactGameStateForAgentContext(gameState: unknown, agentTypes: 
   }
 
   const hiddenFields = normalizeTrackerHiddenFields(gameState.hiddenTrackerFields);
-  const presentCharacters = stripCharacterTrackerDirectiveFieldsForCurator(
-    compactPresentCharactersForHiddenFields(gameState.presentCharacters, hiddenFields),
-    agentTypes,
-  );
+  const presentCharacters = compactPresentCharactersForHiddenFields(gameState.presentCharacters, hiddenFields);
   const playerStats = compactQuestPlayerStatsForContext(gameState.playerStats, agentTypes);
   const visibleFieldLocks = omitHiddenFieldLocksForContext(gameState.fieldLocks, hiddenFields);
   const fieldLocks = shouldIncludeQuestContext(agentTypes) ? visibleFieldLocks : omitQuestFieldLocksForContext(visibleFieldLocks);
@@ -2009,6 +1981,9 @@ function buildCommittedTrackerStateContext(
   contextAgentTypes: string[],
   options: { includeMessageIds?: boolean },
 ): string | null {
+  // Same exclusion as the current-turn <current_game_state> block — the Narrative Curator
+  // has no legitimate use for game state, current or historical.
+  if (contextAgentTypes.some((type) => CURATOR_AGENT_TYPES_NEEDING_CLEAN_GAME_STATE.includes(type))) return null;
   const gs = msg.gameState ? (compactGameStateForAgentContext(msg.gameState, contextAgentTypes) as typeof msg.gameState) : null;
   if (!gs) return null;
 
@@ -2323,7 +2298,12 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     }
   }
 
-  if (context.gameState) {
+  // The Narrative Curator gets no game state at all, current or historical (see the
+  // matching skip in buildCommittedTrackerStateContext) — it has its own <Curator Tracker
+  // State> block (bible + live state) and has no legitimate use for location/weather/quest/
+  // stats/character-tracker data. Excluding the whole block is more robust than stripping
+  // individual fields: a newly-added game-state field can't leak through by default.
+  if (context.gameState && !agentTypes.some((type) => CURATOR_AGENT_TYPES_NEEDING_CLEAN_GAME_STATE.includes(type))) {
     parts.push(`<current_game_state>`);
     parts.push(JSON.stringify(compactGameStateForAgentContext(context.gameState, agentTypes)));
     parts.push(`</current_game_state>`);
