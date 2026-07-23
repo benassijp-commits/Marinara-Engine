@@ -430,6 +430,29 @@ export async function agentsRoutes(app: FastifyInstance) {
       /* non-critical */
     }
 
+    // Same reasoning for the Narrative Curator's bible: it is hand-authored, long-term
+    // story structure (characters/secrets/storylines/relationships), not per-scene state.
+    // state/log/graduated ARE allowed to clear here — that's the "fresh start" this button
+    // is for — but the bible itself must survive a tracker reset the same way the Director's
+    // arc does. canonLorebookId travels with it so a later graduation reuses the same
+    // Curator Canon lorebook instead of creating a duplicate.
+    let preservedBible: unknown;
+    let preservedCanonLorebookId: unknown;
+    let preservedCuratorConfigId: string | null = null;
+    try {
+      const curatorConfig = await storage.getByType(CURATOR_TRACKER_TYPE);
+      if (curatorConfig) {
+        const mem = await storage.getMemory(curatorConfig.id, chatId);
+        if (mem.bible !== undefined && mem.bible !== null) {
+          preservedBible = mem.bible;
+          preservedCanonLorebookId = mem.canonLorebookId;
+          preservedCuratorConfigId = curatorConfig.id;
+        }
+      }
+    } catch {
+      /* non-critical */
+    }
+
     await storage.clearRunsForChat(chatId);
     await storage.clearMemoryForChat(chatId);
 
@@ -437,6 +460,18 @@ export async function agentsRoutes(app: FastifyInstance) {
     if (preservedArc !== undefined && preservedConfigId) {
       try {
         await storage.setMemory(preservedConfigId, chatId, "overarchingArc", preservedArc);
+      } catch {
+        /* non-critical */
+      }
+    }
+
+    // Restore the Curator bible (and its canon lorebook link, if any)
+    if (preservedBible !== undefined && preservedCuratorConfigId) {
+      try {
+        await storage.setMemories(preservedCuratorConfigId, chatId, {
+          bible: preservedBible,
+          ...(preservedCanonLorebookId !== undefined ? { canonLorebookId: preservedCanonLorebookId } : {}),
+        });
       } catch {
         /* non-critical */
       }
