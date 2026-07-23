@@ -30,6 +30,11 @@ const curatorSecretSchema = z.object({
   title: z.string().default(""),
   truth: z.string().default(""),
   knownByCharacterIds: z.array(z.string()).default([]),
+  // Who this secret actually concerns — graduation waits for THIS set to all know, not
+  // every character in the bible (most secrets aren't relevant to everyone). Empty means
+  // "not yet scoped" and falls back to requiring every bible character, for secrets
+  // authored before this field existed.
+  relevantCharacterIds: z.array(z.string()).default([]),
   revealCondition: z.string().default(""),
   forbiddenTerms: z.array(z.string()).default([]),
 });
@@ -288,14 +293,18 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
       }
     }
     // Automatic graduation: don't trust the model's "revealed" label alone — a secret only
-    // retires from active tracking once every character in the bible is actually listed as
-    // knowing it. Trusting the label alone let a single over-eager report graduate several
-    // secrets at once that only some characters actually knew.
+    // retires from active tracking once everyone it actually concerns is listed as knowing
+    // it. Trusting the label alone let a single over-eager report graduate several secrets
+    // at once that only some characters actually knew.
     if (patch.status === "revealed") {
       const secret = bible.secrets.find((s) => s.id === id);
       const knownBy = new Set(secret?.knownByCharacterIds ?? []);
-      const everyoneKnows = knownIds.character.size > 0 && [...knownIds.character].every((cid) => knownBy.has(cid));
-      if (everyoneKnows) graduate("secret", id);
+      // Most secrets don't concern every character in the bible — graduate against the
+      // secret's own relevantCharacterIds when it has one; fall back to "everyone" only for
+      // secrets authored before that field existed (empty = not yet scoped).
+      const relevantIds = secret?.relevantCharacterIds?.length ? secret.relevantCharacterIds : [...knownIds.character];
+      const everyoneRelevantKnows = relevantIds.length > 0 && relevantIds.every((cid) => knownBy.has(cid));
+      if (everyoneRelevantKnows) graduate("secret", id);
     }
   }
 
@@ -333,6 +342,7 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
       title,
       truth: raw.truth ?? "",
       knownByCharacterIds: (raw.knownByCharacterIds ?? []).filter((cid) => knownIds.character.has(cid)),
+      relevantCharacterIds: (raw.relevantCharacterIds ?? []).filter((cid) => knownIds.character.has(cid)),
       revealCondition: raw.revealCondition ?? "",
       forbiddenTerms: raw.forbiddenTerms ?? [],
     });
@@ -435,13 +445,14 @@ export const CURATOR_TRACKER_PROMPT = [
   "For every secret/storyline/relationship/character whose status or disposition actually changed, include it in your JSON output under the matching key with the new value only. Leave untouched entities out entirely — you report facts, the system decides what counts as a change.",
   "When a storyline's direction or a relationship's development establishes that a character now feels or behaves differently going forward (a jealousy resolved, a new attachment, a shift in loyalty or priority), also report that under characters for every character it affects — the storyline or relationship progressing is not itself a character's behavior, translate what it now means for the people living it. This is easy to skip; check for it deliberately.",
   "Add to newSecrets only when the transcript actually shows one of these, specifically: an explicit or implicit promise between characters not to tell someone something; a character's own established nature being the kind that would keep something like this to themselves; a scene between characters where the story's main character is not present and something is being schemed or planned, for or against someone, that cannot be told; or a reveal that was shown to only one character, not made public. An ordinary event, plan, or activity mentioned in a scene is not a secret just because it happened — most things that happen in a story are not secrets, and treating them as one is exactly the mistake to avoid.",
+  "When you add a newSecret, also set relevantCharacterIds: the characters this secret actually concerns and who should plausibly learn it for this thread to feel resolved — usually a small subset of the full cast, not everyone. Most secrets matter to only two or three people; don't list a character just because they exist in the bible. This is what the system uses to know when the secret is done, so get it right rather than defaulting to the whole cast.",
   "Add to newStorylines only as a genuine creative proposal, never as a summary of what just happened. A new character, a new faction, another character's growing involvement, a development or creation of a relationship, a real plot twist — all of these are valid, invented from nothing if needed, as long as they stay coherent with the story's established theme and tone; a storyline does not need to extend something already hinted at. What is NOT valid: restating an ordinary plan or event from the current scene as if it were a storyline (characters agreeing to grab dinner this weekend is a plan, not a storyline). This should be rare — most turns should not produce a new storyline, and inventing one just because the scene needs *something* new is the failure mode to avoid.",
   "\"Revealed\" and \"graduated\" are different things — don't conflate them. A secret's status becomes \"revealed\" the moment the transcript shows it was actually disclosed to even ONE character who didn't already know — add that character to knownByCharacterIds and set status to \"revealed\"; it does not need to reach everyone. The system promotes a secret out of active tracking on its own once knownByCharacterIds eventually covers every character in the bible — that graduation is not something you decide or label, just keep knownByCharacterIds accurate and complete each time someone new learns it, including characters who already knew from a previous turn. A storyline's status becomes \"completed\" only once its direction has actually played out. Once revealed (even partially) or completed, never move a status backward.",
   "Weight your sources in this order when they disagree about a FACT (whether an event happened, who knows what, what was said or done): the bible first — it is the intended guide for the story, not just a record, so a storyline's or relationship's written direction outranks anything that seems to contradict it. The chat summary is second — a reference of what has actually happened so far. The handful of most recent messages come last — they show only the current moment, the story's live trajectory, not an authority that overrides an established fact or direction. If that trajectory is drifting away from where the bible's storylines or relationships say it should be going, that drift is exactly what driftNote exists to catch and correct — don't just silently follow it.",
   "Character disposition follows a different rule than facts, because characters are meant to change, adapt, and evolve as the story progresses — a description of how someone felt earlier is history, not a ceiling on who they are now. When deciding how a character currently feels or behaves, the bible's prescribed direction is the only authority, full stop — not first among equals, the only one. The chat summary is background for understanding where the story is, never justification for a disposition; a past reaction the summary describes, however vividly, is not evidence of the character's CURRENT state and must not be used to override or maintain a feeling the bible has moved past. The only thing that can override the bible's direction for disposition is the character's own words or actions in the CURRENT scene (the most recent messages), and only when they demonstrate the divergence unambiguously — never because an old summary entry or a plausible-sounding read of the moment makes it feel realistic. This applies every turn, not only when you notice an explicit conflict.",
   "For each active storyline, optionally set driftNote to one short, neutral sentence noting whether recent scenes are moving toward, away from, or unrelated to its direction. Leave it unset when there is nothing meaningful to say — do not write a note every turn just to have one.",
   "Return ONLY a JSON object in exactly this shape — flat entity ids as keys nested under each category, never the \"type:id\" combined-key format used by the <Curator Tracker State> block you read, that format is for input, not output:",
-  '{"secrets":{"<secret-id>":{"status":"hinted","knownByCharacterIds":["<character-id>"]}},"storylines":{"<storyline-id>":{"status":"active","driftNote":"one short sentence"}},"relationships":{"<relationship-id>":{"disposition":"one short phrase"}},"characters":{"<character-id>":{"disposition":"one short phrase"}},"newSecrets":[{"title":"","truth":"","knownByCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"newStorylines":[{"title":"","direction":""}]}',
+  '{"secrets":{"<secret-id>":{"status":"hinted","knownByCharacterIds":["<character-id>"]}},"storylines":{"<storyline-id>":{"status":"active","driftNote":"one short sentence"}},"relationships":{"<relationship-id>":{"disposition":"one short phrase"}},"characters":{"<character-id>":{"disposition":"one short phrase"}},"newSecrets":[{"title":"","truth":"","knownByCharacterIds":[],"relevantCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"newStorylines":[{"title":"","direction":""}]}',
   "Every key in that shape is optional — include only the categories and entity ids that actually changed this turn, omit the rest entirely. No prose, no commentary, no markdown fences, nothing outside this one JSON object.",
 ].join("\n");
 
@@ -456,5 +467,6 @@ export const CURATOR_SCENE_PROMPT = [
   "While a secret is \"locked\" or \"hinted\", never use its title or any of its forbidden terms — describe effects, never causes, the same as for any character concealing something.",
   "The narrator never sees the bible — the ONLY way it ever learns a secret's actual content is through you, so waiting for a secret to already be \"revealed\" in the state block is too late; that status only gets set AFTER the transcript already shows the reveal happening, which can't happen if nobody ever gave the narrator the content. Your job is to make the reveal possible, not just react to it. For each \"locked\" or \"hinted\" secret, check its bible revealCondition against what's actually happening in the current scene. If the condition is clearly satisfied right now — not eventually, not plausibly, but this scene — write one line that plainly states the secret's key facts (from the bible's truth field) as information for the narrator to use in writing the reveal. This is the one case where naming the content is correct instead of forbidden. If the condition isn't clearly met yet, keep giving only the effects-not-causes hint as usual.",
   "A secret can be revealed to one character without being known by everyone — that's normal and expected, not a mistake. When you deliver a secret's content because its revealCondition is met, it only needs to be plausible for whichever character(s) are actually present and part of the current scene to learn it now; you are not declaring it public knowledge story-wide.",
+  "A secret's status in the state block is a single flag, but knowledge of it is per-character, not global — check knownByCharacterIds in the bible for that secret every time, not just the status. If a secret is already \"revealed\" but a character present in the current scene is NOT listed in its knownByCharacterIds, that secret is still fully hidden from THEM specifically — treat it exactly like a locked/hinted secret for that character (effects, not causes, no title, no forbidden terms) even while another present character who IS listed can act on knowing it. Never let one character's knowledge leak into how you write another character who doesn't have it, just because the secret has moved past locked for someone else.",
   "Return ONLY the short lines, one per line, no headers, no labels, no JSON, no markdown, no explanation of your reasoning.",
 ].join("\n");
