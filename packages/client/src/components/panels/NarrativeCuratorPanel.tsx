@@ -71,6 +71,8 @@ interface CuratorGraduatedEntry {
 }
 
 const EMPTY_BIBLE: CuratorBible = { characters: [], secrets: [], storylines: [], relationships: [] };
+const SECRET_STATUS_OPTIONS = ["locked", "hinted", "revealed"] as const;
+const STORYLINE_STATUS_OPTIONS = ["inactive", "active", "paused", "completed"] as const;
 
 function randomId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -223,7 +225,7 @@ export function NarrativeCuratorPanel() {
   const { data: memoryResp } = useAgentMemory(CURATOR_TRACKER_TYPE, chatId);
   const updateMemory = useUpdateAgentMemory();
   const serverBible = normalizeBible((memoryResp?.memory as { bible?: unknown })?.bible ?? EMPTY_BIBLE);
-  const state = ((memoryResp?.memory as { state?: Record<string, CuratorEntityState> })?.state ?? {}) as Record<
+  const serverState = ((memoryResp?.memory as { state?: Record<string, CuratorEntityState> })?.state ?? {}) as Record<
     string,
     CuratorEntityState
   >;
@@ -267,6 +269,39 @@ export function NarrativeCuratorPanel() {
     [],
   );
 
+  // Same local-draft + debounce pattern as the bible, for the same reason — Live State
+  // needs to be directly correctable (a wrong status/disposition the Tracker set), and
+  // saving on every keystroke would throw the cursor to the end mid-edit.
+  const [stateDraft, setStateDraft] = useState<Record<string, CuratorEntityState>>(serverState);
+  const savedStateFingerprintRef = useRef(JSON.stringify(serverState));
+  const stateSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (stateSaveTimeoutRef.current) {
+      clearTimeout(stateSaveTimeoutRef.current);
+      stateSaveTimeoutRef.current = null;
+    }
+    setStateDraft(serverState);
+    savedStateFingerprintRef.current = JSON.stringify(serverState);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatId]);
+
+  useEffect(() => {
+    if (stateSaveTimeoutRef.current) return;
+    const nextFingerprint = JSON.stringify(serverState);
+    if (nextFingerprint === savedStateFingerprintRef.current) return;
+    setStateDraft(serverState);
+    savedStateFingerprintRef.current = nextFingerprint;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [memoryResp?.memory]);
+
+  useEffect(
+    () => () => {
+      if (stateSaveTimeoutRef.current) clearTimeout(stateSaveTimeoutRef.current);
+    },
+    [],
+  );
+
   const { data: agentConfigs } = useAgentConfigs();
   const trackerConfig = agentConfigs?.find((a) => a.type === CURATOR_TRACKER_TYPE);
   const sceneConfig = agentConfigs?.find((a) => a.type === CURATOR_SCENE_TYPE);
@@ -293,6 +328,34 @@ export function NarrativeCuratorPanel() {
     },
     [chatId, updateMemory],
   );
+
+  const scheduleStateSave = useCallback(
+    (next: Record<string, CuratorEntityState>) => {
+      setStateDraft(next);
+      if (stateSaveTimeoutRef.current) clearTimeout(stateSaveTimeoutRef.current);
+      stateSaveTimeoutRef.current = setTimeout(() => {
+        stateSaveTimeoutRef.current = null;
+        if (!chatId) return;
+        savedStateFingerprintRef.current = JSON.stringify(next);
+        updateMemory.mutate(
+          { agentType: CURATOR_TRACKER_TYPE, chatId, patch: { state: next } },
+          { onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to save state") },
+        );
+      }, 600);
+    },
+    [chatId, updateMemory],
+  );
+
+  const setEntityStateField = (key: string, field: keyof CuratorEntityState, value: string) => {
+    const current = stateDraft[key] ?? {};
+    scheduleStateSave({ ...stateDraft, [key]: { ...current, [field]: value, updatedAt: new Date().toISOString() } });
+  };
+
+  const removeEntityState = (key: string) => {
+    const next = { ...stateDraft };
+    delete next[key];
+    scheduleStateSave(next);
+  };
 
   const handleAnalyze = async () => {
     if (!chatId || !connectionId || !sourceText.trim()) return;
@@ -657,7 +720,7 @@ export function NarrativeCuratorPanel() {
                     />
                   </Field>
                   <div className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                    Status: {state[`secret:${s.id}`]?.status ?? "locked"}
+                    Status: {stateDraft[`secret:${s.id}`]?.status ?? "locked"}
                   </div>
                 </RowShell>
               ))}
@@ -694,7 +757,7 @@ export function NarrativeCuratorPanel() {
                     />
                   </Field>
                   <div className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                    Status: {state[`storyline:${s.id}`]?.status ?? "inactive"}
+                    Status: {stateDraft[`storyline:${s.id}`]?.status ?? "inactive"}
                   </div>
                 </RowShell>
               ))}
@@ -742,7 +805,7 @@ export function NarrativeCuratorPanel() {
                     />
                   </Field>
                   <div className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                    Disposition: {state[`relationship:${r.id}`]?.disposition ?? "—"}
+                    Disposition: {stateDraft[`relationship:${r.id}`]?.disposition ?? "—"}
                   </div>
                 </RowShell>
               ))}
@@ -754,10 +817,10 @@ export function NarrativeCuratorPanel() {
               <div className="mb-1.5 flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                 <BookOpen size="0.75rem" /> Active state
               </div>
-              {Object.keys(state).length === 0 && (
+              {Object.keys(stateDraft).length === 0 && (
                 <p className="text-[0.625rem] text-[var(--muted-foreground)]">Nothing tracked yet.</p>
               )}
-              {Object.entries(state).map(([key, value]) => {
+              {Object.entries(stateDraft).map(([key, value]) => {
                 const [type, id] = key.split(":", 2);
                 const label =
                   type === "secret"
@@ -767,15 +830,60 @@ export function NarrativeCuratorPanel() {
                       : type === "character"
                         ? characterName(id ?? "")
                         : (bible.relationships.find((r) => r.id === id)?.characterIds ?? []).map(characterName).join(" / ");
+                const statusOptions =
+                  type === "secret" ? SECRET_STATUS_OPTIONS : type === "storyline" ? STORYLINE_STATUS_OPTIONS : null;
                 return (
-                  <div key={key} className="mb-1.5 rounded-md border border-[var(--border)]/60 px-2 py-1.5 text-[0.625rem]">
-                    <span className="font-medium">{label || id}</span>{" "}
-                    <span className="text-[var(--muted-foreground)]">({type})</span>
-                    <div className="mt-0.5 text-[var(--muted-foreground)]">
-                      {value.status && <span>status: {value.status} </span>}
-                      {value.disposition && <span>{value.disposition}</span>}
-                      {value.driftNote && <span>drift: {value.driftNote}</span>}
+                  <div key={key} className="mb-1.5 space-y-1 rounded-md border border-[var(--border)]/60 px-2 py-1.5 text-[0.625rem]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>
+                        <span className="font-medium">{label || id}</span>{" "}
+                        <span className="text-[var(--muted-foreground)]">({type})</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeEntityState(key)}
+                        title="Clear this tracked entry"
+                        className="text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                      >
+                        <Trash2 size="0.6875rem" />
+                      </button>
                     </div>
+                    {statusOptions && (
+                      <label className="block">
+                        <span className={labelClass}>Status</span>
+                        <select
+                          className={inputClass}
+                          value={value.status ?? ""}
+                          onChange={(e) => setEntityStateField(key, "status", e.target.value)}
+                        >
+                          {statusOptions.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    {(type === "character" || type === "relationship") && (
+                      <label className="block">
+                        <span className={labelClass}>Disposition</span>
+                        <input
+                          className={inputClass}
+                          value={value.disposition ?? ""}
+                          onChange={(e) => setEntityStateField(key, "disposition", e.target.value)}
+                        />
+                      </label>
+                    )}
+                    {type === "storyline" && (
+                      <label className="block">
+                        <span className={labelClass}>Drift note</span>
+                        <input
+                          className={inputClass}
+                          value={value.driftNote ?? ""}
+                          onChange={(e) => setEntityStateField(key, "driftNote", e.target.value)}
+                        />
+                      </label>
+                    )}
                   </div>
                 );
               })}
@@ -803,9 +911,11 @@ export function NarrativeCuratorPanel() {
                           (item) => !(item.entityType === g.entityType && item.entityId === g.entityId),
                         );
                         const key = `${g.entityType}:${g.entityId}`;
-                        const nextState = state[key]
-                          ? state
-                          : { ...state, [key]: { status: "hinted", updatedAt: new Date().toISOString() } };
+                        const nextState = stateDraft[key]
+                          ? stateDraft
+                          : { ...stateDraft, [key]: { status: "hinted", updatedAt: new Date().toISOString() } };
+                        setStateDraft(nextState);
+                        savedStateFingerprintRef.current = JSON.stringify(nextState);
                         updateMemory.mutate(
                           { agentType: CURATOR_TRACKER_TYPE, chatId, patch: { graduated: nextGraduated, state: nextState } },
                           { onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to revert") },
