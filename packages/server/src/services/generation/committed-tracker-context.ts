@@ -97,11 +97,13 @@ function formatCharacterLine(character: any): string | null {
   const name = asText(character?.name);
   if (!name) return null;
 
+  // mood/appearance/outfit/thoughts are intentionally NOT injected here — they're
+  // Character Tracker's own directive read of the scene, generated blind to the
+  // roleplay prompt's tone, and now duplicate what the Narrative Curator's Scene
+  // Curator does with actual story context. Only stats (and custom fields) advance
+  // into the narrator's prompt; mood/appearance/outfit/thoughts stay in game state
+  // for the tracker panel and avatar generation to read directly.
   const details: string[] = [];
-  if (character.mood) details.push(`mood: ${character.mood}`);
-  if (character.appearance) details.push(`appearance: ${character.appearance}`);
-  if (character.outfit) details.push(`outfit: ${character.outfit}`);
-  if (character.thoughts) details.push(`thoughts: ${character.thoughts}`);
   if (character.customFields && typeof character.customFields === "object" && !Array.isArray(character.customFields)) {
     for (const [fieldName, fieldValue] of Object.entries(character.customFields)) {
       const line = formatNamedValueLine(
