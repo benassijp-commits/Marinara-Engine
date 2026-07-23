@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { existsSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { extname, join } from "path";
+import { logger } from "../lib/logger.js";
 import {
   agentSuiteRewriteSchema,
   createAgentConfigSchema,
@@ -19,6 +20,7 @@ import {
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
@@ -32,6 +34,7 @@ import {
   curatorMemoryPatchSchema,
   curatorTrackerReportSchema,
 } from "../services/generation/curator-runtime.js";
+import { promoteGraduatedToLorebook } from "../services/generation/curator-lorebook.js";
 
 const CURATOR_AGENT_DEFAULTS: Record<
   string,
@@ -168,6 +171,7 @@ function getSafeAgentImagePath(filename: string): string | null {
 export async function agentsRoutes(app: FastifyInstance) {
   const storage = createAgentsStorage(app.db);
   const chats = createChatsStorage(app.db);
+  const lorebooks = createLorebooksStorage(app.db);
   const connections = createConnectionsStorage(app.db);
   const getOrCreateConfigByType = async (agentType: string) => {
     const existing = await storage.getByType(agentType);
@@ -510,9 +514,26 @@ export async function agentsRoutes(app: FastifyInstance) {
         throw err;
       }
       const memory = await storage.getMemory(config.id, req.params.chatId);
-      const { memory: nextMemory, changedCount } = applyCuratorTrackerReport(memory, report);
-      await storage.setMemories(config.id, req.params.chatId, nextMemory);
-      return { memory: nextMemory, changedCount };
+      const { memory: nextMemory, changedCount, newlyGraduated } = applyCuratorTrackerReport(memory, report);
+      let finalMemory = nextMemory;
+      if (newlyGraduated.length > 0) {
+        try {
+          const chat = await chats.getById(req.params.chatId);
+          const patch = await promoteGraduatedToLorebook(
+            lorebooks,
+            req.params.chatId,
+            (chat?.name as string) ?? "",
+            nextMemory,
+            newlyGraduated,
+          );
+          if (patch.canonLorebookId) finalMemory = { ...nextMemory, ...patch };
+        } catch (err) {
+          // Non-critical — graduation itself already succeeded either way.
+          logger.warn(err, "[narrative-curator] Failed to promote graduated entities to lorebook");
+        }
+      }
+      await storage.setMemories(config.id, req.params.chatId, finalMemory);
+      return { memory: finalMemory, changedCount };
     },
   );
 

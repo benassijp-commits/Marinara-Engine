@@ -787,8 +787,34 @@ export function NarrativeCuratorPanel() {
                   Graduated
                 </h3>
                 {graduated.map((g) => (
-                  <div key={`${g.entityType}:${g.entityId}`} className="mb-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                    {g.entityType} — {g.entityId} ({new Date(g.graduatedAt).toLocaleString()})
+                  <div
+                    key={`${g.entityType}:${g.entityId}`}
+                    className="mb-1 flex items-center justify-between gap-2 text-[0.625rem] text-[var(--muted-foreground)]"
+                  >
+                    <span>
+                      {g.entityType} — {g.entityId} ({new Date(g.graduatedAt).toLocaleString()})
+                    </span>
+                    <button
+                      type="button"
+                      title="Move back to active tracking. The lorebook entry already created for this, if any, stays — it's just left over, not deleted."
+                      onClick={() => {
+                        if (!chatId) return;
+                        const nextGraduated = graduated.filter(
+                          (item) => !(item.entityType === g.entityType && item.entityId === g.entityId),
+                        );
+                        const key = `${g.entityType}:${g.entityId}`;
+                        const nextState = state[key]
+                          ? state
+                          : { ...state, [key]: { status: "hinted", updatedAt: new Date().toISOString() } };
+                        updateMemory.mutate(
+                          { agentType: CURATOR_TRACKER_TYPE, chatId, patch: { graduated: nextGraduated, state: nextState } },
+                          { onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to revert") },
+                        );
+                      }}
+                      className="mari-chrome-control mari-chrome-control--small shrink-0 px-2 py-0.5 text-[0.5625rem]"
+                    >
+                      Revert
+                    </button>
                   </div>
                 ))}
               </div>

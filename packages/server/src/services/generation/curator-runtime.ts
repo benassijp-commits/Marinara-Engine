@@ -98,6 +98,7 @@ export const curatorMemoryPatchSchema = z.object({
   log: z.array(curatorLogEntrySchema).optional(),
   graduated: z.array(curatorGraduatedEntrySchema).optional(),
   enabled: z.boolean().optional(),
+  canonLorebookId: z.string().nullable().optional(),
 });
 
 export type CuratorMemory = {
@@ -106,6 +107,8 @@ export type CuratorMemory = {
   log?: CuratorLogEntry[];
   graduated?: CuratorGraduatedEntry[];
   enabled?: boolean;
+  /** Public lorebook holding promoted (graduated) facts. Created lazily on first promotion. */
+  canonLorebookId?: string | null;
 };
 
 /** What the Tracker agent is allowed to report back per turn — deliberately just "what is true now". */
@@ -220,6 +223,9 @@ export function buildScenePromptState(memory: CuratorMemory): Record<string, unk
 export interface ApplyCuratorReportResult {
   memory: CuratorMemory;
   changedCount: number;
+  /** Entities that graduated in THIS call (not already-graduated ones) — the caller uses
+   * this to promote each one into a public lorebook entry. */
+  newlyGraduated: CuratorGraduatedEntry[];
 }
 
 /**
@@ -246,10 +252,13 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
     changedCount++;
   };
 
+  const newlyGraduated: CuratorGraduatedEntry[] = [];
   const graduate = (type: "secret" | "storyline", id: string) => {
     const key = entityKey(type, id);
     if (!graduated.some((g) => entityKey(g.entityType, g.entityId) === key)) {
-      graduated.push({ entityType: type, entityId: id, graduatedAt: nowIso() });
+      const entry = { entityType: type, entityId: id, graduatedAt: nowIso() } as const;
+      graduated.push(entry);
+      newlyGraduated.push(entry);
     }
     // Graduated entities move to the graduated list exclusively — leaving the old entry in
     // `state` would show them as still "active" alongside the graduated record.
@@ -334,7 +343,35 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
 
   if (log.length > CURATOR_LOG_MAX_ENTRIES) log.splice(0, log.length - CURATOR_LOG_MAX_ENTRIES);
 
-  return { memory: { ...memory, bible, state, log, graduated }, changedCount };
+  return { memory: { ...memory, bible, state, log, graduated }, changedCount, newlyGraduated };
+}
+
+/**
+ * What a graduated entity becomes as a public lorebook entry — the fact is now safe to
+ * state outright, so unlike the private bible it can just say the truth directly. Keys are
+ * every involved character's name/aliases so the entry activates naturally whenever they
+ * come up, without depending on the chat summary continuing to mention it.
+ */
+export function buildCanonEntryContent(
+  entry: CuratorGraduatedEntry,
+  bible: CuratorBible,
+): { name: string; content: string; keys: string[] } | null {
+  const nameAndAliases = (characterIds: string[]) =>
+    characterIds.flatMap((cid) => {
+      const c = bible.characters.find((ch) => ch.id === cid);
+      return c ? [c.name, ...c.aliases] : [];
+    });
+
+  if (entry.entityType === "secret") {
+    const secret = bible.secrets.find((s) => s.id === entry.entityId);
+    if (!secret || !secret.truth.trim()) return null;
+    const keys = Array.from(new Set([secret.title, ...nameAndAliases(secret.knownByCharacterIds)].filter(Boolean)));
+    return { name: secret.title, content: secret.truth, keys: keys.length ? keys : [secret.title] };
+  }
+
+  const storyline = bible.storylines.find((s) => s.id === entry.entityId);
+  if (!storyline || !storyline.direction.trim()) return null;
+  return { name: storyline.title, content: `${storyline.title} — resolved: ${storyline.direction}`, keys: [storyline.title] };
 }
 
 // ──────────────────────────────────────────────
