@@ -66,7 +66,8 @@ export type AgentResultType =
   | "game_state_transition"
   | "prompt_patch"
   | "frontend_theme_update"
-  | "about_me_update";
+  | "about_me_update"
+  | "curator_state_write";
 
 /** Configuration for a single agent. */
 export interface AgentConfig {

@@ -13,6 +13,7 @@ import {
   User,
   Bot,
   AtSign,
+  Drama,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
@@ -25,7 +26,7 @@ import { LocalMusicPlayer } from "../chat/LocalMusicPlayer";
 import { MusicDjUnavailablePlayer } from "../music/MusicDjUnavailablePlayer";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 
-type RightPanelButtonPanel = "lorebooks" | "presets" | "connections" | "agents" | "personas";
+type RightPanelButtonPanel = "lorebooks" | "presets" | "connections" | "agents" | "personas" | "narrative-curator";
 
 type RightPanelButtonConfig = {
   panel: RightPanelButtonPanel;
@@ -66,6 +67,12 @@ const RIGHT_PANEL_BUTTONS: readonly RightPanelButtonConfig[] = [
     icon: User,
     label: "Personas",
     gradientClass: "mari-panel-gradient--personas",
+  },
+  {
+    panel: "narrative-curator" as const,
+    icon: Drama,
+    label: "Narrative Curator",
+    gradientClass: "mari-panel-gradient--narrative-curator",
   },
 ] as const;
 
@@ -141,6 +148,7 @@ export function TopBar() {
       (rightPanelOpen && rightPanel === "personas") ||
       Boolean(personaDetailId) ||
       (characterLibraryOpen && cardLibraryKind === "personas"),
+    "narrative-curator": rightPanelOpen && rightPanel === "narrative-curator",
   };
   const isHomeActive =
     !activeChatId &&

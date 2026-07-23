@@ -23,6 +23,36 @@ import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
 import { z } from "zod";
+import {
+  CURATOR_SCENE_TYPE,
+  CURATOR_TRACKER_TYPE,
+  CURATOR_SCENE_PROMPT,
+  CURATOR_TRACKER_PROMPT,
+  applyCuratorTrackerReport,
+  curatorMemoryPatchSchema,
+  curatorTrackerReportSchema,
+} from "../services/generation/curator-runtime.js";
+
+const CURATOR_AGENT_DEFAULTS: Record<
+  string,
+  { name: string; description: string; promptTemplate: string; resultType: string; maxTokens: number }
+> = {
+  [CURATOR_TRACKER_TYPE]: {
+    name: "Narrative Curator — Tracker",
+    description: "Keeps the private story bible's live state in sync with the transcript. Never shown to the narrator.",
+    promptTemplate: CURATOR_TRACKER_PROMPT,
+    resultType: "curator_state_write",
+    // Needs room to actually consider every tracked entity, not just whatever's salient.
+    maxTokens: 1200,
+  },
+  [CURATOR_SCENE_TYPE]: {
+    name: "Narrative Curator — Scene",
+    description: "Turns the tracked state into a short, spoiler-safe cue for the narrator.",
+    promptTemplate: CURATOR_SCENE_PROMPT,
+    resultType: "context_injection",
+    maxTokens: 700,
+  },
+};
 
 const AGENT_IMAGES_DIR = join(DATA_DIR, "agents", "images");
 
@@ -158,6 +188,28 @@ export async function agentsRoutes(app: FastifyInstance) {
       },
     });
   };
+  // Narrative Curator agents are native but not delivered via an installed capability
+  // package, so they never appear in BUILT_IN_AGENTS / getOrCreateConfigByType above.
+  // Seed them directly with working defaults the first time a chat needs one — no
+  // manual preset import required.
+  const getOrCreateCuratorAgent = async (agentType: string) => {
+    const existing = await storage.getByType(agentType);
+    if (existing) return existing;
+    const defaults = CURATOR_AGENT_DEFAULTS[agentType];
+    if (!defaults) return null;
+    return storage.create({
+      type: agentType,
+      name: defaults.name,
+      description: defaults.description,
+      phase: "pre_generation",
+      connectionId: null,
+      imagePath: null,
+      promptTemplate: defaults.promptTemplate,
+      settings: { resultType: defaults.resultType, contextSize: 10, temperature: 0.3, maxTokens: defaults.maxTokens },
+    });
+  };
+  const getOrCreateAnyConfigByType = async (agentType: string) =>
+    (await getOrCreateConfigByType(agentType)) ?? (await getOrCreateCuratorAgent(agentType));
 
   app.get("/", async () => {
     return storage.list();
@@ -250,7 +302,7 @@ export async function agentsRoutes(app: FastifyInstance) {
   });
 
   app.patch<{ Params: { agentType: string } }>("/type/:agentType", async (req, reply) => {
-    const config = await getOrCreateConfigByType(req.params.agentType);
+    const config = await getOrCreateAnyConfigByType(req.params.agentType);
     if (!config) {
       return reply.status(404).send({ error: "Agent is not configured" });
     }
@@ -399,7 +451,7 @@ export async function agentsRoutes(app: FastifyInstance) {
     Params: { agentType: string; chatId: string };
     Body: { patch?: Record<string, unknown> };
   }>("/memory/:agentType/:chatId", async (req, reply) => {
-    const config = await getOrCreateConfigByType(req.params.agentType);
+    const config = await getOrCreateAnyConfigByType(req.params.agentType);
     if (!config) {
       return reply.status(404).send({ error: "Agent is not configured" });
     }
@@ -413,11 +465,13 @@ export async function agentsRoutes(app: FastifyInstance) {
       normalizedPatch =
         req.params.agentType === "director" || req.params.agentType === "secret-plot-driver"
           ? normalizeSecretPlotMemoryPatch(patch)
-          : patch;
+          : req.params.agentType === CURATOR_TRACKER_TYPE
+            ? curatorMemoryPatchSchema.parse(patch)
+            : patch;
     } catch (err) {
       if (err instanceof z.ZodError) {
         return reply.status(400).send({
-          error: "Invalid Secret Plot memory patch",
+          error: "Invalid Curator memory patch",
           issues: err.issues,
         });
       }
@@ -436,6 +490,31 @@ export async function agentsRoutes(app: FastifyInstance) {
     }
     return reply.status(204).send();
   });
+
+  /**
+   * Apply a Narrative Curator Tracker report to a chat's stored state. Used both by the
+   * normal per-turn pipeline path and by the client-driven "full story review" flow — the
+   * diffing/logging/graduation logic in applyCuratorTrackerReport is identical either way,
+   * only where the report came from differs.
+   */
+  app.post<{ Params: { chatId: string }; Body: { report?: unknown } }>(
+    "/curator/:chatId/apply-report",
+    async (req, reply) => {
+      const config = await getOrCreateCuratorAgent(CURATOR_TRACKER_TYPE);
+      if (!config) return reply.status(404).send({ error: "Tracker agent is not configured" });
+      let report;
+      try {
+        report = curatorTrackerReportSchema.parse(req.body?.report ?? {});
+      } catch (err) {
+        if (err instanceof z.ZodError) return reply.status(400).send({ error: "Invalid report", issues: err.issues });
+        throw err;
+      }
+      const memory = await storage.getMemory(config.id, req.params.chatId);
+      const { memory: nextMemory, changedCount } = applyCuratorTrackerReport(memory, report);
+      await storage.setMemories(config.id, req.params.chatId, nextMemory);
+      return { memory: nextMemory, changedCount };
+    },
+  );
 
   /**
    * POST /api/agents/suite/rewrite

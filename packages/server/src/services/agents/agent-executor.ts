@@ -2541,6 +2541,8 @@ const AGENT_RESULT_TYPE_MAP: Record<string, AgentResultType> = {
   haptic: "haptic_command",
   cyoa: "cyoa_choices",
   "about-me-keeper": "about_me_update",
+  "narrative-curator-tracker": "curator_state_write",
+  "narrative-curator-scene": "context_injection",
 };
 
 const AGENT_RESULT_TYPES = new Set<AgentResultType>([
@@ -2572,6 +2574,7 @@ const AGENT_RESULT_TYPES = new Set<AgentResultType>([
   "prompt_patch",
   "frontend_theme_update",
   "about_me_update",
+  "curator_state_write",
 ]);
 
 const TEXT_RESULT_TYPES = new Set<AgentResultType>(["context_injection", "director_event"]);

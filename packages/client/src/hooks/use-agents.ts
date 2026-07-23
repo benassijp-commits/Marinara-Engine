@@ -179,6 +179,21 @@ export function useAgentSuiteRewrite() {
   });
 }
 
+/** Applies a Narrative Curator Tracker report (same diff/log/graduation logic the normal
+ * per-turn pipeline uses) — used by the "full story review" catch-up flow. */
+export function useApplyCuratorReport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ chatId, report }: { chatId: string; report: unknown }) =>
+      api.post<{ memory: Record<string, unknown>; changedCount: number }>(`/agents/curator/${chatId}/apply-report`, {
+        report,
+      }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: agentKeys.memory("narrative-curator-tracker", variables.chatId) });
+    },
+  });
+}
+
 export function useUpdateAgentRunData() {
   const qc = useQueryClient();
   return useMutation({

@@ -61,7 +61,7 @@ export const updateAgentConfigSchema = createAgentConfigSchema.partial();
 /** AI-assisted rewrite of a fragment of stored agent data (Agent Suite). */
 export const agentSuiteRewriteSchema = z.object({
   connectionId: z.string().min(1),
-  instruction: z.string().min(1).max(4000),
+  instruction: z.string().min(1).max(10_000),
   selectedText: z.string().min(1).max(50000),
   /** Full document the excerpt was selected from — context only, never rewritten. */
   documentText: z.string().max(100000).optional(),

@@ -330,6 +330,15 @@ import {
   secretPlotArcIsCompleted,
   shouldRunDirectorSecretPlotMaintenance,
 } from "../services/generation/director-secret-plot-runtime.js";
+import {
+  CURATOR_SCENE_TYPE,
+  CURATOR_TRACKER_TYPE,
+  applyCuratorTrackerReport,
+  buildTrackerPromptState,
+  buildScenePromptState,
+  curatorTrackerReportSchema,
+  scrubForbiddenTerms,
+} from "../services/generation/curator-runtime.js";
 import { applyPromptPatchOperations } from "../services/generation/prompt-patch-runtime.js";
 import { resolveGenerationProviderRuntime } from "../services/generation/provider-generation-runtime.js";
 import {
@@ -3178,6 +3187,51 @@ export async function generateRoutes(app: FastifyInstance) {
           }
         }
 
+        // Narrative Curator (Tracker + Scene Curator): both run through the standard
+        // pre-generation pipeline like any other agent. Presence in resolvedAgents already
+        // means the chat has both types in activeAgentIds (see resolveAgentPipelineAgents),
+        // so no separate enabled-flag check is needed here. Everything else (diffing,
+        // logging, graduation, scrubbing) happens after the pipeline returns, further below.
+        //
+        // The two agents deliberately get DIFFERENT views, baked directly into each agent's
+        // own promptTemplate (same pattern as buildDirectorSecretPlotAgent) rather than the
+        // shared agentContext.memory._X broadcast — that broadcast reaches every agent in the
+        // pipeline uniformly, which would give the Tracker the live state whether we want it
+        // to or not. The Tracker must NOT see prior state: its job is to independently
+        // re-derive current truth from the bible + transcript every turn, and seeing its own
+        // past-recorded state biases it toward preserving that record instead of re-checking
+        // it. The Scene Curator's job is the opposite — summarize the current state — so it
+        // still gets bible + state.
+        const curatorTrackerAgent = resolvedAgents.find((a) => a.type === CURATOR_TRACKER_TYPE);
+        const curatorSceneAgent = resolvedAgents.find((a) => a.type === CURATOR_SCENE_TYPE);
+        let curatorMemoryForScrub: Awaited<ReturnType<typeof agentsStore.getMemory>> | null = null;
+        if (curatorTrackerAgent) {
+          try {
+            const curatorMemory = await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId);
+            curatorMemoryForScrub = curatorMemory;
+            const trackerBlock = buildTrackerPromptState(curatorMemory);
+            if (Object.keys(trackerBlock).length > 0) {
+              const trackerIndex = resolvedAgents.indexOf(curatorTrackerAgent);
+              resolvedAgents[trackerIndex] = {
+                ...curatorTrackerAgent,
+                promptTemplate: `${curatorTrackerAgent.promptTemplate}\n\n<Curator Tracker State>${JSON.stringify(trackerBlock)}</Curator Tracker State>`,
+              };
+            }
+            if (curatorSceneAgent) {
+              const sceneBlock = buildScenePromptState(curatorMemory);
+              if (Object.keys(sceneBlock).length > 0) {
+                const sceneIndex = resolvedAgents.indexOf(curatorSceneAgent);
+                resolvedAgents[sceneIndex] = {
+                  ...curatorSceneAgent,
+                  promptTemplate: `${curatorSceneAgent.promptTemplate}\n\n<Curator Tracker State>${JSON.stringify(sceneBlock)}</Curator Tracker State>`,
+                };
+              }
+            }
+          } catch (err) {
+            logger.warn(err, "[narrative-curator] Failed to load tracker memory");
+          }
+        }
+
         const illustratorAgentForInterval = resolvedAgents.find((a) => a.type === "illustrator");
         if (
           illustratorAgentForInterval &&
@@ -4056,6 +4110,17 @@ export async function generateRoutes(app: FastifyInstance) {
           const [preGenResult, krResult, routerResult] = await Promise.all([preGenPromise, krPromise, krRouterPromise]);
           contextInjections = [...reviewedAgentInjections, ...preGenResult];
 
+          // Deterministic backstop: strip any literal still-hidden secret vocabulary from the
+          // Scene Curator's injection before it can reach the narrator, regardless of what the
+          // prompt did or didn't manage to avoid saying.
+          if (curatorMemoryForScrub) {
+            contextInjections = contextInjections.map((entry) =>
+              entry.agentType === CURATOR_SCENE_TYPE
+                ? { ...entry, text: scrubForbiddenTerms(entry.text, curatorMemoryForScrub!) }
+                : entry,
+            );
+          }
+
           // ── Failure gate: only block generation if a critical pre-gen agent failed ──
           // Secret plot maintenance shapes the hidden arc — generating without
           // it would produce incoherent output. Other agents are enhancement-only.
@@ -4111,6 +4176,25 @@ export async function generateRoutes(app: FastifyInstance) {
                 type: "prompt_patch",
                 data: { agentType: result.agentType, applied },
               });
+            }
+          }
+
+          if (curatorTrackerAgent) {
+            const trackerResult = preGenResults.find(
+              (r) => r.agentType === CURATOR_TRACKER_TYPE && r.success && r.type === "curator_state_write",
+            );
+            if (trackerResult?.data) {
+              try {
+                const report = curatorTrackerReportSchema.parse(trackerResult.data);
+                const currentMemory = curatorMemoryForScrub ?? (await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId));
+                const { memory: nextMemory, changedCount } = applyCuratorTrackerReport(currentMemory, report);
+                if (changedCount > 0) {
+                  await agentsStore.setMemories(curatorTrackerAgent.id, input.chatId, nextMemory);
+                  logger.debug("[narrative-curator] Tracker applied %d change(s)", changedCount);
+                }
+              } catch (err) {
+                logger.warn(err, "[narrative-curator] Failed to apply tracker report");
+              }
             }
           }
 

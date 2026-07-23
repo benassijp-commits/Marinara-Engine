@@ -27,7 +27,8 @@ type Panel =
   | "agents"
   | "personas"
   | "settings"
-  | "bot-browser";
+  | "bot-browser"
+  | "narrative-curator";
 export type ChatModeShortcut = "conversation" | "roleplay" | "game";
 export const CHARACTER_LIBRARY_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "favorites"] as const;
 export type CharacterLibrarySort = (typeof CHARACTER_LIBRARY_SORT_OPTIONS)[number];
