@@ -338,7 +338,6 @@ import {
   buildScenePromptState,
   curatorTrackerReportSchema,
 } from "../services/generation/curator-runtime.js";
-import { promoteGraduatedToLorebook } from "../services/generation/curator-lorebook.js";
 import { applyPromptPatchOperations } from "../services/generation/prompt-patch-runtime.js";
 import { resolveGenerationProviderRuntime } from "../services/generation/provider-generation-runtime.js";
 import {
@@ -6666,24 +6665,9 @@ export async function generateRoutes(app: FastifyInstance) {
               try {
                 const report = curatorTrackerReportSchema.parse(trackerResult.data);
                 const currentMemory = await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId);
-                const { memory: nextMemory, changedCount, newlyGraduated } = applyCuratorTrackerReport(currentMemory, report);
-                let finalMemory = nextMemory;
-                if (newlyGraduated.length > 0) {
-                  try {
-                    const patch = await promoteGraduatedToLorebook(
-                      lorebooksStore,
-                      input.chatId,
-                      chat.name ?? "",
-                      nextMemory,
-                      newlyGraduated,
-                    );
-                    if (patch.canonLorebookId) finalMemory = { ...nextMemory, ...patch };
-                  } catch (err) {
-                    logger.warn(err, "[narrative-curator] Failed to promote graduated entities to lorebook");
-                  }
-                }
+                const { memory: nextMemory, changedCount } = applyCuratorTrackerReport(currentMemory, report);
                 if (changedCount > 0) {
-                  await agentsStore.setMemories(curatorTrackerAgent.id, input.chatId, finalMemory);
+                  await agentsStore.setMemories(curatorTrackerAgent.id, input.chatId, nextMemory);
                   logger.debug("[narrative-curator] Tracker applied %d change(s)", changedCount);
                 }
               } catch (err) {

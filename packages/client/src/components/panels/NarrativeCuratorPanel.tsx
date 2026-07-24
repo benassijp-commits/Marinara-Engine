@@ -31,7 +31,6 @@ interface CuratorSecret {
   title: string;
   truth: string;
   knownByCharacterIds: string[];
-  relevantCharacterIds: string[];
   revealCondition: string;
   forbiddenTerms: string[];
 }
@@ -92,8 +91,7 @@ function parseChatMetadata(raw: unknown): Record<string, unknown> {
 
 const ANALYSIS_INSTRUCTION = [
   "Transform the supplied fictional source into exactly one compact JSON object describing the story's private bible. Return ONLY JSON, no markdown fences, no commentary.",
-  'Exact shape: {"characters":[{"id":"","name":"","aliases":[],"curatorNotes":""}],"secrets":[{"id":"","title":"","truth":"","knownByCharacterIds":[],"relevantCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"storylines":[{"id":"","title":"","direction":""}],"relationships":[{"id":"","characterIds":[],"privateSummary":""}]}',
-  'relevantCharacterIds is who the secret actually concerns and should eventually know for it to feel resolved — usually a small subset of the cast, not everyone; this is what graduation checks against, so get it right.',
+  'Exact shape: {"characters":[{"id":"","name":"","aliases":[],"curatorNotes":""}],"secrets":[{"id":"","title":"","truth":"","knownByCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"storylines":[{"id":"","title":"","direction":""}],"relationships":[{"id":"","characterIds":[],"privateSummary":""}]}',
   "Use short unique lowercase-hyphen ids. Only include secrets that need to be tracked (things not everyone should know yet) and storylines with a clear intended direction. forbiddenTerms should list the specific words that would spoil the secret if said aloud (e.g. a name, a species, a condition).",
 ].join("\n");
 
@@ -126,7 +124,6 @@ function normalizeBible(value: unknown): CuratorBible {
           title: String(s.title || "Untitled secret"),
           truth: String(s.truth || ""),
           knownByCharacterIds: strArr(s.knownByCharacterIds),
-          relevantCharacterIds: strArr(s.relevantCharacterIds),
           revealCondition: String(s.revealCondition || ""),
           forbiddenTerms: strArr(s.forbiddenTerms),
         }))
@@ -650,7 +647,6 @@ export function NarrativeCuratorPanel() {
                       title: "New secret",
                       truth: "",
                       knownByCharacterIds: [],
-                      relevantCharacterIds: [],
                       revealCondition: "",
                       forbiddenTerms: [],
                     },
@@ -693,29 +689,6 @@ export function NarrativeCuratorPanel() {
                           rows.map((r, idx) =>
                             idx === i
                               ? { ...r, knownByCharacterIds: e.target.value.split(",").map((c) => c.trim()).filter(Boolean) }
-                              : r,
-                          ),
-                        )
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="Relevant to (character IDs, comma separated) — who this secret concerns; graduates once they all know, not the whole cast"
-                    hint={
-                      bible.characters.length
-                        ? `Available: ${bible.characters.map((c) => `${c.name} (${c.id})`).join(", ")}`
-                        : "No characters registered yet"
-                    }
-                  >
-                    <input
-                      className={inputClass}
-                      placeholder="Character IDs, comma separated"
-                      value={s.relevantCharacterIds.join(", ")}
-                      onChange={(e) =>
-                        setSecrets((rows) =>
-                          rows.map((r, idx) =>
-                            idx === i
-                              ? { ...r, relevantCharacterIds: e.target.value.split(",").map((c) => c.trim()).filter(Boolean) }
                               : r,
                           ),
                         )
@@ -931,7 +904,7 @@ export function NarrativeCuratorPanel() {
                     </span>
                     <button
                       type="button"
-                      title="Move back to active tracking. The lorebook entry already created for this, if any, stays — it's just left over, not deleted."
+                      title="Move back to active tracking, so the Curator gates and reveals it again instead of treating it as universally known."
                       onClick={() => {
                         if (!chatId) return;
                         const nextGraduated = graduated.filter(

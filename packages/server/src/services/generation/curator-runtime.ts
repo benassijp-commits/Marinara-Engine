@@ -30,11 +30,6 @@ const curatorSecretSchema = z.object({
   title: z.string().default(""),
   truth: z.string().default(""),
   knownByCharacterIds: z.array(z.string()).default([]),
-  // Who this secret actually concerns — graduation waits for THIS set to all know, not
-  // every character in the bible (most secrets aren't relevant to everyone). Empty means
-  // "not yet scoped" and falls back to requiring every bible character, for secrets
-  // authored before this field existed.
-  relevantCharacterIds: z.array(z.string()).default([]),
   revealCondition: z.string().default(""),
   forbiddenTerms: z.array(z.string()).default([]),
 });
@@ -103,7 +98,6 @@ export const curatorMemoryPatchSchema = z.object({
   log: z.array(curatorLogEntrySchema).optional(),
   graduated: z.array(curatorGraduatedEntrySchema).optional(),
   enabled: z.boolean().optional(),
-  canonLorebookId: z.string().nullable().optional(),
 });
 
 export type CuratorMemory = {
@@ -112,8 +106,6 @@ export type CuratorMemory = {
   log?: CuratorLogEntry[];
   graduated?: CuratorGraduatedEntry[];
   enabled?: boolean;
-  /** Public lorebook holding promoted (graduated) facts. Created lazily on first promotion. */
-  canonLorebookId?: string | null;
 };
 
 /** What the Tracker agent is allowed to report back per turn — deliberately just "what is true now". */
@@ -228,9 +220,6 @@ export function buildScenePromptState(memory: CuratorMemory): Record<string, unk
 export interface ApplyCuratorReportResult {
   memory: CuratorMemory;
   changedCount: number;
-  /** Entities that graduated in THIS call (not already-graduated ones) — the caller uses
-   * this to promote each one into a public lorebook entry. */
-  newlyGraduated: CuratorGraduatedEntry[];
 }
 
 /**
@@ -257,16 +246,15 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
     changedCount++;
   };
 
-  const newlyGraduated: CuratorGraduatedEntry[] = [];
   const graduate = (type: "secret" | "storyline", id: string) => {
     const key = entityKey(type, id);
     if (!graduated.some((g) => entityKey(g.entityType, g.entityId) === key)) {
-      const entry = { entityType: type, entityId: id, graduatedAt: nowIso() } as const;
-      graduated.push(entry);
-      newlyGraduated.push(entry);
+      graduated.push({ entityType: type, entityId: id, graduatedAt: nowIso() });
     }
     // Graduated entities move to the graduated list exclusively — leaving the old entry in
-    // `state` would show them as still "active" alongside the graduated record.
+    // `state` would show them as still "active" alongside the graduated record. Graduation
+    // just prunes a now-universally-known secret out of the Curator's active list so it
+    // doesn't clutter what the agents see; nothing is promoted anywhere.
     delete state[key];
   };
 
@@ -292,19 +280,16 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
         bible.secrets[secretIndex] = { ...bible.secrets[secretIndex]!, knownByCharacterIds: merged };
       }
     }
-    // Automatic graduation: don't trust the model's "revealed" label alone — a secret only
-    // retires from active tracking once everyone it actually concerns is listed as knowing
-    // it. Trusting the label alone let a single over-eager report graduate several secrets
-    // at once that only some characters actually knew.
+    // Automatic graduation: don't trust the model's "revealed" label alone. A secret only
+    // graduates (retires from the Curator's active list) once EVERY character in the story
+    // is listed as knowing it — at that point it's universal knowledge, there's nothing left
+    // to gate, so it's pruned to keep the list short. Anything short of everyone stays
+    // tracked and gated normally.
     if (patch.status === "revealed") {
       const secret = bible.secrets.find((s) => s.id === id);
       const knownBy = new Set(secret?.knownByCharacterIds ?? []);
-      // Most secrets don't concern every character in the bible — graduate against the
-      // secret's own relevantCharacterIds when it has one; fall back to "everyone" only for
-      // secrets authored before that field existed (empty = not yet scoped).
-      const relevantIds = secret?.relevantCharacterIds?.length ? secret.relevantCharacterIds : [...knownIds.character];
-      const everyoneRelevantKnows = relevantIds.length > 0 && relevantIds.every((cid) => knownBy.has(cid));
-      if (everyoneRelevantKnows) graduate("secret", id);
+      const everyoneKnows = knownIds.character.size > 0 && [...knownIds.character].every((cid) => knownBy.has(cid));
+      if (everyoneKnows) graduate("secret", id);
     }
   }
 
@@ -342,7 +327,6 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
       title,
       truth: raw.truth ?? "",
       knownByCharacterIds: (raw.knownByCharacterIds ?? []).filter((cid) => knownIds.character.has(cid)),
-      relevantCharacterIds: (raw.relevantCharacterIds ?? []).filter((cid) => knownIds.character.has(cid)),
       revealCondition: raw.revealCondition ?? "",
       forbiddenTerms: raw.forbiddenTerms ?? [],
     });
@@ -361,35 +345,7 @@ export function applyCuratorTrackerReport(memory: CuratorMemory, report: Curator
 
   if (log.length > CURATOR_LOG_MAX_ENTRIES) log.splice(0, log.length - CURATOR_LOG_MAX_ENTRIES);
 
-  return { memory: { ...memory, bible, state, log, graduated }, changedCount, newlyGraduated };
-}
-
-/**
- * What a graduated entity becomes as a public lorebook entry — the fact is now safe to
- * state outright, so unlike the private bible it can just say the truth directly. Keys are
- * every involved character's name/aliases so the entry activates naturally whenever they
- * come up, without depending on the chat summary continuing to mention it.
- */
-export function buildCanonEntryContent(
-  entry: CuratorGraduatedEntry,
-  bible: CuratorBible,
-): { name: string; content: string; keys: string[] } | null {
-  const nameAndAliases = (characterIds: string[]) =>
-    characterIds.flatMap((cid) => {
-      const c = bible.characters.find((ch) => ch.id === cid);
-      return c ? [c.name, ...c.aliases] : [];
-    });
-
-  if (entry.entityType === "secret") {
-    const secret = bible.secrets.find((s) => s.id === entry.entityId);
-    if (!secret || !secret.truth.trim()) return null;
-    const keys = Array.from(new Set([secret.title, ...nameAndAliases(secret.knownByCharacterIds)].filter(Boolean)));
-    return { name: secret.title, content: secret.truth, keys: keys.length ? keys : [secret.title] };
-  }
-
-  const storyline = bible.storylines.find((s) => s.id === entry.entityId);
-  if (!storyline || !storyline.direction.trim()) return null;
-  return { name: storyline.title, content: `${storyline.title} — resolved: ${storyline.direction}`, keys: [storyline.title] };
+  return { memory: { ...memory, bible, state, log, graduated }, changedCount };
 }
 
 // ──────────────────────────────────────────────
@@ -405,14 +361,13 @@ export const CURATOR_TRACKER_PROMPT = [
   "For every secret/storyline/relationship/character whose status or disposition actually changed, include it in your JSON output under the matching key with the new value only. Leave untouched entities out entirely — you report facts, the system decides what counts as a change.",
   "When a storyline's direction or a relationship's development establishes that a character now feels or behaves differently going forward (a jealousy resolved, a new attachment, a shift in loyalty or priority), also report that under characters for every character it affects — the storyline or relationship progressing is not itself a character's behavior, translate what it now means for the people living it. This is easy to skip; check for it deliberately.",
   "Add to newSecrets only when the transcript actually shows one of these, specifically: an explicit or implicit promise between characters not to tell someone something; a character's own established nature being the kind that would keep something like this to themselves; a scene between characters where the story's main character is not present and something is being schemed or planned, for or against someone, that cannot be told; or a reveal that was shown to only one character, not made public. An ordinary event, plan, or activity mentioned in a scene is not a secret just because it happened — most things that happen in a story are not secrets, and treating them as one is exactly the mistake to avoid.",
-  "When you add a newSecret, also set relevantCharacterIds: the characters this secret actually concerns and who should plausibly learn it for this thread to feel resolved — usually a small subset of the full cast, not everyone. Most secrets matter to only two or three people; don't list a character just because they exist in the bible. This is what the system uses to know when the secret is done, so get it right rather than defaulting to the whole cast.",
   "Add to newStorylines only as a genuine creative proposal, never as a summary of what just happened. A new character, a new faction, another character's growing involvement, a development or creation of a relationship, a real plot twist — all of these are valid, invented from nothing if needed, as long as they stay coherent with the story's established theme and tone; a storyline does not need to extend something already hinted at. What is NOT valid: restating an ordinary plan or event from the current scene as if it were a storyline (characters agreeing to grab dinner this weekend is a plan, not a storyline). This should be rare — most turns should not produce a new storyline, and inventing one just because the scene needs *something* new is the failure mode to avoid.",
   "\"Revealed\" and \"graduated\" are different things — don't conflate them. A secret's status becomes \"revealed\" the moment the transcript shows it was actually disclosed to even ONE character who didn't already know — add that character to knownByCharacterIds and set status to \"revealed\"; it does not need to reach everyone. The system promotes a secret out of active tracking on its own once knownByCharacterIds eventually covers every character in the bible — that graduation is not something you decide or label, just keep knownByCharacterIds accurate and complete each time someone new learns it, including characters who already knew from a previous turn. A storyline's status becomes \"completed\" only once its direction has actually played out. Once revealed (even partially) or completed, never move a status backward.",
   "Weight your sources in this order when they disagree about a FACT (whether an event happened, who knows what, what was said or done): the bible first — it is the intended guide for the story, not just a record, so a storyline's or relationship's written direction outranks anything that seems to contradict it. The chat summary is second — a reference of what has actually happened so far. The handful of most recent messages come last — they show only the current moment, the story's live trajectory, not an authority that overrides an established fact or direction. If that trajectory is drifting away from where the bible's storylines or relationships say it should be going, that drift is exactly what driftNote exists to catch and correct — don't just silently follow it.",
   "Character disposition follows a different rule than facts, because characters are meant to change, adapt, and evolve as the story progresses — a description of how someone felt earlier is history, not a ceiling on who they are now. When deciding how a character currently feels or behaves, the bible's prescribed direction is the only authority, full stop — not first among equals, the only one. The chat summary is background for understanding where the story is, never justification for a disposition; a past reaction the summary describes, however vividly, is not evidence of the character's CURRENT state and must not be used to override or maintain a feeling the bible has moved past. The only thing that can override the bible's direction for disposition is the character's own words or actions in the CURRENT scene (the most recent messages), and only when they demonstrate the divergence unambiguously — never because an old summary entry or a plausible-sounding read of the moment makes it feel realistic. This applies every turn, not only when you notice an explicit conflict.",
   "For each active storyline, optionally set driftNote to one short, neutral sentence noting whether recent scenes are moving toward, away from, or unrelated to its direction. Leave it unset when there is nothing meaningful to say — do not write a note every turn just to have one.",
   "Return ONLY a JSON object in exactly this shape — flat entity ids as keys nested under each category, never the \"type:id\" combined-key format used by the <Curator Tracker State> block you read, that format is for input, not output:",
-  '{"secrets":{"<secret-id>":{"status":"hinted","knownByCharacterIds":["<character-id>"]}},"storylines":{"<storyline-id>":{"status":"active","driftNote":"one short sentence"}},"relationships":{"<relationship-id>":{"disposition":"one short phrase"}},"characters":{"<character-id>":{"disposition":"one short phrase"}},"newSecrets":[{"title":"","truth":"","knownByCharacterIds":[],"relevantCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"newStorylines":[{"title":"","direction":""}]}',
+  '{"secrets":{"<secret-id>":{"status":"hinted","knownByCharacterIds":["<character-id>"]}},"storylines":{"<storyline-id>":{"status":"active","driftNote":"one short sentence"}},"relationships":{"<relationship-id>":{"disposition":"one short phrase"}},"characters":{"<character-id>":{"disposition":"one short phrase"}},"newSecrets":[{"title":"","truth":"","knownByCharacterIds":[],"revealCondition":"","forbiddenTerms":[]}],"newStorylines":[{"title":"","direction":""}]}',
   "Every key in that shape is optional — include only the categories and entity ids that actually changed this turn, omit the rest entirely. No prose, no commentary, no markdown fences, nothing outside this one JSON object.",
 ].join("\n");
 

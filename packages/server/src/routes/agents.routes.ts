@@ -20,7 +20,6 @@ import {
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
-import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { DATA_DIR } from "../utils/data-dir.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
@@ -34,7 +33,6 @@ import {
   curatorMemoryPatchSchema,
   curatorTrackerReportSchema,
 } from "../services/generation/curator-runtime.js";
-import { promoteGraduatedToLorebook } from "../services/generation/curator-lorebook.js";
 
 const CURATOR_AGENT_DEFAULTS: Record<
   string,
@@ -176,7 +174,6 @@ function getSafeAgentImagePath(filename: string): string | null {
 export async function agentsRoutes(app: FastifyInstance) {
   const storage = createAgentsStorage(app.db);
   const chats = createChatsStorage(app.db);
-  const lorebooks = createLorebooksStorage(app.db);
   const connections = createConnectionsStorage(app.db);
   const getOrCreateConfigByType = async (agentType: string) => {
     const existing = await storage.getByType(agentType);
@@ -434,10 +431,8 @@ export async function agentsRoutes(app: FastifyInstance) {
     // story structure (characters/secrets/storylines/relationships), not per-scene state.
     // state/log/graduated ARE allowed to clear here — that's the "fresh start" this button
     // is for — but the bible itself must survive a tracker reset the same way the Director's
-    // arc does. canonLorebookId travels with it so a later graduation reuses the same
-    // Curator Canon lorebook instead of creating a duplicate.
+    // arc does.
     let preservedBible: unknown;
-    let preservedCanonLorebookId: unknown;
     let preservedCuratorConfigId: string | null = null;
     try {
       const curatorConfig = await storage.getByType(CURATOR_TRACKER_TYPE);
@@ -445,7 +440,6 @@ export async function agentsRoutes(app: FastifyInstance) {
         const mem = await storage.getMemory(curatorConfig.id, chatId);
         if (mem.bible !== undefined && mem.bible !== null) {
           preservedBible = mem.bible;
-          preservedCanonLorebookId = mem.canonLorebookId;
           preservedCuratorConfigId = curatorConfig.id;
         }
       }
@@ -465,13 +459,10 @@ export async function agentsRoutes(app: FastifyInstance) {
       }
     }
 
-    // Restore the Curator bible (and its canon lorebook link, if any)
+    // Restore the Curator bible
     if (preservedBible !== undefined && preservedCuratorConfigId) {
       try {
-        await storage.setMemories(preservedCuratorConfigId, chatId, {
-          bible: preservedBible,
-          ...(preservedCanonLorebookId !== undefined ? { canonLorebookId: preservedCanonLorebookId } : {}),
-        });
+        await storage.setMemories(preservedCuratorConfigId, chatId, { bible: preservedBible });
       } catch {
         /* non-critical */
       }
@@ -554,26 +545,9 @@ export async function agentsRoutes(app: FastifyInstance) {
         throw err;
       }
       const memory = await storage.getMemory(config.id, req.params.chatId);
-      const { memory: nextMemory, changedCount, newlyGraduated } = applyCuratorTrackerReport(memory, report);
-      let finalMemory = nextMemory;
-      if (newlyGraduated.length > 0) {
-        try {
-          const chat = await chats.getById(req.params.chatId);
-          const patch = await promoteGraduatedToLorebook(
-            lorebooks,
-            req.params.chatId,
-            (chat?.name as string) ?? "",
-            nextMemory,
-            newlyGraduated,
-          );
-          if (patch.canonLorebookId) finalMemory = { ...nextMemory, ...patch };
-        } catch (err) {
-          // Non-critical — graduation itself already succeeded either way.
-          logger.warn(err, "[narrative-curator] Failed to promote graduated entities to lorebook");
-        }
-      }
-      await storage.setMemories(config.id, req.params.chatId, finalMemory);
-      return { memory: finalMemory, changedCount };
+      const { memory: nextMemory, changedCount } = applyCuratorTrackerReport(memory, report);
+      await storage.setMemories(config.id, req.params.chatId, nextMemory);
+      return { memory: nextMemory, changedCount };
     },
   );
 
