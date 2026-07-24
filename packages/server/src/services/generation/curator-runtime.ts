@@ -393,46 +393,6 @@ export function buildCanonEntryContent(
 }
 
 // ──────────────────────────────────────────────
-// Scene Curator output — deterministic backstop against literal secret vocabulary leaking
-// ──────────────────────────────────────────────
-
-const REDACTION_PLACEHOLDER = "something";
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * Strips literal occurrences of still-hidden secret vocabulary (title + configured
- * forbidden terms) from the Scene Curator's output before it is allowed to become a
- * narrator-facing injection. This is a backstop, not the primary mechanism — the prompt
- * itself is instructed to never write these terms in the first place.
- */
-export function scrubForbiddenTerms(text: string, memory: CuratorMemory): string {
-  if (!text.trim()) return text;
-  const bible = memory.bible ?? { characters: [], secrets: [], storylines: [], relationships: [] };
-  const state = memory.state ?? {};
-  // Graduation deletes the state entry (see applyCuratorTrackerReport's graduate()), so a
-  // graduated secret has no state.status left — falling back to "locked" there would scrub
-  // a secret that is actually fully revealed. Graduated secrets are always safe to mention.
-  const graduatedSecretIds = new Set(
-    (memory.graduated ?? []).filter((g) => g.entityType === "secret").map((g) => g.entityId),
-  );
-  let result = text;
-  for (const secret of bible.secrets ?? []) {
-    if (graduatedSecretIds.has(secret.id)) continue;
-    const status = state[entityKey("secret", secret.id)]?.status ?? "locked";
-    if (status === "revealed") continue;
-    const terms = [secret.title, ...(secret.forbiddenTerms ?? [])].map((t) => t.trim()).filter((t) => t.length > 2);
-    for (const term of terms) {
-      const pattern = new RegExp(`\\b${escapeRegExp(term)}\\b`, "gi");
-      result = result.replace(pattern, REDACTION_PLACEHOLDER);
-    }
-  }
-  return result;
-}
-
-// ──────────────────────────────────────────────
 // Default prompts for auto-seeding (see agents.routes.ts getOrCreateConfigByType call sites)
 // ──────────────────────────────────────────────
 
@@ -458,7 +418,7 @@ export const CURATOR_TRACKER_PROMPT = [
 
 export const CURATOR_SCENE_PROMPT = [
   "You are the Scene Curator. You set the information and emotional state characters carry INTO the next scene — you never write the scene, decide {{user}}'s actions/thoughts/words, or narrate events happening off-page.",
-  "You will find the tracked bible and state in a <Curator Tracker State> block in your context. Only consider entities involving a character who is actually present in the most recent messages — ignore everything else in that block, even if it is technically there.",
+  "You will find the tracked bible and state in a <Curator Tracker State> block in your context. Only consider entities involving a character who is actually present in the CURRENT scene — anchor this on the single most recent message, not the whole window of recent messages you're given. A scene change (new location, a character leaving, a time skip) can happen mid-window, so a character who spoke three messages ago may already be gone; if the latest message doesn't put them there, they're not there, no matter how recently they appeared earlier in the window. When in doubt about whether someone is still present, leave them out.",
   "For each relevant character, write at most one short line naming their current internal disposition, feeling, or condition — never a specific physical action, gesture, or movement. Do not write what a character's body is doing right now (no \"grips\", \"wipes\", \"clenches\", \"stares\", \"shifts\", \"grabs\", or any other action verb describing a deliberate motion) — that is staging, and staging belongs to the narrator, not you. Name the state a narrator could stage however it wants, not a scripted motion.",
   "A character who already knows something they must not reveal gets a line about their internal composure (stays composed, keeps the facade, on edge but silent) — never a line naming what they're hiding, and never a physical tell described as an action.",
   "The bible's prescribed direction is the only authority for a character's disposition — not first among equals, the only one. Characters are meant to change and evolve, so a feeling the chat summary describes from earlier in the story is history, not a ceiling on who they are now; never use it to justify or maintain a disposition the bible has moved past. Trust the state block's tracked disposition as the real current baseline even if the last message or two seems to lean a different way. The only thing that can override the bible's direction is the character's own words or actions in the CURRENT scene (the most recent messages) demonstrating it unambiguously — never a summary entry, and never because a reading would merely seem plausible or realistic in the moment.",

@@ -337,7 +337,6 @@ import {
   buildTrackerPromptState,
   buildScenePromptState,
   curatorTrackerReportSchema,
-  scrubForbiddenTerms,
 } from "../services/generation/curator-runtime.js";
 import { promoteGraduatedToLorebook } from "../services/generation/curator-lorebook.js";
 import { applyPromptPatchOperations } from "../services/generation/prompt-patch-runtime.js";
@@ -3205,11 +3204,9 @@ export async function generateRoutes(app: FastifyInstance) {
         // still gets bible + state.
         const curatorTrackerAgent = resolvedAgents.find((a) => a.type === CURATOR_TRACKER_TYPE);
         const curatorSceneAgent = resolvedAgents.find((a) => a.type === CURATOR_SCENE_TYPE);
-        let curatorMemoryForScrub: Awaited<ReturnType<typeof agentsStore.getMemory>> | null = null;
         if (curatorTrackerAgent) {
           try {
             const curatorMemory = await agentsStore.getMemory(curatorTrackerAgent.id, input.chatId);
-            curatorMemoryForScrub = curatorMemory;
             const trackerBlock = buildTrackerPromptState(curatorMemory);
             if (Object.keys(trackerBlock).length > 0) {
               const trackerIndex = resolvedAgents.indexOf(curatorTrackerAgent);
@@ -4110,17 +4107,6 @@ export async function generateRoutes(app: FastifyInstance) {
           // Run all three in parallel
           const [preGenResult, krResult, routerResult] = await Promise.all([preGenPromise, krPromise, krRouterPromise]);
           contextInjections = [...reviewedAgentInjections, ...preGenResult];
-
-          // Deterministic backstop: strip any literal still-hidden secret vocabulary from the
-          // Scene Curator's injection before it can reach the narrator, regardless of what the
-          // prompt did or didn't manage to avoid saying.
-          if (curatorMemoryForScrub) {
-            contextInjections = contextInjections.map((entry) =>
-              entry.agentType === CURATOR_SCENE_TYPE
-                ? { ...entry, text: scrubForbiddenTerms(entry.text, curatorMemoryForScrub!) }
-                : entry,
-            );
-          }
 
           // ── Failure gate: only block generation if a critical pre-gen agent failed ──
           // Secret plot maintenance shapes the hidden arc — generating without
