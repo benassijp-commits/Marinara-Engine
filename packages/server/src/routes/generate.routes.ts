@@ -3882,9 +3882,17 @@ export async function generateRoutes(app: FastifyInstance) {
         let contextInjections: AgentInjection[] = reviewedAgentInjections;
         const SEPARATE_INJECTION_AGENTS = new Set(["director", "knowledge-retrieval", "knowledge-router"]);
         const EXCLUDED_FROM_PIPELINE = new Set(["knowledge-retrieval", "knowledge-router"]);
-        const hasPreGenAgents = resolvedAgents.some(
-          (a) => a.phase === "pre_generation" && !EXCLUDED_FROM_PIPELINE.has(a.type) && !reviewedAgentTypes.has(a.type),
-        );
+        // A swipe asks for a different take on the same moment, and the Scene Curator's cue is
+        // what shapes that take — so it is the one pre-gen agent that must be re-derived on a
+        // regeneration instead of reusing the original run's cue. Every other pre-gen agent
+        // stays skipped on regen (their cached injections are reused below), preserving the
+        // existing token-saving behavior.
+        const isRegeneration = !!input.regenerateMessageId;
+        const preGenTypeFilter = (type: string) =>
+          !EXCLUDED_FROM_PIPELINE.has(type) &&
+          !reviewedAgentTypes.has(type) &&
+          (!isRegeneration || type === CURATOR_SCENE_TYPE);
+        const hasPreGenAgents = resolvedAgents.some((a) => a.phase === "pre_generation" && preGenTypeFilter(a.type));
 
         // ── Run pre-gen agents, knowledge retrieval, and knowledge router in parallel when possible ──
         const shouldRunKR = !!(
@@ -3897,7 +3905,11 @@ export async function generateRoutes(app: FastifyInstance) {
           knowledgeRouterEntries.length > 0 &&
           !input.regenerateMessageId
         );
-        const shouldRunPreGen = (hasPreGenAgents || reviewedAgentInjections.length > 0) && !input.regenerateMessageId;
+        // On a regeneration this is true only when the Scene Curator itself is present — see
+        // preGenTypeFilter above, which narrows the pipeline to just that agent in that case.
+        const shouldRunPreGen =
+          (hasPreGenAgents || (reviewedAgentInjections.length > 0 && !isRegeneration)) &&
+          (!isRegeneration || hasPreGenAgents);
         const runDirectorSecretPlotMaintenance = async (): Promise<AgentResult[]> => {
           if (!directorSecretPlotAgent) return [];
           reply.raw.write(
@@ -3970,7 +3982,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 );
                 if (isDebug) {
                   const preGenAgents = pipelineAgents.filter(
-                    (a) => a.phase === "pre_generation" && !EXCLUDED_FROM_PIPELINE.has(a.type),
+                    (a) => a.phase === "pre_generation" && preGenTypeFilter(a.type),
                   );
                   app.log.debug(
                     "[debug] Pre-generation agents (%d): %s",
@@ -3979,9 +3991,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   );
                 }
                 const _tAgents = Date.now();
-                const injections = (
-                  await pipeline.preGenerate((t) => !EXCLUDED_FROM_PIPELINE.has(t) && !reviewedAgentTypes.has(t))
-                ).map(attachAgentName);
+                const injections = (await pipeline.preGenerate(preGenTypeFilter)).map(attachAgentName);
                 logger.debug(`[timing] Pre-gen agents: ${Date.now() - _tAgents}ms`);
                 return injections;
               })()
@@ -4105,7 +4115,18 @@ export async function generateRoutes(app: FastifyInstance) {
 
           // Run all three in parallel
           const [preGenResult, krResult, routerResult] = await Promise.all([preGenPromise, krPromise, krRouterPromise]);
-          contextInjections = [...reviewedAgentInjections, ...preGenResult];
+          // On a regeneration only the Scene Curator re-ran, so every OTHER agent's injection
+          // still has to come from the original generation's cache — otherwise entering this
+          // branch would silently drop the lore/context those agents contributed (the
+          // `else if (input.regenerateMessageId)` branch below, which normally restores them,
+          // is skipped whenever we run anything here).
+          const regeneratedTypes = new Set(preGenResult.map((entry) => entry.agentType));
+          const cachedForRegen = isRegeneration
+            ? normalizeContextInjections(parseExtra(regenMsg?.extra).contextInjections).filter(
+                (entry) => entry.agentType !== "secret-plot-driver" && !regeneratedTypes.has(entry.agentType),
+              )
+            : [];
+          contextInjections = [...reviewedAgentInjections, ...cachedForRegen, ...preGenResult];
 
           // ── Failure gate: only block generation if a critical pre-gen agent failed ──
           // Secret plot maintenance shapes the hidden arc — generating without
