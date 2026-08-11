@@ -214,7 +214,13 @@ function unwrapTag(tag: string): string {
     .replaceAll("_", " ");
 }
 
-const CONTROLLED_LORAS = new Set(["furr mass sdxl", "rokudenashi style v2 ilxl", "zoroj ill11", "hyper muscles"]);
+const CONTROLLED_LORAS = new Set([
+  "furr mass sdxl",
+  "rokudenashi style v2 ilxl",
+  "Ripped-Saurian Illustrious V",
+  "zoroj ill11",
+  "hyper muscles",
+]);
 
 const MUSCLE_TRIGGERS = new Set(["mass", "r0kud3n4shi", "20r0j 2"]);
 
@@ -280,7 +286,12 @@ function weighted(tag: string, weight: number): string {
   return Math.abs(weight - 1) < 0.005 ? tag : `(${tag}:${weight.toFixed(2)})`;
 }
 
-type MuscleLoraName = "furr_mass_SDXL" | "Rokudenashi_Style_V2_ILXL" | "zoroj_ill11" | "Hyper_muscles";
+type MuscleLoraName =
+  | "furr_mass_SDXL"
+  | "Rokudenashi_Style_V2_ILXL"
+  | "ripped-saurian_illustrious_v"
+  | "zoroj_ill11"
+  | "Hyper_muscles";
 type CalibrationWeights = Record<string, number>;
 
 interface BodyCalibrationPoint {
@@ -294,10 +305,16 @@ interface BodyCalibrationPoint {
 const EMPTY_LORAS: Record<MuscleLoraName, number> = {
   furr_mass_SDXL: 0,
   Rokudenashi_Style_V2_ILXL: 0,
+  "ripped-saurian_illustrious_v": 0,
   zoroj_ill11: 0,
   Hyper_muscles: 0,
 };
-const BASE_LORAS: readonly MuscleLoraName[] = ["furr_mass_SDXL", "Rokudenashi_Style_V2_ILXL", "zoroj_ill11"];
+const BASE_LORAS: readonly MuscleLoraName[] = [
+  "furr_mass_SDXL",
+  "Rokudenashi_Style_V2_ILXL",
+  "ripped-saurian_illustrious_v",
+  "zoroj_ill11",
+];
 
 function calibrationPoint(
   loras: Partial<Record<MuscleLoraName, number>>,
@@ -328,9 +345,12 @@ const EXTREME_SKINNY = calibrationPoint({}, { skinny: 1.3 });
 const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibrationPoint>> = [
   [EXTREME_SKINNY, EXTREME_SKINNY, EXTREME_SKINNY, EXTREME_SKINNY, EXTREME_SKINNY],
   [
-    calibrationPoint({ Rokudenashi_Style_V2_ILXL: 0.1, zoroj_ill11: 0.1 }, { ...FACE, lean: 0.3 }),
     calibrationPoint(
-      { furr_mass_SDXL: 0.1, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.1 },
+      { Rokudenashi_Style_V2_ILXL: 0.1, "ripped-saurian_illustrious_v": 0.1, zoroj_ill11: 0.1 },
+      { ...FACE, lean: 0.3 },
+    ),
+    calibrationPoint(
+      { furr_mass_SDXL: 0.1, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.1, zoroj_ill11: 0.1 },
       { ...FACE, muscular: 0.5, chubby: 0.5, "full-body fat distribution": 0.5 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -348,11 +368,17 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
   ],
   [
     calibrationPoint(
-      { furr_mass_SDXL: 0.2, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.2, Hyper_muscles: 0.1 },
+      {
+        furr_mass_SDXL: 0.2,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.2,
+        zoroj_ill11: 0.2,
+        Hyper_muscles: 0.1,
+      },
       { ...FACE, atlethic: 0.3 },
     ),
     calibrationPoint(
-      { Rokudenashi_Style_V2_ILXL: 0.05, zoroj_ill11: 0.1 },
+      { Rokudenashi_Style_V2_ILXL: 0.05, "ripped-saurian_illustrious_v": 0.1, zoroj_ill11: 0.1 },
       { ...FACE, muscular: 0.5, chubby: 0.5, "full-body fat distribution": 0.5 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -362,7 +388,7 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
       SOFT_MUSCLE_NEGATIVE,
     ),
     calibrationPoint(
-      { Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.1 },
+      { Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.1, zoroj_ill11: 0.1 },
       { ...FACE, atlethic: 0.1, chubby: 0.2, "full-body fat distribution": 0.5 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -370,20 +396,26 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
   ],
   [
     calibrationPoint(
-      { furr_mass_SDXL: 0.4, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.4, Hyper_muscles: 0.1 },
+      {
+        furr_mass_SDXL: 0.4,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.4,
+        zoroj_ill11: 0.4,
+        Hyper_muscles: 0.1,
+      },
       { ...FACE, muscular: 0.5 },
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.2, Rokudenashi_Style_V2_ILXL: 0.1, zoroj_ill11: 0.1 },
+      { furr_mass_SDXL: 0.2, Rokudenashi_Style_V2_ILXL: 0.1, "ripped-saurian_illustrious_v": 0.1, zoroj_ill11: 0.1 },
       { ...FACE, atlethic: 0.3, obese: 0.1, "full-body fat distribution": 1 },
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.3, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.5 },
+      { furr_mass_SDXL: 0.3, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.5, zoroj_ill11: 0.5 },
       { ...FACE, muscular: 1, obese: 1, "full-body fat distribution": 1 },
       SOFT_MUSCLE_NEGATIVE,
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.1, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.3 },
+      { furr_mass_SDXL: 0.1, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.3, zoroj_ill11: 0.3 },
       { ...FACE, atlethic: 0.1, obese: 0.6, "full-body fat distribution": 1 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -391,20 +423,32 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
   ],
   [
     calibrationPoint(
-      { furr_mass_SDXL: 0.5, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.5, Hyper_muscles: 0.3 },
+      {
+        furr_mass_SDXL: 0.5,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.5,
+        zoroj_ill11: 0.5,
+        Hyper_muscles: 0.3,
+      },
       { ...FACE, "hyper muscular": 0.6 },
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.3, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.3, Hyper_muscles: 0.3 },
+      {
+        furr_mass_SDXL: 0.3,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.3,
+        zoroj_ill11: 0.3,
+        Hyper_muscles: 0.3,
+      },
       { ...FACE, muscular: 0.9, obese: 0.3, "full-body fat distribution": 1 },
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.5, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.7 },
+      { furr_mass_SDXL: 0.5, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.7, zoroj_ill11: 0.7 },
       { ...FACE, muscular: 1, obese: 1, "full-body fat distribution": 1 },
       SOFT_MUSCLE_NEGATIVE,
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.5, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.7 },
+      { furr_mass_SDXL: 0.5, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.7, zoroj_ill11: 0.7 },
       { ...FACE, muscular: 0.3, obese: 1, "full-body fat distribution": 1 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -412,21 +456,33 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
   ],
   [
     calibrationPoint(
-      { furr_mass_SDXL: 0.8, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.8, Hyper_muscles: 0.5 },
+      {
+        furr_mass_SDXL: 0.8,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.8,
+        zoroj_ill11: 0.8,
+        Hyper_muscles: 0.5,
+      },
       { ...FACE, "hyper muscular": 1.4 },
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.7, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.8, Hyper_muscles: 0.25 },
+      {
+        furr_mass_SDXL: 0.7,
+        Rokudenashi_Style_V2_ILXL: 0.15,
+        "ripped-saurian_illustrious_v": 0.8,
+        zoroj_ill11: 0.8,
+        Hyper_muscles: 0.25,
+      },
       { ...FACE, "hyper muscular": 1.35, "hyper obese": 0.6, "full-body fat distribution": 0.5 },
       ["veins", "vascular", "prominent veins", "muscle definition"],
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.6, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.8 },
+      { furr_mass_SDXL: 0.6, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.8, zoroj_ill11: 0.8 },
       { ...FACE, "hyper muscular": 1.3, "hyper obese": 1.2, "full-body fat distribution": 1 },
       SOFT_MUSCLE_NEGATIVE,
     ),
     calibrationPoint(
-      { furr_mass_SDXL: 0.3, Rokudenashi_Style_V2_ILXL: 0.15, zoroj_ill11: 0.4 },
+      { furr_mass_SDXL: 0.3, Rokudenashi_Style_V2_ILXL: 0.15, "ripped-saurian_illustrious_v": 0.4, zoroj_ill11: 0.4 },
       { ...FACE, "hyper muscular": 0.55, muscular: -0.1, "hyper obese": 1.35, "full-body fat distribution": 0.5 },
       SOFT_MUSCLE_NEGATIVE,
     ),
@@ -436,8 +492,21 @@ const DEFAULT_BODY_CALIBRATION_GRID: ReadonlyArray<ReadonlyArray<BodyCalibration
 
 const SCALE_STEPS = [0, 20, 40, 60, 80, 100] as const;
 const COMPOSITION_STEPS = [0, 0.25, 0.5, 0.75, 1] as const;
-const AUTHORED_SCALE_RANGES = [[0, 9], [10, 29], [30, 49], [50, 69], [70, 89], [90, 100]] as const;
-const AUTHORED_COMPOSITION_RANGES = [[0, 12], [13, 37], [38, 62], [63, 87], [88, 100]] as const;
+const AUTHORED_SCALE_RANGES = [
+  [0, 9],
+  [10, 29],
+  [30, 49],
+  [50, 69],
+  [70, 89],
+  [90, 100],
+] as const;
+const AUTHORED_COMPOSITION_RANGES = [
+  [0, 12],
+  [13, 37],
+  [38, 62],
+  [63, 87],
+  [88, 100],
+] as const;
 
 type RuntimeWeightCurve = [number, number, number];
 type RuntimeCorrectionRow = [number, number, number];
@@ -478,59 +547,81 @@ export interface AvatarBodyRuntimeSettings extends AvatarBodyThresholdSettings {
 
 const SIZE_IDS = ["skinny", "small", "average1", "muscular", "large", "extreme"] as const;
 const FAT_IDS = ["muscle100", "muscle75", "balanced", "muscle25", "fat100"] as const;
-const ZERO_CORRECTIONS: RuntimeCorrectionGrid = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+const ZERO_CORRECTIONS: RuntimeCorrectionGrid = [
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+];
 const CELL_REFERENCES: ReadonlyArray<ReadonlyArray<readonly [string, "reference" | "derived"]>> = [
   Array.from({ length: 5 }, () => ["EXTREME_SKINNY.json", "reference"] as const),
   [
-    ["SMALL_MUSCULAR.json", "reference"], ["SMALL_FAT_25_MUS_75.json", "reference"],
-    ["SMALL_FAT_50_MUS_50.json", "reference"], ["SMALL_FAT_75_MUSCLE_25.json", "reference"],
+    ["SMALL_MUSCULAR.json", "reference"],
+    ["SMALL_FAT_25_MUS_75.json", "reference"],
+    ["SMALL_FAT_50_MUS_50.json", "reference"],
+    ["SMALL_FAT_75_MUSCLE_25.json", "reference"],
     ["SMALL_FAT.json", "reference"],
   ],
   [
-    ["AVERAGE_1_MUSCULAR.json", "reference"], ["AVERAGE_1_FAT_25_MUS_75.json", "reference"],
-    ["AVERAGE_1_FAT_50_MUS_50.json", "reference"], ["AVERAGE_1_FAT_75_MUSCLE_25.json", "reference"],
+    ["AVERAGE_1_MUSCULAR.json", "reference"],
+    ["AVERAGE_1_FAT_25_MUS_75.json", "reference"],
+    ["AVERAGE_1_FAT_50_MUS_50.json", "reference"],
+    ["AVERAGE_1_FAT_75_MUSCLE_25.json", "reference"],
     ["AVERAGE_1_FAT.json", "reference"],
   ],
   [
-    ["AVERAGE_2_MUSCULAR.json", "reference"], ["AVERAGE_2_FAT_25_MUSCLE_75.json", "reference"],
-    ["AVERAGE_2_FAT_50_MUSCLE_50.json", "reference"], ["AVERAGE_2_FAT_75_MUSCLE_25.json", "reference"],
+    ["AVERAGE_2_MUSCULAR.json", "reference"],
+    ["AVERAGE_2_FAT_25_MUSCLE_75.json", "reference"],
+    ["AVERAGE_2_FAT_50_MUSCLE_50.json", "reference"],
+    ["AVERAGE_2_FAT_75_MUSCLE_25.json", "reference"],
     ["AVERAGE_2_FAT.json", "reference"],
   ],
   [
-    ["BIG_MUSCULAR.json", "reference"], ["BIG_FAT_25_MUSCLE_75.json", "reference"],
-    ["BIG_FAT_50_MUSCLE_50.json", "reference"], ["BIG_FAT_75_MUSCLE_25_.json", "reference"],
+    ["BIG_MUSCULAR.json", "reference"],
+    ["BIG_FAT_25_MUSCLE_75.json", "reference"],
+    ["BIG_FAT_50_MUSCLE_50.json", "reference"],
+    ["BIG_FAT_75_MUSCLE_25_.json", "reference"],
     ["BIG_FAT.json", "reference"],
   ],
   [
-    ["EXTREME_MUSCULAR.json", "reference"], ["DERIVED_EXTREME_25_75", "derived"],
-    ["EXTREME_FAT_MUSCLE.json", "reference"], ["DERIVED_EXTREME_75_25", "derived"],
+    ["EXTREME_MUSCULAR.json", "reference"],
+    ["DERIVED_EXTREME_25_75", "derived"],
+    ["EXTREME_FAT_MUSCLE.json", "reference"],
+    ["DERIVED_EXTREME_75_25", "derived"],
     ["EXTREME_FAT.json", "reference"],
   ],
 ];
 
 function serializeDefaultCells(): Record<string, AvatarBodyRuntimeCell> {
   const cells: Record<string, AvatarBodyRuntimeCell> = {};
-  DEFAULT_BODY_CALIBRATION_GRID.forEach((row, rowIndex) => row.forEach((point, columnIndex) => {
-    const [reference, status] = CELL_REFERENCES[rowIndex]![columnIndex]!;
-    cells[`${SIZE_IDS[rowIndex]}:${FAT_IDS[columnIndex]}`] = {
-      reference,
-      status,
-      loras: Object.fromEntries(
-        [...point.loraPresence].map((name) => [name, point.loras[name]]),
-      ) as Partial<Record<MuscleLoraName, number>>,
-      positive: { ...point.positive },
-      adjustments: { loras: {}, positive: {} },
-      negative: Object.keys(point.negative),
-    };
-  }));
+  DEFAULT_BODY_CALIBRATION_GRID.forEach((row, rowIndex) =>
+    row.forEach((point, columnIndex) => {
+      const [reference, status] = CELL_REFERENCES[rowIndex]![columnIndex]!;
+      cells[`${SIZE_IDS[rowIndex]}:${FAT_IDS[columnIndex]}`] = {
+        reference,
+        status,
+        loras: Object.fromEntries([...point.loraPresence].map((name) => [name, point.loras[name]])) as Partial<
+          Record<MuscleLoraName, number>
+        >,
+        positive: { ...point.positive },
+        adjustments: { loras: {}, positive: {} },
+        negative: Object.keys(point.negative),
+      };
+    }),
+  );
   return cells;
 }
 
 const DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS: AvatarBodyRuntimeSettings = {
   schema: "marinara-avatar-body-settings/v2",
   ...DEFAULT_AVATAR_BODY_THRESHOLD_SETTINGS,
-  sizeRules: DEFAULT_AVATAR_BODY_THRESHOLD_SETTINGS.sizeRules.map((rule) => ({ ...rule, control: [...rule.control] as [number, number] })),
-  fatRules: DEFAULT_AVATAR_BODY_THRESHOLD_SETTINGS.fatRules.map((rule) => ({ ...rule, control: [...rule.control] as [number, number] })),
+  sizeRules: DEFAULT_AVATAR_BODY_THRESHOLD_SETTINGS.sizeRules.map((rule) => ({
+    ...rule,
+    control: [...rule.control] as [number, number],
+  })),
+  fatRules: DEFAULT_AVATAR_BODY_THRESHOLD_SETTINGS.fatRules.map((rule) => ({
+    ...rule,
+    control: [...rule.control] as [number, number],
+  })),
   interpolation: {
     isolatedTagPower: 2.3,
     columnTagEntryWeight: 0.1,
@@ -547,20 +638,26 @@ let activeBodyCalibrationGrid = DEFAULT_BODY_CALIBRATION_GRID;
 
 function finiteNumber(value: unknown, label: string, low: number, high: number): number {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < low || parsed > high) throw new Error(`${label} must be between ${low} and ${high}`);
+  if (!Number.isFinite(parsed) || parsed < low || parsed > high)
+    throw new Error(`${label} must be between ${low} and ${high}`);
   return parsed;
 }
 
 function normalizeRules(value: unknown, expectedIds: readonly string[], label: string): AvatarBodyThresholdRule[] {
-  if (!Array.isArray(value) || value.length !== expectedIds.length) throw new Error(`${label} must contain ${expectedIds.length} rules`);
+  if (!Array.isArray(value) || value.length !== expectedIds.length)
+    throw new Error(`${label} must contain ${expectedIds.length} rules`);
   let previousCeiling = 0;
   let previousControlEnd = 0;
   return value.map((raw, index) => {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${label}[${index}] is invalid`);
     const record = raw as Record<string, unknown>;
     if (record.id !== expectedIds[index]) throw new Error(`${label}[${index}] must keep id ${expectedIds[index]}`);
-    const maxExclusive = index === expectedIds.length - 1 ? null : finiteNumber(record.maxExclusive, `${label}[${index}].maxExclusive`, 0.01, 1_000_000);
-    if (maxExclusive !== null && maxExclusive <= previousCeiling) throw new Error(`${label} ceilings must be strictly increasing`);
+    const maxExclusive =
+      index === expectedIds.length - 1
+        ? null
+        : finiteNumber(record.maxExclusive, `${label}[${index}].maxExclusive`, 0.01, 1_000_000);
+    if (maxExclusive !== null && maxExclusive <= previousCeiling)
+      throw new Error(`${label} ceilings must be strictly increasing`);
     if (maxExclusive !== null) previousCeiling = maxExclusive;
     const control = record.control;
     if (!Array.isArray(control) || control.length !== 2) throw new Error(`${label}[${index}].control is invalid`);
@@ -571,7 +668,10 @@ function normalizeRules(value: unknown, expectedIds: readonly string[], label: s
     previousControlEnd = controlEnd;
     return {
       id: expectedIds[index]!,
-      label: typeof record.label === "string" && record.label.trim() ? record.label.trim().slice(0, 80) : expectedIds[index]!,
+      label:
+        typeof record.label === "string" && record.label.trim()
+          ? record.label.trim().slice(0, 80)
+          : expectedIds[index]!,
       maxExclusive,
       control: [controlStart, controlEnd],
       ...(index === 0 && label === "sizeRules" ? { requiresFatBelowFirstThreshold: true } : {}),
@@ -584,7 +684,8 @@ function normalizeAnchorRecord(value: unknown, label: string, allowedNames?: Rea
   const result: RuntimeAnchors = {};
   for (const [rawName, rawValue] of Object.entries(value as Record<string, unknown>)) {
     const name = rawName.trim().slice(0, 100);
-    if (!name || (allowedNames && !allowedNames.has(name))) throw new Error(`${label} contains unsupported name ${rawName}`);
+    if (!name || (allowedNames && !allowedNames.has(name)))
+      throw new Error(`${label} contains unsupported name ${rawName}`);
     const anchor = Array.isArray(rawValue) ? rawValue[1] : rawValue;
     result[name] = finiteNumber(anchor, `${label}.${name}`, -5, 5);
   }
@@ -604,10 +705,11 @@ function normalizeCorrectionGrid(value: unknown, label: string): RuntimeCorrecti
   if (!Array.isArray(value) || value.length !== 3 || value.some((row) => !Array.isArray(row) || row.length !== 3)) {
     throw new Error(`${label} must be a 3x3 grid`);
   }
-  return value.map((row, rowIndex) =>
-    (row as unknown[]).map((entry, columnIndex) =>
-      finiteNumber(entry, `${label}[${rowIndex}][${columnIndex}]`, -5, 5),
-    ) as RuntimeCorrectionRow,
+  return value.map(
+    (row, rowIndex) =>
+      (row as unknown[]).map((entry, columnIndex) =>
+        finiteNumber(entry, `${label}[${rowIndex}][${columnIndex}]`, -5, 5),
+      ) as RuntimeCorrectionRow,
   ) as RuntimeCorrectionGrid;
 }
 
@@ -618,9 +720,7 @@ function normalizeAdjustmentRecord(
   legacyCell?: Record<string, unknown>,
   legacyKind?: "loras" | "positive",
 ): RuntimeAdjustments {
-  const source = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+  const source = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   const result: RuntimeAdjustments = {};
   for (const name of names) {
     const raw = source[name];
@@ -636,15 +736,21 @@ function normalizeAdjustmentRecord(
       };
       continue;
     }
-    const legacyWeights = legacyKind && legacyCell?.[legacyKind] &&
-      typeof legacyCell[legacyKind] === "object" && !Array.isArray(legacyCell[legacyKind])
-      ? (legacyCell[legacyKind] as Record<string, unknown>)[name]
-      : undefined;
-    const legacyEnabled = legacyKind && legacyCell?.overrides &&
-      typeof legacyCell.overrides === "object" && !Array.isArray(legacyCell.overrides) &&
+    const legacyWeights =
+      legacyKind &&
+      legacyCell?.[legacyKind] &&
+      typeof legacyCell[legacyKind] === "object" &&
+      !Array.isArray(legacyCell[legacyKind])
+        ? (legacyCell[legacyKind] as Record<string, unknown>)[name]
+        : undefined;
+    const legacyEnabled =
+      legacyKind &&
+      legacyCell?.overrides &&
+      typeof legacyCell.overrides === "object" &&
+      !Array.isArray(legacyCell.overrides) &&
       (legacyCell.overrides as Record<string, unknown>)[legacyKind] &&
       typeof (legacyCell.overrides as Record<string, unknown>)[legacyKind] === "object" &&
-      ((legacyCell.overrides as Record<string, Record<string, unknown>>)[legacyKind]?.[name] === true);
+      (legacyCell.overrides as Record<string, Record<string, unknown>>)[legacyKind]?.[name] === true;
     if (legacyEnabled && Array.isArray(legacyWeights) && legacyWeights.length === 3) {
       const curve = legacyWeights.map((entry, index) =>
         finiteNumber(entry, `${label}.${name}.legacy[${index}]`, -5, 5),
@@ -664,7 +770,8 @@ function normalizeRuntimeSettings(value: unknown): AvatarBodyRuntimeSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Settings must be an object");
   const record = value as Record<string, unknown>;
   const legacyV1 = record.schema === "marinara-avatar-body-settings/v1";
-  if (!legacyV1 && record.schema !== DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS.schema) throw new Error("Unsupported settings schema");
+  if (!legacyV1 && record.schema !== DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS.schema)
+    throw new Error("Unsupported settings schema");
   const sizeRules = normalizeRules(record.sizeRules, SIZE_IDS, "sizeRules");
   const fatRules = normalizeRules(record.fatRules, FAT_IDS, "fatRules");
   const rawInterpolation = record.interpolation as Record<string, unknown> | undefined;
@@ -673,31 +780,50 @@ function normalizeRuntimeSettings(value: unknown): AvatarBodyRuntimeSettings {
   if (!rawCells || typeof rawCells !== "object" || Array.isArray(rawCells)) throw new Error("cells must be an object");
   const cells: Record<string, AvatarBodyRuntimeCell> = {};
   const allowedLoras = new Set<MuscleLoraName>(Object.keys(EMPTY_LORAS) as MuscleLoraName[]);
-  for (const sizeId of SIZE_IDS) for (const fatId of FAT_IDS) {
-    const key = `${sizeId}:${fatId}`;
-    const rawCell = (rawCells as Record<string, unknown>)[key];
-    if (!rawCell || typeof rawCell !== "object" || Array.isArray(rawCell)) throw new Error(`Missing cell ${key}`);
-    const cell = rawCell as Record<string, unknown>;
-    const negative = Array.isArray(cell.negative)
-      ? cell.negative.map((tag) => String(tag).trim().slice(0, 100)).filter(Boolean).slice(0, 100)
-      : [];
-    const loras = normalizeAnchorRecord(cell.loras, `${key}.loras`, allowedLoras) as Partial<Record<MuscleLoraName, number>>;
-    const positive = normalizeAnchorRecord(cell.positive, `${key}.positive`);
-    const rawAdjustments = cell.adjustments && typeof cell.adjustments === "object" && !Array.isArray(cell.adjustments)
-      ? cell.adjustments as Record<string, unknown>
-      : {};
-    cells[key] = {
-      reference: typeof cell.reference === "string" ? cell.reference.trim().slice(0, 160) : key,
-      status: cell.status === "derived" ? "derived" : "reference",
-      loras,
-      positive,
-      adjustments: {
-        loras: normalizeAdjustmentRecord(rawAdjustments.loras, Object.keys(loras), `${key}.adjustments.loras`, legacyV1 ? cell : undefined, "loras"),
-        positive: normalizeAdjustmentRecord(rawAdjustments.positive, Object.keys(positive), `${key}.adjustments.positive`, legacyV1 ? cell : undefined, "positive"),
-      },
-      negative,
-    };
-  }
+  for (const sizeId of SIZE_IDS)
+    for (const fatId of FAT_IDS) {
+      const key = `${sizeId}:${fatId}`;
+      const rawCell = (rawCells as Record<string, unknown>)[key];
+      if (!rawCell || typeof rawCell !== "object" || Array.isArray(rawCell)) throw new Error(`Missing cell ${key}`);
+      const cell = rawCell as Record<string, unknown>;
+      const negative = Array.isArray(cell.negative)
+        ? cell.negative
+            .map((tag) => String(tag).trim().slice(0, 100))
+            .filter(Boolean)
+            .slice(0, 100)
+        : [];
+      const loras = normalizeAnchorRecord(cell.loras, `${key}.loras`, allowedLoras) as Partial<
+        Record<MuscleLoraName, number>
+      >;
+      const positive = normalizeAnchorRecord(cell.positive, `${key}.positive`);
+      const rawAdjustments =
+        cell.adjustments && typeof cell.adjustments === "object" && !Array.isArray(cell.adjustments)
+          ? (cell.adjustments as Record<string, unknown>)
+          : {};
+      cells[key] = {
+        reference: typeof cell.reference === "string" ? cell.reference.trim().slice(0, 160) : key,
+        status: cell.status === "derived" ? "derived" : "reference",
+        loras,
+        positive,
+        adjustments: {
+          loras: normalizeAdjustmentRecord(
+            rawAdjustments.loras,
+            Object.keys(loras),
+            `${key}.adjustments.loras`,
+            legacyV1 ? cell : undefined,
+            "loras",
+          ),
+          positive: normalizeAdjustmentRecord(
+            rawAdjustments.positive,
+            Object.keys(positive),
+            `${key}.adjustments.positive`,
+            legacyV1 ? cell : undefined,
+            "positive",
+          ),
+        },
+        negative,
+      };
+    }
   return {
     schema: DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS.schema,
     referenceCeilingKg: finiteNumber(record.referenceCeilingKg, "referenceCeilingKg", 200, 1_000_000),
@@ -708,24 +834,27 @@ function normalizeRuntimeSettings(value: unknown): AvatarBodyRuntimeSettings {
       columnTagEntryWeight: finiteNumber(rawInterpolation.columnTagEntryWeight, "columnTagEntryWeight", 0, 5),
       extremeTagEntryWeight: finiteNumber(rawInterpolation.extremeTagEntryWeight, "extremeTagEntryWeight", 0, 5),
       loraEntryWeight: finiteNumber(rawInterpolation.loraEntryWeight, "loraEntryWeight", 0, 5),
-      skinnyExitWeight: rawInterpolation.skinnyExitWeight === undefined
-        ? DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS.interpolation.skinnyExitWeight
-        : finiteNumber(rawInterpolation.skinnyExitWeight, "skinnyExitWeight", 0, 5),
+      skinnyExitWeight:
+        rawInterpolation.skinnyExitWeight === undefined
+          ? DEFAULT_AVATAR_BODY_RUNTIME_SETTINGS.interpolation.skinnyExitWeight
+          : finiteNumber(rawInterpolation.skinnyExitWeight, "skinnyExitWeight", 0, 5),
     },
     cells,
   };
 }
 
 function hydrateGrid(settings: AvatarBodyRuntimeSettings): ReadonlyArray<ReadonlyArray<BodyCalibrationPoint>> {
-  return SIZE_IDS.map((sizeId) => FAT_IDS.map((fatId) => {
-    const cell = settings.cells[`${sizeId}:${fatId}`]!;
-    const loras = Object.fromEntries(
-      Object.entries(cell.loras).map(([name, weight]) => [name, weight ?? 0]),
-    ) as Partial<Record<MuscleLoraName, number>>;
-    const positive = { ...cell.positive };
-    const point = calibrationPoint(loras, positive, cell.negative);
-    return { ...point, loraPresence: new Set(Object.keys(cell.loras) as MuscleLoraName[]) };
-  }));
+  return SIZE_IDS.map((sizeId) =>
+    FAT_IDS.map((fatId) => {
+      const cell = settings.cells[`${sizeId}:${fatId}`]!;
+      const loras = Object.fromEntries(
+        Object.entries(cell.loras).map(([name, weight]) => [name, weight ?? 0]),
+      ) as Partial<Record<MuscleLoraName, number>>;
+      const positive = { ...cell.positive };
+      const point = calibrationPoint(loras, positive, cell.negative);
+      return { ...point, loraPresence: new Set(Object.keys(cell.loras) as MuscleLoraName[]) };
+    }),
+  );
 }
 
 function activateRuntimeSettings(settings: AvatarBodyRuntimeSettings): void {
@@ -824,7 +953,8 @@ function isolatedRowWeight(
     ? Math.max(anchorMagnitude * 1.25, replacement ?? 0)
     : (replacement ?? Math.min(activeRuntimeSettings.interpolation.columnTagEntryWeight, anchorMagnitude));
   const rawMagnitude =
-    anchorMagnitude * Math.pow(
+    anchorMagnitude *
+    Math.pow(
       magnitude / center,
       vector === "forward"
         ? activeRuntimeSettings.interpolation.isolatedTagPower
@@ -863,7 +993,8 @@ function verticalTagWeight(
     if (hasOwnWeight(lower.positive, tag)) {
       return lerpAt(magnitude, SCALE_STEPS[selectedRow - 1]!, center, lower.positive[tag]!, anchor);
     }
-    const entry = Math.sign(anchor) * Math.min(activeRuntimeSettings.interpolation.extremeTagEntryWeight, Math.abs(anchor));
+    const entry =
+      Math.sign(anchor) * Math.min(activeRuntimeSettings.interpolation.extremeTagEntryWeight, Math.abs(anchor));
     const progress = clamp((magnitude - 90) / 10, 0, 1);
     return entry + (anchor - entry) * Math.pow(progress, activeRuntimeSettings.interpolation.isolatedTagPower);
   }
@@ -913,10 +1044,9 @@ function horizontalTagWeight(
   // new in the selected column enters only after the categorical boundary.
   if (composition > center) return verticalWeight;
   const boundary = (COMPOSITION_STEPS[selectedColumn - 1]! + center) / 2;
-  const entry = Math.sign(verticalWeight) * Math.min(
-    activeRuntimeSettings.interpolation.columnTagEntryWeight,
-    Math.abs(verticalWeight),
-  );
+  const entry =
+    Math.sign(verticalWeight) *
+    Math.min(activeRuntimeSettings.interpolation.columnTagEntryWeight, Math.abs(verticalWeight));
   return lerpAt(composition, boundary, center, entry, verticalWeight);
 }
 
@@ -1018,12 +1148,7 @@ function correctionAt(
     );
     return lerpAt(progress, 0, 1, adjustment.corrections[top]![1], adjustment.corrections[bottom]![1]);
   }
-  const [top, bottom, verticalProgress] = correctionAxis(
-    magnitude,
-    sizeRange[0],
-    SCALE_STEPS[row]!,
-    sizeRange[1],
-  );
+  const [top, bottom, verticalProgress] = correctionAxis(magnitude, sizeRange[0], SCALE_STEPS[row]!, sizeRange[1]);
   const fatRange = AUTHORED_COMPOSITION_RANGES[column]!;
   const [left, right, horizontalProgress] = correctionAxis(
     composition * 100,
@@ -1096,26 +1221,31 @@ function evaluateRuntimeEntry(
   const cellKey = `${SIZE_IDS[row]}:${FAT_IDS[column]}`;
   const cell = activeRuntimeSettings.cells[cellKey]!;
   const sizeCenter = SCALE_STEPS[row]!;
-  const verticalNeighbor = row === 0
-    ? -1
-    : magnitude === sizeCenter
-    ? -1
-    : row === SIZE_IDS.length - 1 ? row - 1 : magnitude < sizeCenter ? row - 1 : row + 1;
+  const verticalNeighbor =
+    row === 0
+      ? -1
+      : magnitude === sizeCenter
+        ? -1
+        : row === SIZE_IDS.length - 1
+          ? row - 1
+          : magnitude < sizeCenter
+            ? row - 1
+            : row + 1;
   const verticalDirection: RuntimeEntryTrace["vertical"]["direction"] =
     magnitude < sizeCenter ? "above" : magnitude > sizeCenter ? "below" : "anchor";
-  const vertical = kind === "positive"
-    ? verticalTagWeight(column, name, magnitude, row, skinnyFatMagnitude)
-    : verticalLoraWeight(column, name as MuscleLoraName, magnitude, row);
+  const vertical =
+    kind === "positive"
+      ? verticalTagWeight(column, name, magnitude, row, skinnyFatMagnitude)
+      : verticalLoraWeight(column, name as MuscleLoraName, magnitude, row);
   const fatCenter = COMPOSITION_STEPS[column]!;
-  const horizontalNeighbor = row === 0 || column === 0 || composition === fatCenter
-    ? -1
-    : composition < fatCenter ? column - 1 : column + 1;
-  const horizontalDirection: RuntimeEntryTrace["horizontal"]["direction"] = row === 0 || column === 0 || composition === fatCenter
-    ? "anchor"
-    : composition < fatCenter ? "left" : "right";
-  const automatic = kind === "positive"
-    ? horizontalTagWeight(row, name, vertical, magnitude, composition, column)
-    : horizontalLoraWeight(row, name as MuscleLoraName, vertical, magnitude, composition, column);
+  const horizontalNeighbor =
+    row === 0 || column === 0 || composition === fatCenter ? -1 : composition < fatCenter ? column - 1 : column + 1;
+  const horizontalDirection: RuntimeEntryTrace["horizontal"]["direction"] =
+    row === 0 || column === 0 || composition === fatCenter ? "anchor" : composition < fatCenter ? "left" : "right";
+  const automatic =
+    kind === "positive"
+      ? horizontalTagWeight(row, name, vertical, magnitude, composition, column)
+      : horizontalLoraWeight(row, name as MuscleLoraName, vertical, magnitude, composition, column);
   const adjustment = cell.adjustments[kind][name];
   const correction = correctionAt(adjustment, row, column, magnitude, composition);
   const adjusted = automatic + correction;
@@ -1126,25 +1256,29 @@ function evaluateRuntimeEntry(
   const horizontalSourceCell = horizontalNeighbor >= 0 ? `${SIZE_IDS[row]}:${FAT_IDS[horizontalNeighbor]}` : null;
   const verticalSourceAnchor = verticalNeighbor >= 0 ? anchorFor(verticalNeighbor, column, kind, name) : null;
   const horizontalSourceAnchor = horizontalNeighbor >= 0 ? anchorFor(row, horizontalNeighbor, kind, name) : null;
-  const horizontalSourceAfterVertical = horizontalNeighbor >= 0 && horizontalSourceAnchor !== null
-    ? kind === "positive"
-      ? verticalTagWeight(horizontalNeighbor, name, magnitude, row)
-      : verticalLoraWeight(horizontalNeighbor, name as MuscleLoraName, magnitude, row)
-    : null;
-  const diagonalSourceCell = horizontalNeighbor >= 0 && verticalNeighbor >= 0
-    ? `${SIZE_IDS[verticalNeighbor]}:${FAT_IDS[horizontalNeighbor]}`
-    : null;
-  const diagonalSourceAnchor = horizontalNeighbor >= 0 && verticalNeighbor >= 0
-    ? anchorFor(verticalNeighbor, horizontalNeighbor, kind, name)
-    : null;
+  const horizontalSourceAfterVertical =
+    horizontalNeighbor >= 0 && horizontalSourceAnchor !== null
+      ? kind === "positive"
+        ? verticalTagWeight(horizontalNeighbor, name, magnitude, row)
+        : verticalLoraWeight(horizontalNeighbor, name as MuscleLoraName, magnitude, row)
+      : null;
+  const diagonalSourceCell =
+    horizontalNeighbor >= 0 && verticalNeighbor >= 0
+      ? `${SIZE_IDS[verticalNeighbor]}:${FAT_IDS[horizontalNeighbor]}`
+      : null;
+  const diagonalSourceAnchor =
+    horizontalNeighbor >= 0 && verticalNeighbor >= 0
+      ? anchorFor(verticalNeighbor, horizontalNeighbor, kind, name)
+      : null;
   return {
     value: result,
     trace: {
       vertical: {
         direction: verticalDirection,
-        rule: row === 0 && kind === "positive" && name === "skinny"
-          ? `curva interna até ${activeRuntimeSettings.interpolation.skinnyExitWeight} (peso ou gordura, o que estiver mais avançado)`
-          : "interpolação vertical",
+        rule:
+          row === 0 && kind === "positive" && name === "skinny"
+            ? `curva interna até ${activeRuntimeSettings.interpolation.skinnyExitWeight} (peso ou gordura, o que estiver mais avançado)`
+            : "interpolação vertical",
         sourceCell: verticalSourceCell,
         sourcePresent: verticalSourceAnchor !== null,
         sourceAnchor: verticalSourceAnchor,
@@ -1182,22 +1316,22 @@ function calibrationFor(values: AvatarBodyControlValues): BodyCalibrationPoint {
   );
   // Extremely Skinny has only one authored reference. Body fat must not change
   // its tags or LoRAs until Weight selects the Small row.
-  const selectedColumnIndex = selectedScaleIndex === 0
-    ? 0
-    : sliderRuleIndex(fatSlider, activeRuntimeSettings.fatRules);
-  const composition = selectedScaleIndex === 0
-    ? 0
-    : sliderValueToAuthoredControl(
-        fatSlider,
-        activeRuntimeSettings.fatRules,
-        selectedColumnIndex,
-        AUTHORED_COMPOSITION_RANGES,
-      ) / 100;
+  const selectedColumnIndex = selectedScaleIndex === 0 ? 0 : sliderRuleIndex(fatSlider, activeRuntimeSettings.fatRules);
+  const composition =
+    selectedScaleIndex === 0
+      ? 0
+      : sliderValueToAuthoredControl(
+          fatSlider,
+          activeRuntimeSettings.fatRules,
+          selectedColumnIndex,
+          AUTHORED_COMPOSITION_RANGES,
+        ) / 100;
   // The `skinny` tag itself is still allowed to fade with body fat inside this
   // isolated row, using the same authored magnitude space as the weight axis.
-  const skinnyFatMagnitude = selectedScaleIndex === 0
-    ? sliderValueToAuthoredControl(fatSlider, activeRuntimeSettings.fatRules, 0, AUTHORED_COMPOSITION_RANGES)
-    : 0;
+  const skinnyFatMagnitude =
+    selectedScaleIndex === 0
+      ? sliderValueToAuthoredControl(fatSlider, activeRuntimeSettings.fatRules, 0, AUTHORED_COMPOSITION_RANGES)
+      : 0;
   const selected = activeBodyCalibrationGrid[selectedScaleIndex]![selectedColumnIndex]!;
   const positive = Object.fromEntries(
     Object.keys(selected.positive).map((tag) => [
@@ -1243,12 +1377,11 @@ export function previewAvatarBodyRuntime(cellKey: string, kind: RuntimeEntryKind
 
   const sizeRange = AUTHORED_SCALE_RANGES[row]!;
   const fatRange = AUTHORED_COMPOSITION_RANGES[column]!;
-  const magnitudes = row === 0
-    ? [sizeRange[0], (sizeRange[0] + sizeRange[1]) / 2, sizeRange[1]]
-    : [sizeRange[0], SCALE_STEPS[row]!, sizeRange[1]];
-  const compositions = row === 0
-    ? [0, 0, 0]
-    : [fatRange[0] / 100, COMPOSITION_STEPS[column]!, fatRange[1] / 100];
+  const magnitudes =
+    row === 0
+      ? [sizeRange[0], (sizeRange[0] + sizeRange[1]) / 2, sizeRange[1]]
+      : [sizeRange[0], SCALE_STEPS[row]!, sizeRange[1]];
+  const compositions = row === 0 ? [0, 0, 0] : [fatRange[0] / 100, COMPOSITION_STEPS[column]!, fatRange[1] / 100];
   const surface = magnitudes.map((magnitude, verticalIndex) =>
     compositions.map((composition, horizontalIndex) => ({
       verticalIndex,

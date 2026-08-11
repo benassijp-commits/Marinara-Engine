@@ -44,9 +44,15 @@ export function FeaturedCharacterPortrait({
   const expression = expressionSpritesEnabled ? getCharacterExpressionHint(character, spriteExpression) : null;
   const { data: sprites } = useCharacterSprites(resolvedSpriteCharacterId);
   const spriteUrl = expression ? resolveSpriteUrl(sprites as SpriteInfo[] | undefined, expression) : null;
-  const media = spriteUrl ?? characterPicture ?? character.avatarPath ?? null;
+  const media =
+    spriteUrl ??
+    (character.preferGeneratedAvatar ? character.avatarPath : characterPicture) ??
+    characterPicture ??
+    character.avatarPath ??
+    null;
   const mediaKind: TrackerPortraitStageMediaKind | null = spriteUrl ? "expression" : media ? "art" : null;
-  const canUploadTrackerArt = !!onUploadAvatar && !spriteUrl && !characterPicture;
+  const canUploadTrackerArt =
+    !!onUploadAvatar && !spriteUrl && (!characterPicture || character.preferGeneratedAvatar);
   const defaultPortraitFocusY =
     mediaKind === "expression" ? TRACKER_PORTRAIT_EXPRESSION_DEFAULT_FOCUS_Y : FEATURED_PORTRAIT_DEFAULT_FOCUS_Y;
   const portraitFocusYMax = mediaKind === "expression" ? TRACKER_PORTRAIT_EXPRESSION_FOCUS_Y_MAX : 100;
@@ -107,7 +113,7 @@ export function FeaturedCharacterPortrait({
             : undefined
         }
       />
-      {onRemoveAvatar && !spriteUrl && !characterPicture && (
+      {onRemoveAvatar && !spriteUrl && (
         <AvatarRemoveButton
           characterName={characterName}
           pending={avatarRemovalPending}

@@ -2746,6 +2746,7 @@ Use HTML sparingly and diegetically. Do not replace normal prose/dialogue unless
       }
       assert.equal((controlledPrompt.positive.match(/<lora:furr_mass_SDXL:/g) ?? []).length, 1);
       assert.equal((controlledPrompt.positive.match(/<lora:Rokudenashi_Style_V2_ILXL:/g) ?? []).length, 1);
+      assert.equal((controlledPrompt.positive.match(/<lora:ripped-saurian_illustrious_v:/g) ?? []).length, 1);
       assert.equal((controlledPrompt.positive.match(/<lora:zoroj_ill11:/g) ?? []).length, 1);
 
       const categoryFiltered = applyAvatarBodyControls(
@@ -4307,6 +4308,7 @@ cases.push({
     assert.match(controlled.positive, /black tank top/);
     assert.match(controlled.positive, /<lora:style:0\.4>/);
     assert.match(controlled.positive, /<lora:furr_mass_SDXL:0\.60>/);
+    assert.match(controlled.positive, /<lora:ripped-saurian_illustrious_v:0\.80>/);
     assert.match(controlled.positive, /<lora:zoroj_ill11:0\.80>/);
     assert.match(controlled.positive, /hyper muscular:1\.30/);
     assert.match(controlled.positive, /hyper obese:1\.20/);
@@ -4367,6 +4369,7 @@ cases.push({
     assert.match(pureExtremeFat.positive, /hyper obese:1\.50/);
     assert.match(pureExtremeFat.positive, /<lora:furr_mass_SDXL:0\.00>/);
     assert.match(pureExtremeFat.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.15>/);
+    assert.match(pureExtremeFat.positive, /<lora:ripped-saurian_illustrious_v:0\.00>/);
     assert.match(pureExtremeFat.positive, /<lora:zoroj_ill11:0\.00>/);
     assert.doesNotMatch(pureExtremeFat.positive, /<lora:Hyper_muscles:/);
     assert.match(pureExtremeFat.negative, /veins, vascular, prominent veins/);
@@ -4412,6 +4415,7 @@ cases.push({
     assert.match(joshAutomaticPrompt.positive, /\(obese:0\.10\)/);
     assert.match(joshAutomaticPrompt.positive, /<lora:furr_mass_SDXL:0\.27>/);
     assert.match(joshAutomaticPrompt.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.12>/);
+    assert.match(joshAutomaticPrompt.positive, /<lora:ripped-saurian_illustrious_v:0\.23>/);
     assert.match(joshAutomaticPrompt.positive, /<lora:zoroj_ill11:0\.23>/);
     assert.doesNotMatch(joshAutomaticPrompt.positive, /<lora:Hyper_muscles:/);
 
@@ -4523,6 +4527,7 @@ cases.push({
     );
     assert.match(averageFatAutomaticInterpolation.positive, /<lora:furr_mass_SDXL:0\.00>/);
     assert.match(averageFatAutomaticInterpolation.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.06>/);
+    assert.match(averageFatAutomaticInterpolation.positive, /<lora:ripped-saurian_illustrious_v:0\.00>/);
     assert.match(averageFatAutomaticInterpolation.positive, /<lora:zoroj_ill11:0\.00>/);
     const averageFatSurface = previewAvatarBodyRuntime("average1:fat100", "loras", "Rokudenashi_Style_V2_ILXL");
     assert.equal(averageFatSurface.neighborhood[1]?.[0]?.cellKey, "average1:muscle25");
@@ -4539,6 +4544,7 @@ cases.push({
     );
     assert.match(loraBelowThreshold.positive, /<lora:furr_mass_SDXL:0\.00>/);
     assert.match(loraBelowThreshold.positive, /<lora:Rokudenashi_Style_V2_ILXL:0\.10>/);
+    assert.match(loraBelowThreshold.positive, /<lora:ripped-saurian_illustrious_v:0\.11>/);
     assert.match(loraBelowThreshold.positive, /<lora:zoroj_ill11:0\.11>/);
     assert.doesNotMatch(loraBelowThreshold.positive, /<lora:Hyper_muscles:/);
     const clothedBulge = applyAvatarBodyControls(

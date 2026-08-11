@@ -339,7 +339,7 @@ export function FeaturedCharacterTrackerCard({
               characterPicture={characterPicture}
               detailsSide={featuredDetailsSide}
               onUploadAvatar={onUploadAvatar}
-              onRemoveAvatar={character.avatarPath?.startsWith("/api/avatars/npc/") ? onRemoveAvatar : undefined}
+              onRemoveAvatar={onRemoveAvatar}
               avatarRemovalPending={avatarRemovalPending}
               onPortraitFocusChange={
                 onUpdate

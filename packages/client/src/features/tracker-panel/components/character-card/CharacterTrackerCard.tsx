@@ -234,10 +234,13 @@ export function CharacterTrackerCard({
   );
   const characterStats = Array.isArray(character.stats) ? character.stats : [];
   const hasDeleteAction = !!onRemove && deleteMode;
-  const avatarMedia = characterPicture ?? character.avatarPath ?? null;
-  const compactAvatarUpload = characterPicture ? undefined : onUploadAvatar;
-  const compactAvatarRemove =
-    !characterPicture && character.avatarPath?.startsWith("/api/avatars/npc/") ? onRemoveAvatar : undefined;
+  const avatarMedia =
+    (character.preferGeneratedAvatar ? character.avatarPath : characterPicture) ??
+    characterPicture ??
+    character.avatarPath ??
+    null;
+  const compactAvatarUpload = characterPicture && !character.preferGeneratedAvatar ? undefined : onUploadAvatar;
+  const compactAvatarRemove = onRemoveAvatar;
   const hasEditableCustomFieldAdd = !!onUpdate && addMode;
   const characterFieldKey = (field: HideableCharacterField) =>
     characterTrackerLockKey(character, characterIndex, field);

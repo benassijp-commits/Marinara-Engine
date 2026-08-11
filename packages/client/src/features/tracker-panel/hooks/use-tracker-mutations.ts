@@ -193,7 +193,7 @@ export function useTrackerMutations({
       const targetIndex = resolveCharacterTargetIndex(latestCharacters, characterId, fallbackIndex);
       if (targetIndex < 0) return false;
       const nextCharacters = [...latestCharacters];
-      nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath };
+      nextCharacters[targetIndex] = { ...latestCharacters[targetIndex]!, avatarPath, preferGeneratedAvatar: true };
       if (!activeChatId) return false;
       patchGameStateField(activeChatId, "presentCharacters", nextCharacters, { allowDuringRefresh: true });
       return true;

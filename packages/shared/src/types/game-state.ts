@@ -64,6 +64,8 @@ export interface PresentCharacter {
   outfit: string | null;
   /** Avatar image path (e.g., /api/avatars/file/<filename>) */
   avatarPath?: string | null;
+  /** When true, avatarPath displays over a manually-assigned character picture or sprite (set when the user explicitly regenerates via the Avatar Body modal). */
+  preferGeneratedAvatar?: boolean;
   /** Optional avatar crop JSON carried from the character card. */
   avatarCrop?: unknown;
   /** Featured tracker portrait focus, 0 = left, 100 = right. */
