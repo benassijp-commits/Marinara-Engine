@@ -222,8 +222,7 @@ export function createMessageMacroResolver(
   return (template: string) => {
     const touchesVariables = VARIABLE_OP_MACRO_RE.test(template);
     if (touchesVariables) variablesTouched = true;
-    const cacheable =
-      !touchesVariables && !variablesTouched && template.length <= RESOLVER_CACHE_MAX_TEMPLATE_LENGTH;
+    const cacheable = !touchesVariables && !variablesTouched && template.length <= RESOLVER_CACHE_MAX_TEMPLATE_LENGTH;
     if (cacheable) {
       const cached = cache.get(template);
       if (cached !== undefined) return cached;
@@ -236,16 +235,6 @@ export function createMessageMacroResolver(
 
 export function isPromptPreviewMacro(input: string): boolean {
   return /^\{\{\s*(?:prompt|prompt_preview|preview_prompt)\s*\}\}$/i.test(input.trim());
-}
-
-export function resolveInputMacrosForChat(
-  template: string,
-  chat: { characterIds?: unknown; personaId?: string | null; mode?: string | null } | null | undefined,
-  characters: Array<{ id: string; data: unknown }> | undefined,
-  personas: Array<Record<string, unknown>> | undefined,
-  lastInput?: string,
-): string {
-  return createInputMacroResolverForChat(chat, characters, personas, lastInput)(template);
 }
 
 export function createInputMacroResolverForChat(

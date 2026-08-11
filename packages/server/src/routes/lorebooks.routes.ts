@@ -131,6 +131,7 @@ function stSelectiveLogic(value: unknown): number {
 
 function stPosition(value: unknown): number {
   const position = Number(value ?? 0);
+  if (position === 7) return 7;
   if (position === 2) return 4;
   if (position === 1) return 1;
   return 0;
@@ -303,6 +304,7 @@ function buildCompatibleLorebookExport(lb: Record<string, unknown>, entries: Arr
         selectiveLogic: stSelectiveLogic(entry.selectiveLogic),
         order: Number(entry.order ?? 100),
         position: stPosition(entry.position),
+        outletName: String(entry.outletName ?? ""),
         depth: Number(entry.depth ?? 4),
         probability: entry.probability ?? null,
         scanDepth: entry.scanDepth ?? null,
@@ -367,6 +369,7 @@ function buildTransferredEntryInput(
     generationTriggerFilters: entry.generationTriggerFilters,
     additionalMatchingSources: entry.additionalMatchingSources,
     position: entry.position,
+    outletName: entry.outletName,
     depth: entry.depth,
     order,
     role: entry.role,
@@ -848,7 +851,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
 
   // ── Scan chat for activated entries ──
 
-  app.get<{ Params: { chatId: string } }>("/scan/:chatId", async (req, reply) => {
+  app.get<{ Params: { chatId: string } }>("/scan/:chatId", async (req) => {
     const { chatId } = req.params;
     const chatsStorage = createChatsStorage(app.db);
     const chatMessages = await chatsStorage.listMessages(chatId);
@@ -1080,7 +1083,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       logger.debug(err, "[lorebooks] Semantic scan preview failed; falling back to keyword-only preview");
     }
 
-    const ownerSpatialProjection = await resolveOwnerSpatialProjection(app.db, chatId);
+    const ownerSpatialProjection = await resolveOwnerSpatialProjection(chatId, {}, chatMeta);
 
     const result = await processLorebooks(app.db, scanMessages, gameStateForScan, {
       chatId,
@@ -1092,8 +1095,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
       chatEmbedding,
       semanticEmbeddingsByLorebookId,
       semanticSimilarityBaseline,
-      forcedEntryIds:
-        chat?.mode === "conversation" ? [] : (ownerSpatialProjection?.lorebookEntryIds ?? []),
+      forcedEntryIds: chat?.mode === "conversation" ? [] : (ownerSpatialProjection?.lorebookEntryIds ?? []),
       tokenBudget: typeof chatMeta.lorebookTokenBudget === "number" ? chatMeta.lorebookTokenBudget : undefined,
       entryStateOverrides,
       entryTimingStates,
@@ -1109,9 +1111,7 @@ export async function lorebooksRoutes(app: FastifyInstance) {
     const semanticScoreById = new Map(result.activatedEntries.map((entry) => [entry.id, entry.semanticScore]));
 
     // Fetch full entry data for the activated IDs
-    const activationSourcesById = new Map(
-      result.activatedEntries.map((entry) => [entry.id, entry.activationSources]),
-    );
+    const activationSourcesById = new Map(result.activatedEntries.map((entry) => [entry.id, entry.activationSources]));
     const activeEntries =
       result.activatedEntryIds.length > 0
         ? await Promise.all(result.activatedEntryIds.map((id) => storage.getEntry(id))).then((entries) =>
@@ -1190,6 +1190,10 @@ export async function lorebooksRoutes(app: FastifyInstance) {
             resolvedConn.maxContext,
             resolvedConn.openrouterProvider,
             resolvedConn.maxTokensOverride,
+            resolvedConn.claudeFastMode === "true",
+            resolvedConn.treatAsLocalEndpoint === "true",
+            resolvedConn.defaultParameters,
+            resolvedConn.id,
           );
         })();
     const embeddingModel = useLocalSidecar ? LOCAL_SIDECAR_MODEL : body.model;

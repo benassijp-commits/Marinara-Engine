@@ -2,7 +2,7 @@
 // Chat: Roleplay HUD — immersive world-state widgets
 // Each tracker category gets its own mini widget with
 // a compact preview and expandable editable popover.
-// Supports top (horizontal) and left/right (vertical) layout.
+// Uses a compact horizontal strip with bottom popovers.
 // ──────────────────────────────────────────────
 import { Suspense, lazy, useState, useEffect, useRef, useCallback, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
@@ -22,21 +22,21 @@ import { cn } from "../../lib/utils";
 import { api } from "../../lib/api-client";
 import type { AgentFailure } from "../../lib/agent-failures";
 import { TrackerPanelIcon } from "../ui/TrackerPanelIcon";
+import { WorldCalendarIcon } from "../ui/WorldCalendarIcon";
+import { WorldClockIcon, WorldThermometerIcon } from "../ui/WorldStateInstruments";
 import { useGameStateStore } from "../../stores/game-state.store";
-import { useAgentStore } from "../../stores/agent.store";
+import { useAgentStore, EMPTY_AGENT_TYPES, EMPTY_AGENT_FAILURES } from "../../stores/agent.store";
 import { useAgentConfigs, useCustomAgentRuns, type AgentConfigRow } from "../../hooks/use-agents";
 import { discardPendingGameStatePatch, useGameStatePatcher } from "../../hooks/use-game-state-patcher";
 import { useUIStore } from "../../stores/ui.store";
 import {
+  classifyWorldWeather,
   getLocationPinColor,
-  getTemperatureColor,
   getTemperatureGaugeDisplay,
-  getTemperatureKeywordHint,
-  getWeatherIconColor,
-  getWorldDateIconColor,
-  getWorldTimeIconColor,
-  parseTemperatureValue,
-} from "../../features/tracker-panel/lib/world-state-display";
+  getWorldDateDisplay,
+  getWorldTimeDisplay,
+  type WorldWeatherFamily,
+} from "../../lib/world-state-helpers";
 import { TrackerLockProvider } from "../../features/tracker-panel/components/TrackerLockContext";
 import { useTrackerFieldLockUpdater } from "../../features/tracker-panel/hooks/use-tracker-field-lock-updater";
 import { ROLEPLAY_POPOVER_SCROLL_AREA, ROLEPLAY_POPOVER_SHELL } from "./roleplay-popover-styles";
@@ -63,7 +63,8 @@ import {
   removeTrackerFieldLockPrefix,
   toggleTrackerFieldLock,
 } from "@marinara-engine/shared";
-import type { HudPosition, TrackerTemperatureUnit } from "../../stores/ui.store";
+import type { TrackerTemperatureUnit } from "../../stores/ui.store";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const ACTIONS_DROPDOWN_WIDTH_PX = 288;
 const EMPTY_INVENTORY: InventoryItem[] = [];
@@ -71,8 +72,6 @@ const EMPTY_AGENT_TYPE_SET = new Set<string>();
 
 interface RoleplayHUDProps {
   chatId: string;
-  characterCount: number;
-  layout?: HudPosition;
   isStreaming: boolean;
   onRetriggerTrackers?: () => void;
   /** Re-run one tracker agent only (same pipeline as full tracker run). */
@@ -111,8 +110,6 @@ const CombinedWorldPanel = lazy(async () =>
 
 export function RoleplayHUD({
   chatId,
-  characterCount: _characterCount,
-  layout = "top",
   isStreaming,
   onRetriggerTrackers,
   onRerunSingleTracker,
@@ -122,6 +119,7 @@ export function RoleplayHUD({
   enabledAgentTypes: enabledAgentTypesProp,
   injectionSourceMessages,
 }: RoleplayHUDProps & { mobileCompact?: boolean }) {
+  const { t: localizeUi } = useUiTranslation();
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [lockMode, setLockMode] = useState(false);
   const gameState = useGameStateStore((s) => s.current);
@@ -135,10 +133,10 @@ export function RoleplayHUD({
   const thoughtBubbles = useAgentStore((s) => s.thoughtBubbles);
   const isAgentProcessing = useAgentStore((s) => s.processingChatIds.includes(chatId));
   const failedAgentTypes = useAgentStore((s) =>
-    s.failedAgentChatId && s.failedAgentChatId !== chatId ? [] : s.failedAgentTypes,
+    s.failedAgentChatId && s.failedAgentChatId !== chatId ? EMPTY_AGENT_TYPES : s.failedAgentTypes,
   );
   const failedAgentFailures = useAgentStore((s) =>
-    s.failedAgentChatId && s.failedAgentChatId !== chatId ? [] : s.failedAgentFailures,
+    s.failedAgentChatId && s.failedAgentChatId !== chatId ? EMPTY_AGENT_FAILURES : s.failedAgentFailures,
   );
   const dismissThoughtBubble = useAgentStore((s) => s.dismissThoughtBubble);
   const clearThoughtBubbles = useAgentStore((s) => s.clearThoughtBubbles);
@@ -267,7 +265,6 @@ export function RoleplayHUD({
     enabledAgentTypes.has("quest") ||
     enabledAgentTypes.has("custom-tracker");
 
-  const isVertical = layout === "left" || layout === "right";
   // If mobileCompact, widgets are even narrower and action buttons are not cut off
 
   return (
@@ -283,19 +280,20 @@ export function RoleplayHUD({
       <div
         className={cn(
           "rpg-hud",
-          isVertical ? "flex flex-col items-center" : "flex items-center",
+          "flex items-center",
           CHAT_TOOLBAR_ICON_GAP_CLASS,
           mobileCompact && "min-w-0",
         )}
       >
-        {trackerPanelEnabled && !trackerPanelOpen && <TrackerPanelToggleButton onToggle={toggleTrackerPanel} />}
+        {trackerPanelEnabled && !trackerPanelOpen && (
+          <TrackerPanelToggleButton onToggle={() => toggleTrackerPanel(chatId)} />
+        )}
 
         {/* Actions (Agents + Clear) */}
         <ActionsGroup
           chatId={chatId}
           injectionSourceMessages={injectionSourceMessages}
           agentConfigs={agentConfigs}
-          isVertical={isVertical}
           agentsOpen={agentsOpen}
           setAgentsOpen={setAgentsOpen}
           isAgentProcessing={isAgentProcessing}
@@ -336,7 +334,6 @@ export function RoleplayHUD({
                 onSaveWeather={(v) => patchField("weather", v)}
                 onSaveTemperature={(v) => patchField("temperature", v)}
                 onUpdateWorldCustomFields={(fields) => patchField("worldCustomFields", fields)}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -344,7 +341,6 @@ export function RoleplayHUD({
 
             {hasPlayerTrackerSections && (
               <CombinedPlayerWidget
-                layout={layout}
                 showPersona={hasPersonaStatsTracker}
                 showCharacters={enabledAgentTypes.has("character-tracker")}
                 showQuests={enabledAgentTypes.has("quest")}
@@ -405,7 +401,6 @@ export function RoleplayHUD({
                 onSaveWeather={(v) => patchField("weather", v)}
                 onSaveTemperature={(v) => patchField("temperature", v)}
                 onUpdateWorldCustomFields={(fields) => patchField("worldCustomFields", fields)}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -417,7 +412,6 @@ export function RoleplayHUD({
                 onUpdate={(bars) => patchField("personaStats", bars)}
                 status={personaStatus}
                 onUpdateStatus={(status) => patchPlayerStats("status", status)}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -428,7 +422,6 @@ export function RoleplayHUD({
                 characters={presentCharacters}
                 onUpdate={(chars) => patchField("presentCharacters", chars)}
                 chatId={chatId}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -439,7 +432,6 @@ export function RoleplayHUD({
                 items={inventory}
                 onUpdate={updateInventoryItems}
                 onRemoveItem={removeInventoryItem}
-                layout={layout}
               />
             )}
 
@@ -447,7 +439,6 @@ export function RoleplayHUD({
               <QuestsWidget
                 quests={activeQuests}
                 onUpdate={(q) => patchPlayerStats("activeQuests", q)}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -457,7 +448,6 @@ export function RoleplayHUD({
               <CustomTrackerWidget
                 fields={customTrackerFields}
                 onUpdate={(fields) => patchPlayerStats("customTrackerFields", fields)}
-                layout={layout}
                 onRerunSingleTracker={onRerunSingleTracker}
                 isTrackerRetryBusy={isTrackerBusy}
               />
@@ -472,7 +462,7 @@ export function RoleplayHUD({
                 }}
                 disabled={isTrackerBusy}
                 className={cn(WIDGET, isTrackerBusy && "text-[var(--marinara-chat-chrome-button-text-active)]")}
-                title={isTrackerBusy ? "Trackers running…" : "Run Trackers"}
+                title={isTrackerBusy ?localizeUi("ui.chat.roleplayhud.trackersRunning") :localizeUi("ui.chat.roleplayhud.runTrackers")}
               >
                 <RefreshCw size="0.875rem" className={cn(isTrackerBusy && "animate-spin")} />
               </button>
@@ -497,9 +487,10 @@ function DeferredHUDPanelFallback({ label }: { label: string }) {
 }
 
 function DeferredActionsFallback({ isAgentProcessing }: { isAgentProcessing: boolean }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <div className="px-3 py-4 text-center text-[0.625rem] text-[var(--muted-foreground)]/60">
-      {isAgentProcessing ? "Loading agent activity…" : "Loading actions…"}
+      {isAgentProcessing ?localizeUi("ui.chat.deferredactionsfallback.loadingAgentActivity") :localizeUi("ui.chat.deferredactionsfallback.loadingActions")}
     </div>
   );
 }
@@ -509,16 +500,17 @@ function customAgentRunIdentity(run: { agentType?: string | null; id?: string | 
 }
 
 function TrackerPanelToggleButton({ onToggle }: { onToggle: () => void }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <button
       data-tracker-panel-toggle="roleplay-hud"
       onClick={onToggle}
       className={WIDGET}
-      title="Show Tracker Panel"
-      aria-label="Show Tracker Panel"
+      title={localizeUi("ui.chat.trackerpaneltogglebutton.showTrackerPanel")}
+      aria-label={localizeUi("ui.chat.trackerpaneltogglebutton.showTrackerPanel")}
     >
       <TrackerPanelIcon size="1.05rem" className="shrink-0" />
-      <span className="sr-only">Tracker Panel</span>
+      <span className="sr-only">{localizeUi("ui.panels.trackerpanelappearancedrawer.trackerPanel")}</span>
     </button>
   );
 }
@@ -527,7 +519,6 @@ interface ActionsGroupProps {
   chatId: string;
   injectionSourceMessages?: Message[];
   agentConfigs?: AgentConfigRow[];
-  isVertical: boolean;
   agentsOpen: boolean;
   setAgentsOpen: (v: boolean) => void;
   isAgentProcessing: boolean;
@@ -548,7 +539,6 @@ function ActionsGroup({
   chatId,
   injectionSourceMessages,
   agentConfigs,
-  isVertical,
   agentsOpen,
   setAgentsOpen,
   isAgentProcessing,
@@ -674,7 +664,7 @@ function ActionsGroup({
     );
 
   return (
-    <div className={cn("relative flex items-center", CHAT_TOOLBAR_ICON_GAP_CLASS, isVertical && "flex-col")}>
+    <div className={cn("relative flex items-center", CHAT_TOOLBAR_ICON_GAP_CLASS)}>
       <button
         ref={btnRef}
         onClick={() => setAgentsOpen(!agentsOpen)}
@@ -725,7 +715,6 @@ function ActionsGroup({
 // ═══════════════════════════════════════════════
 
 function CombinedPlayerWidget({
-  layout = "top",
   showPersona,
   showCharacters,
   showQuests,
@@ -746,7 +735,6 @@ function CombinedPlayerWidget({
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
-  layout?: HudPosition;
   showPersona: boolean;
   showCharacters: boolean;
   showQuests: boolean;
@@ -767,26 +755,26 @@ function CombinedPlayerWidget({
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Player & Tracker">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.combinedplayerwidget.playerTracker")}>
         <div className="flex h-4 items-center justify-center shrink-0">
           <Swords size="0.875rem" className="max-md:h-4 max-md:w-4" />
         </div>
-        <span className="sr-only">Tracker</span>
+        <span className="sr-only">{localizeUi("ui.chat.combinedplayerwidget.tracker")}</span>
       </button>
 
       <WidgetPopover
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-80 max-h-[min(75vh,32rem)]"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading trackers…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.combinedplayerwidget.loadingTrackers")} />}>
           <CombinedPlayerPanel
             showPersona={showPersona}
             showCharacters={showCharacters}
@@ -820,14 +808,12 @@ function WidgetPopover({
   open,
   onClose,
   anchorRef,
-  placement = "bottom",
   children,
   className,
 }: {
   open: boolean;
   onClose: () => void;
   anchorRef: React.RefObject<HTMLElement | null>;
-  placement?: "bottom" | "right" | "left";
   children: React.ReactNode;
   className?: string;
 }) {
@@ -839,40 +825,24 @@ function WidgetPopover({
     const rect = anchorRef.current.getBoundingClientRect();
     const popoverWidth = ref.current?.offsetWidth ?? 288;
     const popoverHeight = ref.current?.offsetHeight ?? 200;
-    let top: number;
+    const top = rect.bottom + 4;
     let left: number;
 
-    if (placement === "right") {
-      left = rect.right + 4;
-      top = rect.top;
-      if (top + popoverHeight > window.innerHeight - 8) {
-        top = Math.max(8, window.innerHeight - popoverHeight - 8);
-      }
-    } else if (placement === "left") {
-      left = rect.left - popoverWidth - 4;
-      top = rect.top;
-      if (left < 8) left = 8;
-      if (top + popoverHeight > window.innerHeight - 8) {
-        top = Math.max(8, window.innerHeight - popoverHeight - 8);
-      }
+    // Bottom placement — center horizontally on screen for mobile
+    const isMobile = window.innerWidth < 768;
+    if (isMobile) {
+      left = Math.round((window.innerWidth - popoverWidth) / 2);
     } else {
-      // Bottom placement — center horizontally on screen for mobile
-      top = rect.bottom + 4;
-      const isMobile = window.innerWidth < 768;
-      if (isMobile) {
-        left = Math.round((window.innerWidth - popoverWidth) / 2);
-      } else {
-        left = rect.left;
-        if (left + popoverWidth > window.innerWidth - 8) {
-          left = Math.max(8, window.innerWidth - popoverWidth - 8);
-        }
+      left = rect.left;
+      if (left + popoverWidth > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - popoverWidth - 8);
       }
     }
     return {
       top: Math.max(8, Math.min(top, window.innerHeight - popoverHeight - 8)),
       left: Math.max(8, Math.min(left, window.innerWidth - popoverWidth - 8)),
     };
-  }, [anchorRef, placement]);
+  }, [anchorRef]);
 
   // Position the popover relative to the anchor element
   useLayoutEffect(() => {
@@ -933,23 +903,22 @@ function CharactersWidget({
   characters,
   onUpdate,
   chatId,
-  layout = "top",
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
   characters: PresentCharacter[];
   onUpdate: (chars: PresentCharacter[]) => void;
   chatId: string;
-  layout?: HudPosition;
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Present Characters">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.characterswidget.presentCharacters")}>
         {characters.length > 0 ? (
           <div className="flex items-center -space-x-0.5">
             {characters.slice(0, 3).map((c, i) => (
@@ -972,10 +941,9 @@ function CharactersWidget({
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-72 max-h-80 overflow-y-auto"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading characters…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.characterswidget.loadingCharacters")} />}>
           <CharactersPanel
             characters={characters}
             onUpdate={onUpdate}
@@ -996,7 +964,6 @@ function PersonaStatsWidget({
   onUpdate,
   status,
   onUpdateStatus,
-  layout = "top",
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
@@ -1004,16 +971,16 @@ function PersonaStatsWidget({
   onUpdate: (bars: CharacterStat[]) => void;
   status: string;
   onUpdateStatus: (status: string) => void;
-  layout?: HudPosition;
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Persona Stats">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.personastatswidget.personaStats")}>
         {bars.length > 0 ? (
           <div className="flex w-6 max-md:w-8 flex-col justify-center gap-0.5 max-md:gap-px shrink-0">
             {bars.map((bar) => {
@@ -1037,17 +1004,16 @@ function PersonaStatsWidget({
         ) : (
           <BarChart3 size="0.875rem" className="max-md:h-3.5 max-md:w-3.5" />
         )}
-        <span className="sr-only">Persona</span>
+        <span className="sr-only">{localizeUi("ui.characters.cardlibrarydetailcard.persona")}</span>
       </button>
 
       <WidgetPopover
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-60 max-h-80 overflow-y-auto"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading persona stats…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.personastatswidget.loadingPersonaStats")} />}>
           <PersonaStatsPanel
             bars={bars}
             onUpdate={onUpdate}
@@ -1067,16 +1033,15 @@ function PersonaStatsWidget({
 function CustomTrackerWidget({
   fields,
   onUpdate,
-  layout = "top",
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
   fields: CustomTrackerField[];
   onUpdate: (fields: CustomTrackerField[]) => void;
-  layout?: HudPosition;
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [cycleIdx, setCycleIdx] = useState(0);
@@ -1107,7 +1072,7 @@ function CustomTrackerWidget({
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Custom Tracker">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.customtrackerwidget.customTracker")}>
         {fields.length > 0 && currentField ? (
           <span
             key={animKey}
@@ -1125,10 +1090,9 @@ function CustomTrackerWidget({
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-72 max-h-80 overflow-y-auto"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading custom tracker…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.customtrackerwidget.loadingCustomTracker")} />}>
           <CustomTrackerPanel
             fields={fields}
             onUpdate={onUpdate}
@@ -1147,13 +1111,12 @@ function InventoryWidget({
   items,
   onUpdate,
   onRemoveItem,
-  layout = "top",
 }: {
   items: InventoryItem[];
   onUpdate: (items: InventoryItem[]) => void;
   onRemoveItem?: (index: number) => void;
-  layout?: HudPosition;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [cycleIdx, setCycleIdx] = useState(0);
@@ -1188,7 +1151,7 @@ function InventoryWidget({
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Inventory">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.inventorywidget.inventory")}>
         {items.length > 0 && currentItem ? (
           <span
             key={animKey}
@@ -1206,10 +1169,9 @@ function InventoryWidget({
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-64 max-h-80 overflow-y-auto"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading inventory…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.inventorywidget.loadingInventory")} />}>
           <InventoryPanel items={items} onUpdate={onUpdate} onRemoveItem={onRemoveItem} />
         </Suspense>
       </WidgetPopover>
@@ -1222,16 +1184,15 @@ function InventoryWidget({
 function QuestsWidget({
   quests,
   onUpdate,
-  layout = "top",
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
   quests: QuestProgress[];
   onUpdate: (quests: QuestProgress[]) => void;
-  layout?: HudPosition;
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -1242,7 +1203,7 @@ function QuestsWidget({
 
   return (
     <div className="relative">
-      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title="Active Quests">
+      <button ref={buttonRef} onClick={() => setOpen(!open)} className={WIDGET} title={localizeUi("ui.chat.questswidget.activeQuests")}>
         {currentObjective ? (
           <span className="widget-scroll-text w-full px-0.5 text-center text-[0.375rem] font-semibold leading-[1.15] max-md:text-[0.5rem]">
             <span className="inline-flex animate-[widget-scroll_8s_linear_infinite] whitespace-nowrap">
@@ -1261,10 +1222,9 @@ function QuestsWidget({
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-72 max-h-96 overflow-y-auto"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading quests…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.questswidget.loadingQuests")} />}>
           <QuestsPanel
             quests={quests}
             onUpdate={onUpdate}
@@ -1305,7 +1265,6 @@ function CombinedWorldWidget({
   onSaveWeather,
   onSaveTemperature,
   onUpdateWorldCustomFields,
-  layout,
   onRerunSingleTracker,
   isTrackerRetryBusy,
 }: {
@@ -1322,35 +1281,28 @@ function CombinedWorldWidget({
   onSaveWeather: (v: string) => void;
   onSaveTemperature: (v: string) => void;
   onUpdateWorldCustomFields: (fields: WorldCustomField[]) => void;
-  layout: "top" | "left" | "right";
   onRerunSingleTracker?: (agentType: string) => void;
   isTrackerRetryBusy?: boolean;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const weatherEmoji = weather ? getWeatherEmoji(weather) : "🌤️";
+  const weatherFamily = classifyWorldWeather(weather);
+  const weatherStyle = HUD_WEATHER_STYLES[weatherFamily];
+  const weatherEmoji = weatherStyle.emoji;
   const pinColor = getLocationPinColor(location);
-  const dateColor = getWorldDateIconColor(date);
-  const timeColor = getWorldTimeIconColor(time);
-  const weatherColor = getWeatherIconColor(weather);
+  const dateDisplay = getWorldDateDisplay(date);
+  const timeDisplay = getWorldTimeDisplay(time);
+  const timeColor =
+    timeDisplay.kind === "empty"
+      ? "text-[var(--muted-foreground)]/70"
+      : HUD_TIME_COLORS[timeDisplay.timeOfDay];
+  const weatherColor =
+    weatherFamily === "atmosphere" && !weather
+      ? "text-[var(--muted-foreground)]/70"
+      : weatherStyle.color;
   const temperatureDisplay = getTemperatureGaugeDisplay(temperature, trackerTemperatureUnit);
-  const tempNumeric = temperature ? parseTemperatureValue(temperature) : null;
-  const temp = tempNumeric ?? (temperature ? getTemperatureKeywordHint(temperature) : null);
-  const tempColor = getTemperatureColor(temperature);
-
-  // Dynamic calendar: show day number
-  const dateParts = date ? parseDateLabel(date) : { day: null, month: null };
-
-  // Dynamic clock: compute hand angles
-  const hour = time ? extractHourFromTime(time) : -1;
-  const minute = time ? parseMinutes(time) : 0;
-  const hourAngle = hour >= 0 ? (hour % 12) * 30 + minute * 0.5 : 0;
-  const minuteAngle = minute * 6;
-
-  const tempFill =
-    temperatureDisplay.percent == null ? 0.3 : Math.max(0, Math.min(1, temperatureDisplay.percent / 100));
-  const tempFillColor = temperatureDisplay.color;
-  const sideLayout = layout === "left" || layout === "right";
+  const tempColor = temperatureDisplay.color;
 
   return (
     <div className="relative">
@@ -1364,147 +1316,47 @@ function CombinedWorldWidget({
             className: CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS,
           }),
           "cursor-pointer select-none",
-          !sideLayout && "w-auto min-w-8 gap-1 px-2",
+          "w-auto min-w-8 gap-1 px-2",
         )}
-        title="World State"
+        title={localizeUi("ui.panels.appearancesettings.worldState")}
       >
         {/* Location pin */}
         <MapPin size="0.9375rem" className={cn("shrink-0 drop-shadow-sm", pinColor)} />
 
         {/* Mini calendar with day number */}
-        {!sideLayout && (
-          <>
-            <svg viewBox="0 0 20 20" fill="none" className={cn("shrink-0 h-4 w-4 drop-shadow-sm", dateColor)}>
-              <rect x="2" y="4" width="16" height="14" rx="2" stroke="currentColor" strokeWidth="1.5" opacity="0.7" />
-              <line x1="2" y1="8" x2="18" y2="8" stroke="currentColor" strokeWidth="1.2" opacity="0.5" />
-              <line
-                x1="6"
-                y1="2"
-                x2="6"
-                y2="5.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                opacity="0.7"
-              />
-              <line
-                x1="14"
-                y1="2"
-                x2="14"
-                y2="5.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                opacity="0.7"
-              />
-              {dateParts.day && (
-                <text
-                  x="10"
-                  y="15.5"
-                  textAnchor="middle"
-                  fill="currentColor"
-                  fontSize="7"
-                  fontWeight="700"
-                  opacity="0.95"
-                >
-                  {dateParts.day}
-                </text>
-              )}
-            </svg>
+        <WorldCalendarIcon
+          day={dateDisplay.day}
+          className={cn("h-4 w-4 shrink-0 drop-shadow-sm", dateDisplay.iconColor)}
+        />
 
-            {/* Mini clock with dynamic hands */}
-            <svg viewBox="0 0 20 20" fill="none" className={cn("shrink-0 h-4 w-4 drop-shadow-sm", timeColor)}>
-              <circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.5" opacity="0.7" />
-              {hour >= 0 ? (
-                <>
-                  <line
-                    x1="10"
-                    y1="10"
-                    x2={10 + 4.2 * Math.sin((hourAngle * Math.PI) / 180)}
-                    y2={10 - 4.2 * Math.cos((hourAngle * Math.PI) / 180)}
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    opacity="0.95"
-                  />
-                  <line
-                    x1="10"
-                    y1="10"
-                    x2={10 + 5.8 * Math.sin((minuteAngle * Math.PI) / 180)}
-                    y2={10 - 5.8 * Math.cos((minuteAngle * Math.PI) / 180)}
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    opacity="0.8"
-                  />
-                </>
-              ) : (
-                <>
-                  <line
-                    x1="10"
-                    y1="10"
-                    x2="10"
-                    y2="5.5"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    opacity="0.95"
-                  />
-                  <line
-                    x1="10"
-                    y1="10"
-                    x2="14"
-                    y2="10"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    strokeLinecap="round"
-                    opacity="0.8"
-                  />
-                </>
-              )}
-              <circle cx="10" cy="10" r="1" fill="currentColor" opacity="0.95" />
-            </svg>
+        <WorldClockIcon
+          display={timeDisplay}
+          variant="monochrome"
+          className={cn("h-4 w-4 shrink-0 drop-shadow-sm", timeColor)}
+        />
 
-            {/* Weather emoji */}
-            <span
-              className={cn(
-                "text-sm leading-none shrink-0 drop-shadow-sm [text-shadow:0_0_8px_currentColor]",
-                weatherColor,
-              )}
-            >
-              {weatherEmoji}
-            </span>
+        {/* Weather emoji */}
+        <span
+          className={cn(
+            "text-sm leading-none shrink-0 drop-shadow-sm [text-shadow:0_0_8px_currentColor]",
+            weatherColor,
+          )}
+        >
+          {weatherEmoji}
+        </span>
 
-            {/* Mini thermometer with fill — vivid color & fill level changes dynamically */}
-            <svg viewBox="0 0 10 20" fill="none" className="shrink-0 h-4 w-[0.625rem]">
-              <rect
-                x="3"
-                y="1"
-                width="4"
-                height="13"
-                rx="2"
-                stroke={tempFillColor}
-                strokeWidth="1.2"
-                fill="none"
-                opacity={temp !== null ? 1 : 0.3}
-              />
-              <rect
-                x="3.8"
-                y={1 + 12 * (1 - tempFill)}
-                width="2.4"
-                height={12 * tempFill + 1}
-                rx="1"
-                fill={tempFillColor}
-                opacity={temp !== null ? 0.9 : 0.2}
-              />
-              <circle cx="5" cy="17" r="2.5" fill={tempFillColor} opacity={temp !== null ? 1 : 0.25} />
-            </svg>
-            {tempNumeric !== null && (
-              <span className={cn("text-[0.5rem] md:text-[0.5625rem] font-bold leading-none shrink-0", tempColor)}>
-                {temperatureDisplay.label}
-              </span>
-            )}
-          </>
+        <WorldThermometerIcon
+          display={temperatureDisplay}
+          variant="solid-bulb"
+          className="h-4 w-[0.625rem] shrink-0"
+        />
+        {temperatureDisplay.isPure && (
+          <span
+            className="shrink-0 text-[0.5rem] font-bold leading-none md:text-[0.5625rem]"
+            style={{ color: tempColor }}
+          >
+            {temperatureDisplay.label}
+          </span>
         )}
       </button>
 
@@ -1512,10 +1364,9 @@ function CombinedWorldWidget({
         open={open}
         onClose={() => setOpen(false)}
         anchorRef={buttonRef}
-        placement={layout === "left" ? "right" : layout === "right" ? "left" : "bottom"}
         className="w-64"
       >
-        <Suspense fallback={<DeferredHUDPanelFallback label="Loading world state…" />}>
+        <Suspense fallback={<DeferredHUDPanelFallback label={localizeUi("ui.chat.combinedworldwidget.loadingWorldState")} />}>
           <CombinedWorldPanel
             location={location}
             date={date}
@@ -1531,7 +1382,7 @@ function CombinedWorldWidget({
             onUpdateWorldCustomFields={onUpdateWorldCustomFields}
             weatherEmoji={weatherEmoji}
             pinColor={pinColor}
-            dateColor={dateColor}
+            dateColor={dateDisplay.iconColor}
             timeColor={timeColor}
             weatherColor={weatherColor}
             tempColor={tempColor}
@@ -1549,66 +1400,31 @@ function CombinedWorldWidget({
 // Helpers
 // ═══════════════════════════════════════════════
 
-function parseDateLabel(date: string): { day: string | null; month: string | null } {
-  const numMatch = date.match(/(\d+)/);
-  const day = numMatch ? numMatch[1] : null;
-  const words = date
-    .replace(/\d+(st|nd|rd|th)?/gi, "")
-    .split(/[\s,/.-]+/)
-    .filter((w) => w.length > 2);
-  const month = words[0]?.slice(0, 3) ?? null;
-  return { day, month };
-}
+const HUD_WEATHER_STYLES: Record<WorldWeatherFamily, { emoji: string; color: string }> = {
+  thunder: { emoji: "⛈️", color: "text-violet-300" },
+  blizzard: { emoji: "🌨️", color: "text-sky-300" },
+  "heavy-rain": { emoji: "🌧️", color: "text-blue-300" },
+  rain: { emoji: "🌦️", color: "text-cyan-300" },
+  hail: { emoji: "🧊", color: "text-sky-200" },
+  snow: { emoji: "❄️", color: "text-sky-300" },
+  fog: { emoji: "🌫️", color: "text-zinc-300" },
+  sand: { emoji: "🏜️", color: "text-amber-300" },
+  ash: { emoji: "🌋", color: "text-stone-300" },
+  fire: { emoji: "🔥", color: "text-red-400" },
+  wind: { emoji: "💨", color: "text-teal-300" },
+  blossom: { emoji: "🌸", color: "text-[var(--marinara-chat-chrome-panel-text)]" },
+  aurora: { emoji: "🌌", color: "text-[var(--marinara-chat-chrome-panel-text)]" },
+  cloud: { emoji: "☁️", color: "text-zinc-300" },
+  clear: { emoji: "☀️", color: "text-yellow-300" },
+  heat: { emoji: "🥵", color: "text-red-400" },
+  cold: { emoji: "🥶", color: "text-sky-300" },
+  atmosphere: { emoji: "🌤️", color: "text-sky-300" },
+};
 
-function extractHourFromTime(time: string): number {
-  const t = time.toLowerCase();
-  const m24 = t.match(/\b(\d{1,2})[:.h](\d{2})\b/);
-  if (m24) {
-    let h = parseInt(m24[1]!, 10);
-    if (t.includes("pm") && h < 12) h += 12;
-    if (t.includes("am") && h === 12) h = 0;
-    if (h >= 0 && h < 24) return h;
-  }
-  const mAP = t.match(/\b(\d{1,2})\s*(am|pm)\b/);
-  if (mAP) {
-    let h = parseInt(mAP[1]!, 10);
-    if (mAP[2] === "pm" && h < 12) h += 12;
-    if (mAP[2] === "am" && h === 12) h = 0;
-    if (h >= 0 && h < 24) return h;
-  }
-  if (t.includes("midnight")) return 0;
-  if (t.includes("dawn") || t.includes("sunrise")) return 6;
-  if (t.includes("morning")) return 9;
-  if (t.includes("noon") || t.includes("midday")) return 12;
-  if (t.includes("afternoon")) return 15;
-  if (t.includes("dusk") || t.includes("sunset") || t.includes("evening")) return 18;
-  if (t.includes("night")) return 22;
-  return -1;
-}
-
-function parseMinutes(time: string): number {
-  const m = time.match(/\b\d{1,2}[:.h](\d{2})\b/);
-  return m ? parseInt(m[1]!, 10) : 0;
-}
-
-function getWeatherEmoji(weather: string): string {
-  const w = weather.toLowerCase();
-  if (w.includes("thunder") || w.includes("lightning")) return "⛈️";
-  if (w.includes("blizzard")) return "🌨️";
-  if (w.includes("heavy rain") || w.includes("downpour") || w.includes("storm")) return "🌧️";
-  if (w.includes("rain") || w.includes("drizzle") || w.includes("shower")) return "🌦️";
-  if (w.includes("hail")) return "🧊";
-  if (w.includes("snow") || w.includes("sleet") || w.includes("frost")) return "❄️";
-  if (w.includes("fog") || w.includes("mist") || w.includes("haze")) return "🌫️";
-  if (w.includes("sand") || w.includes("dust")) return "🏜️";
-  if (w.includes("ash") || w.includes("volcanic") || w.includes("smoke")) return "🌋";
-  if (w.includes("ember") || w.includes("fire") || w.includes("inferno")) return "🔥";
-  if (w.includes("wind") || w.includes("breez") || w.includes("gust")) return "💨";
-  if (w.includes("cherry") || w.includes("blossom") || w.includes("petal")) return "🌸";
-  if (w.includes("aurora") || w.includes("northern light")) return "🌌";
-  if (w.includes("cloud") || w.includes("overcast") || w.includes("grey") || w.includes("gray")) return "☁️";
-  if (w.includes("clear") || w.includes("sunny") || w.includes("bright")) return "☀️";
-  if (w.includes("hot") || w.includes("swelter")) return "🥵";
-  if (w.includes("cold") || w.includes("freez")) return "🥶";
-  return "🌤️";
-}
+const HUD_TIME_COLORS: Record<ReturnType<typeof getWorldTimeDisplay>["timeOfDay"], string> = {
+  dawn: "text-amber-300",
+  day: "text-yellow-300",
+  dusk: "text-orange-400",
+  night: "text-indigo-300",
+  unknown: "text-amber-300",
+};

@@ -591,6 +591,9 @@ async function generatePlaylistPlan(args: {
     conn.openrouterProvider,
     conn.maxTokensOverride,
     conn.claudeFastMode === "true",
+    conn.treatAsLocalEndpoint === "true",
+    conn.defaultParameters,
+    conn.id,
   );
 
   const userContext = {

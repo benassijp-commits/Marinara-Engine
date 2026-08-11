@@ -1,10 +1,9 @@
-import type {
-  ResolvedOwnerSpatialProjection,
-  SpatialContextDefinition,
-} from "@marinara-engine/shared";
-import type { DB } from "../../db/connection.js";
+import type { ResolvedOwnerSpatialProjection, SpatialContextDefinition } from "@marinara-engine/shared";
 import { getCapabilityService } from "../capability-packages/capability-service-registry.service.js";
+import { isHierarchicalMapsEnabledForChat } from "./activation.js";
 import type { ResolveSpatialStateOptions } from "./state-resolution.js";
+
+export { isHierarchicalMapsEnabledForChat } from "./activation.js";
 
 interface ProjectionService {
   buildOwnerSpatialProjection(
@@ -13,7 +12,6 @@ interface ProjectionService {
     currentLocationId: string | null,
   ): ResolvedOwnerSpatialProjection | null;
   resolveOwnerSpatialProjection(
-    db: DB,
     chatId: string,
     options?: ResolveSpatialStateOptions,
   ): Promise<ResolvedOwnerSpatialProjection | null>;
@@ -44,15 +42,18 @@ export function buildOwnerSpatialProjection(
 }
 
 export async function resolveOwnerSpatialProjection(
-  db: DB,
   chatId: string,
-  options: ResolveSpatialStateOptions = {},
+  options: ResolveSpatialStateOptions,
+  chatMetadata: unknown,
 ): Promise<ResolvedOwnerSpatialProjection | null> {
-  return service()?.resolveOwnerSpatialProjection(db, chatId, options) ?? null;
+  if (!isHierarchicalMapsEnabledForChat(chatMetadata)) return null;
+  return service()?.resolveOwnerSpatialProjection(chatId, options) ?? null;
 }
 
 export function formatOwnerSpatialBreadcrumb(projection: ResolvedOwnerSpatialProjection): string {
-  return service()?.formatOwnerSpatialBreadcrumb(projection) ?? projection.breadcrumb.map(({ name }) => name).join(" > ");
+  return (
+    service()?.formatOwnerSpatialBreadcrumb(projection) ?? projection.breadcrumb.map(({ name }) => name).join(" > ")
+  );
 }
 
 export function formatOwnerSpatialPrompt(projection: ResolvedOwnerSpatialProjection): string {

@@ -6,7 +6,6 @@ import { api } from "../lib/api-client";
 
 const regexKeys = {
   all: ["regex-scripts"] as const,
-  detail: (id: string) => ["regex-scripts", id] as const,
 };
 
 export interface RegexScriptRow {
@@ -21,6 +20,7 @@ export interface RegexScriptRow {
   promptOnly: string;
   applyMode?: string | null;
   targetCharacterIds: string;
+  targetPromptPresetIds: string;
   order: number;
   minDepth: number | null;
   maxDepth: number | null;
@@ -32,14 +32,6 @@ export function useRegexScripts() {
   return useQuery({
     queryKey: regexKeys.all,
     queryFn: () => api.get<RegexScriptRow[]>("/regex-scripts"),
-  });
-}
-
-export function useRegexScript(id: string | null) {
-  return useQuery({
-    queryKey: regexKeys.detail(id ?? ""),
-    queryFn: () => api.get<RegexScriptRow>(`/regex-scripts/${id}`),
-    enabled: !!id,
   });
 }
 

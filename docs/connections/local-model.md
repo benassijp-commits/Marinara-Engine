@@ -57,6 +57,8 @@ If you are not ready to finish, click **Skip for Now**. Once a model exists, tha
 
 Installing or reinstalling the runtime is a protected action. On Windows one-click installs it is turned on for you automatically. On macOS, Linux, and Docker you may need to allow it. See the **Troubleshooting** section below.
 
+Marinara downloads only the llama.cpp, MLX, and uv versions approved for your Engine release. It verifies the exact file size and SHA-256 checksum before extracting or executing anything. The MLX Python dependency set is also version-locked and hash-verified before the reviewed mlx-lm source is installed without resolving extra packages. Runtime upgrades therefore arrive through reviewed Marinara updates rather than silently following an upstream “latest” build.
+
 ## Downloading a model
 
 The setup window offers two ways to get a model.
@@ -158,9 +160,9 @@ Selecting it for a chat starts the local server on demand, even when both helper
 
 ## Local Speech Model for calls
 
-The **Local Speech Model** is an optional Conversation Calls download for offline microphone transcription. It powers Conversation calls when you choose to transcribe your voice on your own machine. It is a Whisper model, a speech-to-text model that turns your spoken words into text.
+The **Local Speech Model** is an optional Calls download for offline microphone transcription. It powers Conversation calls when you choose to transcribe your voice on your own machine. It is a Whisper model, a speech-to-text model that turns your spoken words into text.
 
-First install **Conversation Calls** from **Agents > Download Agents**. You can then manage Whisper from the **Local Model** card in Connections, under the **Local Speech Model** heading. The heading and download controls stay hidden when Conversation Calls is not installed.
+First install **Calls** from **Agents > Download Agents**. You can then manage Whisper from the **Local Model** card in Connections, under the **Local Speech Model** heading. The heading and download controls stay hidden when Calls is not installed.
 
 Two choices are offered:
 
@@ -174,7 +176,7 @@ To set it up:
 3. Click **Download Whisper**.
 4. When it reads **Ready**, it is set up.
 
-To remove only the selected model, click the trash button titled **Delete Local Whisper**. Uninstalling Conversation Calls removes all downloaded Whisper choices and their saved selection automatically to reclaim their disk space. If you reinstall Calls later, the Local Speech Model controls return and you can download Whisper again.
+To remove only the selected model, click the trash button titled **Delete Local Whisper**. Uninstalling Calls removes all downloaded Whisper choices and their saved selection automatically to reclaim their disk space. If you reinstall Calls later, the Local Speech Model controls return and you can download Whisper again.
 
 Your recorded audio never leaves your machine. Only the transcribed text is sent to your chosen chat connection. To use it in a call, set the call audio input mode to the Local Whisper option. See [Conversation Audio and Video Calls](../conversation/calls.md).
 
@@ -189,6 +191,8 @@ SIDECAR_RUNTIME_INSTALL_ENABLED=true
 Or enter your Admin Access secret once in **Settings -> Advanced -> Admin Access**, then try again. See [Server Configuration Reference](../CONFIGURATION.md).
 
 **The runtime failed to start.** The setup window shows a box titled **Local runtime failed to start** with the error and a log file path. Click **Retry Startup**. If that fails, click **Reinstall Runtime**, or try a different **Runtime Target**. You can click **Continue Without Local AI** to keep using Marinara without the Local Model. The Connections card shows the same problem as **Local runtime unavailable**.
+
+**The runtime download reports a size or SHA-256 mismatch.** Marinara discarded the download before extraction. Update Marinara first, then retry so the approved runtime manifest and download agree. If the same release still fails, do not extract or execute the archive manually; report the runtime target and error to the maintainers.
 
 **Lorebook search says the local model is not enabled.** Turn on **Use for tracker agents (roleplay)** or **Use for game scene analysis** in the Local Model card, then try the vectorization again.
 

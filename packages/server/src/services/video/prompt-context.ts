@@ -6,6 +6,24 @@ export interface SceneVideoPromptLimits {
   finalPrompt: number | null;
 }
 
+export interface GalleryVideoNarrationMessage {
+  id: string;
+  role?: string | null;
+  content?: string | null;
+  extra?: unknown;
+}
+
+export interface GalleryVideoNarrationSwipe {
+  messageId: string;
+  content?: string | null;
+  extra?: unknown;
+}
+
+export interface GalleryVideoSourceExchange {
+  sourceMessageId: string | null;
+  content: string;
+}
+
 const XAI_PROMPT_MAX_LENGTH = 3800;
 const UNBOUNDED_PROMPT_PART_LENGTH = Number.MAX_SAFE_INTEGER;
 
@@ -80,6 +98,86 @@ export function summarizeVideoNarration(value: unknown, maxLength: number): stri
   return selected.length ? selected.join(" ") : clipAtBoundary(clean, maxLength);
 }
 
+export function resolveGalleryVideoNarrationSummary(
+  messages: GalleryVideoNarrationMessage[],
+  swipes: GalleryVideoNarrationSwipe[],
+  galleryImageId: string,
+  maxLength: number,
+): string {
+  const targetGalleryImageId = galleryImageId.trim();
+  if (targetGalleryImageId) {
+    const sourceSwipe = swipes.find((swipe) => extraReferencesGalleryImage(swipe.extra, targetGalleryImageId));
+    if (sourceSwipe) {
+      return (
+        summarizeVideoNarration(sourceSwipe.content, maxLength) ||
+        "Animate the illustrated roleplay scene with motion that fits the reference image."
+      );
+    }
+
+    const sourceMessage = messages.find((message) => extraReferencesGalleryImage(message.extra, targetGalleryImageId));
+    if (sourceMessage) {
+      return (
+        summarizeVideoNarration(sourceMessage.content, maxLength) ||
+        "Animate the illustrated roleplay scene with motion that fits the reference image."
+      );
+    }
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== "assistant") continue;
+    const summary = summarizeVideoNarration(message.content, maxLength);
+    if (summary) return summary;
+  }
+  return "Animate the latest illustrated roleplay scene with motion that fits the reference image.";
+}
+
+export function clipVerbatimVideoSource(value: unknown, maxLength: number): string {
+  if (typeof value !== "string" || maxLength <= 0) return "";
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return trimmed.slice(0, maxLength).trimEnd();
+}
+
+export function resolveGalleryVideoSourceExchange(
+  messages: GalleryVideoNarrationMessage[],
+  swipes: GalleryVideoNarrationSwipe[],
+  galleryImageId: string,
+  maxLength = 12_000,
+): GalleryVideoSourceExchange {
+  const targetGalleryImageId = galleryImageId.trim();
+  const sourceSwipe = targetGalleryImageId
+    ? swipes.find((swipe) => extraReferencesGalleryImage(swipe.extra, targetGalleryImageId))
+    : undefined;
+  const sourceMessage = sourceSwipe
+    ? messages.find((message) => message.id === sourceSwipe.messageId)
+    : targetGalleryImageId
+      ? messages.find((message) => extraReferencesGalleryImage(message.extra, targetGalleryImageId))
+      : undefined;
+  const fallbackMessage = [...messages].reverse().find((message) => message.role === "assistant");
+  const anchor = sourceMessage ?? fallbackMessage ?? null;
+  const anchorIndex = anchor ? messages.findIndex((message) => message.id === anchor.id) : -1;
+  const precedingUser =
+    anchorIndex > 0
+      ? messages
+          .slice(0, anchorIndex)
+          .reverse()
+          .find((message) => message.role === "user")
+      : undefined;
+  const assistantContent = clipVerbatimVideoSource(
+    sourceSwipe?.content ?? anchor?.content,
+    Math.floor(maxLength * 0.75),
+  );
+  const userContent = clipVerbatimVideoSource(precedingUser?.content, Math.floor(maxLength * 0.25));
+  const content = [
+    userContent ? `User:\n${userContent}` : "",
+    assistantContent ? `Assistant:\n${assistantContent}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  return { sourceMessageId: anchor?.id ?? null, content };
+}
+
 export function excerptIllustrationPromptForVideo(value: unknown, maxLength: number): string {
   if (typeof value !== "string" || maxLength <= 0) return "";
   const clean = normalizePromptWhitespace(value);
@@ -125,4 +223,24 @@ function dedupeInOrder(values: string[]): string[] {
     result.push(value);
   }
   return result;
+}
+
+function extraReferencesGalleryImage(extra: unknown, galleryImageId: string): boolean {
+  const record = parseExtraRecord(extra);
+  const attachments = Array.isArray(record.attachments) ? record.attachments : [];
+  return attachments.some((attachment) => {
+    if (!attachment || typeof attachment !== "object") return false;
+    return (attachment as Record<string, unknown>).galleryId === galleryImageId;
+  });
+}
+
+function parseExtraRecord(extra: unknown): Record<string, unknown> {
+  if (extra && typeof extra === "object" && !Array.isArray(extra)) return extra as Record<string, unknown>;
+  if (typeof extra !== "string" || !extra.trim()) return {};
+  try {
+    const parsed = JSON.parse(extra) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }

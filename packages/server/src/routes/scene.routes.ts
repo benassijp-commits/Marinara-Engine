@@ -13,7 +13,6 @@ import { join, extname } from "path";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
-import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
 import type { GenerationFallbackNotifier } from "../services/generation/fallback-notification.js";
@@ -131,8 +130,8 @@ async function buildCharacterContext(chars: ReturnType<typeof createCharactersSt
     ctx += `<character="${data.name}" id="${cid}">\n`;
     if (description) ctx += `${description}\n`;
     if (data.personality) ctx += `${data.personality}\n`;
-    if (data.extensions?.appearance) ctx += `Appearance: ${data.extensions.appearance}\n`;
     if (data.extensions?.backstory) ctx += `Backstory: ${data.extensions.backstory}\n`;
+    if (data.extensions?.appearance) ctx += `Appearance: ${data.extensions.appearance}\n`;
     ctx += `</character>\n\n`;
   }
   return ctx;
@@ -140,10 +139,9 @@ async function buildCharacterContext(chars: ReturnType<typeof createCharactersSt
 
 /**
  * Build persona context. Prefers the chat-scoped persona (`chat.personaId`)
- * before falling back to the globally active persona — the same resolution
- * order used elsewhere (see `chats.routes.ts`). Game mode skips the fallback:
- * persona must be explicitly selected in the setup wizard, so a persona-less
- * game stays persona-less in scene prompts too.
+ * before Conversation-only fallback to the globally active Persona — the same
+ * resolution order used elsewhere (see `chats.routes.ts`). Roleplay and Game
+ * may intentionally remain Persona-less in scene prompts.
  */
 async function buildPersonaContext(
   chars: ReturnType<typeof createCharactersStorage>,
@@ -278,7 +276,6 @@ export async function sceneRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
   const connections = createConnectionsStorage(app.db);
   const chars = createCharactersStorage(app.db);
-  const gsStorage = createGameStateStorage(app.db);
 
   async function createSceneProvider(
     conn: NonNullable<Awaited<ReturnType<typeof connections.getWithKey>>>,
@@ -294,6 +291,9 @@ export async function sceneRoutes(app: FastifyInstance) {
         conn.maxContext,
         conn.openrouterProvider,
         conn.maxTokensOverride,
+        conn.claudeFastMode === "true",
+        conn.treatAsLocalEndpoint === "true",
+        conn.defaultParameters,
       ),
       primaryConnectionId: conn.id,
       fallbackConnection,
@@ -326,7 +326,9 @@ export async function sceneRoutes(app: FastifyInstance) {
       name: plan.name,
       mode: "roleplay",
       characterIds: finalParticipantIds,
-      groupId: originChat.groupId,
+      // Scene linkage is represented by connectedChatId. Reusing the origin's
+      // branch group crosses chat modes and can hide Conversation rows.
+      groupId: null,
       personaId: originChat.personaId,
       // Scene chats use the generated sceneSystemPrompt as their prompt source.
       // Copying the origin conversation preset can make those instructions clash.
@@ -628,6 +630,8 @@ export async function sceneRoutes(app: FastifyInstance) {
     if (mode === "convert" && !originChatId) {
       return reply.status(400).send({ error: "convert requires originChatId" });
     }
+    const originGroupId = originChatId ? (await chats.getById(originChatId))?.groupId : null;
+    const forkGroupId = sceneChat.groupId && sceneChat.groupId !== originGroupId ? sceneChat.groupId : null;
 
     // Sort explicitly before validating/slicing `upToMessageId` so "clone from
     // here" always copies a chronological prefix even if storage ordering changes.
@@ -645,7 +649,7 @@ export async function sceneRoutes(app: FastifyInstance) {
       }`,
       mode: "roleplay",
       characterIds: parseCharacterIds(sceneChat.characterIds),
-      groupId: sceneChat.groupId,
+      groupId: forkGroupId,
       personaId: sceneChat.personaId,
       promptPresetId: sceneChat.promptPresetId,
       connectionId: sceneChat.connectionId,

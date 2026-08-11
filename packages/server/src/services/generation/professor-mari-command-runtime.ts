@@ -129,6 +129,7 @@ async function createPersona(command: CreatePersonaCommand, args: Parameters<typ
     const persona = await args.stores.chars.createPersona(command.name, command.description ?? "", undefined, {
       personality: command.personality,
       appearance: command.appearance,
+      aboutMe: command.aboutMe,
     });
     args.sendAssistantAction({ action: "persona_created", id: persona?.id, name: command.name });
     logger.info('[commands] Assistant created persona: "%s" (%s)', command.name, persona?.id);
@@ -164,6 +165,7 @@ async function createCharacter(command: CreateCharacterCommand, args: Parameters
         },
         backstory: command.backstory ?? "",
         appearance: command.appearance ?? "",
+        aboutMe: command.aboutMe ?? "",
       },
       character_book: null,
     };
@@ -212,6 +214,7 @@ async function updateCharacter(command: UpdateCharacterCommand, args: Parameters
     if (command.alternateGreetings !== undefined) updates.alternate_greetings = command.alternateGreetings;
     if (command.backstory !== undefined) extensionUpdates.backstory = command.backstory;
     if (command.appearance !== undefined) extensionUpdates.appearance = command.appearance;
+    if (command.aboutMe !== undefined) extensionUpdates.aboutMe = command.aboutMe;
     if (command.talkativeness !== undefined) extensionUpdates.talkativeness = command.talkativeness;
     if (command.fav !== undefined) extensionUpdates.fav = command.fav;
     if (command.world !== undefined) extensionUpdates.world = command.world;
@@ -262,6 +265,7 @@ async function updatePersona(command: UpdatePersonaCommand, args: Parameters<typ
     if (command.appearance !== undefined) sets.appearance = command.appearance;
     if (command.scenario !== undefined) sets.scenario = command.scenario;
     if (command.backstory !== undefined) sets.backstory = command.backstory;
+    if (command.aboutMe !== undefined) sets.aboutMe = command.aboutMe;
     await args.stores.chars.updatePersona(targetPersona.id, sets);
     args.sendAssistantAction({ action: "persona_updated", id: targetPersona.id, name: command.name });
     logger.info('[commands] Assistant updated persona: "%s" (%s)', command.name, targetPersona.id);
@@ -630,14 +634,14 @@ async function fetchCharacterContent(command: FetchCommand, args: Parameters<typ
   const parts = [`Name: ${data.name}`];
   if (data.description) parts.push(`Description: ${data.description}`);
   if (data.personality) parts.push(`Personality: ${data.personality}`);
+  if (data.extensions?.backstory) parts.push(`Backstory: ${data.extensions.backstory}`);
+  if (data.extensions?.appearance) parts.push(`Appearance: ${data.extensions.appearance}`);
   if (data.scenario) parts.push(`Scenario: ${data.scenario}`);
   if (data.mes_example) parts.push(`Example Messages: ${data.mes_example}`);
   if (data.system_prompt) parts.push(`System Prompt: ${data.system_prompt}`);
   if (data.post_history_instructions) parts.push(`Post-History Instructions: ${data.post_history_instructions}`);
   if (data.first_mes) parts.push(`First Message: ${data.first_mes}`);
   if (data.creator_notes) parts.push(`Creator Notes: ${data.creator_notes}`);
-  if (data.extensions?.appearance) parts.push(`Appearance: ${data.extensions.appearance}`);
-  if (data.extensions?.backstory) parts.push(`Backstory: ${data.extensions.backstory}`);
   return parts.join("\n");
 }
 
@@ -651,9 +655,9 @@ async function fetchPersonaContent(command: FetchCommand, args: Parameters<typeo
   const parts = [`Name: ${found.name}`];
   if (found.description) parts.push(`Description: ${found.description}`);
   if (found.personality) parts.push(`Personality: ${found.personality}`);
-  if (found.scenario) parts.push(`Scenario: ${found.scenario}`);
-  if (found.appearance) parts.push(`Appearance: ${found.appearance}`);
   if (found.backstory) parts.push(`Backstory: ${found.backstory}`);
+  if (found.appearance) parts.push(`Appearance: ${found.appearance}`);
+  if (found.scenario) parts.push(`Scenario: ${found.scenario}`);
   return parts.join("\n");
 }
 

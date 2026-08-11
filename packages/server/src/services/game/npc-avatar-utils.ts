@@ -16,6 +16,13 @@ export function findStoredNpcAvatarFile(directory: string, safeName: string): {
   return null;
 }
 
+export function npcAvatarSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
 function normalizeNpcName(name: string): string {
   return name
     .normalize("NFKD")

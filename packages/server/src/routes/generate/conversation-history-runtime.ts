@@ -1,5 +1,9 @@
 import type { WrapFormat } from "@marinara-engine/shared";
-import { normalizeTextForMatch, stripLeadingMessageTimestamps } from "@marinara-engine/shared";
+import {
+  normalizeSummaryTailMessages,
+  normalizeTextForMatch,
+  stripLeadingMessageTimestamps,
+} from "@marinara-engine/shared";
 
 import { logger } from "../../lib/logger.js";
 import {
@@ -56,6 +60,9 @@ type ConversationSummaryConnection = {
   maxContext?: number | null;
   openrouterProvider?: string | null;
   maxTokensOverride?: number | null;
+  claudeFastMode?: string | null;
+  treatAsLocalEndpoint?: string | null;
+  defaultParameters?: unknown;
 };
 
 type BucketMsg = { role: string; content: string; author: string; ts: Date };
@@ -162,6 +169,9 @@ export async function prepareConversationPromptHistory(args: {
       args.connection.maxContext,
       args.connection.openrouterProvider,
       args.connection.maxTokensOverride,
+      args.connection.claudeFastMode === "true",
+      args.connection.treatAsLocalEndpoint === "true",
+      args.connection.defaultParameters,
     ),
     primaryConnectionId: args.connectionId,
     fallbackConnection: args.fallbackConnection,
@@ -243,10 +253,7 @@ export async function prepareConversationPromptHistory(args: {
     fmtDateKey,
   });
 
-  const tailCount = Math.max(
-    0,
-    Math.min(50, Math.floor((args.chatMeta.summaryTailMessages as number | undefined) ?? 10)),
-  );
+  const tailCount = normalizeSummaryTailMessages(args.chatMeta.summaryTailMessages);
   const tailEntries = collectConversationSummaryTail({
     buckets,
     tailCount,

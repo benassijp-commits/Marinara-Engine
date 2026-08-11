@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { DEFAULT_NOODLE_SETTINGS, noodleRefreshSchema } from "../../packages/shared/src/schemas/noodle.schema.js";
+import {
+  DEFAULT_NOODLE_SETTINGS,
+  noodleGenerationRequestSchema,
+  noodleStageProfileDraftRequestSchema,
+} from "../../packages/shared/src/schemas/noodle.schema.js";
 import { canManageNoodleReply } from "../../packages/shared/src/utils/noodle-interactions.js";
 import type { NoodleAccount, NoodleInteraction, NoodlePost } from "../../packages/shared/src/types/noodle.js";
 import { LIMITS, PROFESSOR_MARI_ID } from "../../packages/shared/src/constants/defaults.js";
@@ -29,19 +33,49 @@ import {
   sampleNoodlePastMemories,
   sampleNoodlePastMemoriesWeighted,
 } from "../../packages/server/src/services/noodle/noodle-prompt.js";
-import { chooseNoodleParticipantAccounts } from "../../packages/server/src/services/noodle/noodle-participant-selection.js";
+import {
+  chooseNoodleParticipantAccounts,
+  collectNoodlePriorityAccountIds,
+} from "../../packages/server/src/services/noodle/noodle-participant-selection.js";
+import { noodleAccountsNeedingProfiles } from "../../packages/server/src/services/noodle/noodle-profile-selection.js";
+import {
+  buildNoodleCarryoverBlock,
+  NOODLE_CARRYOVER_TOKEN_BUDGET,
+} from "../../packages/server/src/services/noodle/noodle-context.js";
 import { canCreateGeneratedNoodleInteraction } from "../../packages/server/src/services/noodle/noodle-interaction-policy.js";
 import { parseNoodleGeneratedProfiles } from "../../packages/server/src/services/noodle/noodle-generated-profiles.js";
+import { resolveIllustratorCharacterReferences } from "../../packages/server/src/services/image/illustrator-references.js";
 import {
   parseNoodleGeneratedRefresh,
+  parseNoodleGeneratedRefreshResponse,
   validateNoodleGeneratedRefresh,
 } from "../../packages/server/src/services/noodle/noodle-generated-refresh.js";
 import { normalizeNoodleImagePrompt } from "../../packages/server/src/services/noodle/noodle-image-prompt.js";
+import { characterAppearanceFromRow } from "../../packages/server/src/services/noodle/noodle-public-images.service.js";
+import { buildNoodleProfileTargetBlock } from "../../packages/server/src/services/noodle/noodle-public-profiles.service.js";
+import {
+  buildGeneratedCharacterScheduleContext,
+  buildOptedInChatContext,
+  formatNoodleCurrentTime,
+} from "../../packages/server/src/services/noodle/noodle-public-prompt.service.js";
+import { formatNoodleMessagesForLog } from "../../packages/server/src/services/noodle/noodle-generation-log.js";
+import {
+  buildNoodlerPublicIdentity,
+  buildNoodlerPostMessages,
+  protectNoodlerGeneratedIdentity,
+  stageProfileContainsPublicIdentity,
+} from "../../packages/server/src/services/noodle/noodle-noodler-generation.service.js";
+import { noodlerSourceText } from "../../packages/server/src/services/noodle/noodle-stage-profile-draft.service.js";
+import {
+  canViewNoodlerPost,
+  isNoodlerHiddenFromViewer,
+} from "../../packages/server/src/services/noodle/noodler-access.js";
+import { resolveStoredMaxTokens } from "../../packages/server/src/services/generation/generation-parameters.js";
+import { clampGenerationMaxOutputTokens } from "../../packages/server/src/services/generation/output-token-limits.js";
 import {
   NOODLE_IMAGE_POST,
   NOODLE_TIMELINE_BASE,
 } from "../../packages/server/src/services/prompt-overrides/registry/noodle.js";
-import { collectNoodlePriorityAccountIds } from "../../packages/server/src/routes/noodle.routes.js";
 import { NOODLE_TIMELINE_VOICE } from "../../packages/server/src/services/prompt-overrides/registry/noodle.js";
 
 const makeAccount = (id: string): NoodleAccount => ({
@@ -54,10 +88,36 @@ const makeAccount = (id: string): NoodleAccount => ({
   avatarUrl: null,
   avatarCrop: null,
   invited: true,
-  settings: {},
+  settings: {
+    profile: {},
+    social: {},
+    scheduler: { autoPosting: { enabled: false, imagesEnabled: false } },
+    privacy: { access: { hiddenFromAccountIds: [] } },
+    wallet: { coins: 999999 },
+  },
+  platform: "noodle",
+  noodleAccountId: null,
   createdAt: "2026-07-10T10:00:00.000Z",
   updatedAt: "2026-07-10T10:00:00.000Z",
 });
+
+assert.strictEqual(resolveStoredMaxTokens(null, 6144), 6144);
+assert.strictEqual(resolveStoredMaxTokens({}, 6144), 6144);
+assert.strictEqual(resolveStoredMaxTokens({ imageGenerationSource: "comfyui" }, 6144), 6144);
+assert.strictEqual(
+  resolveStoredMaxTokens(JSON.stringify({ maxTokens: 16_000, enabledParameters: { maxTokens: true } }), 6144),
+  16_000,
+);
+assert.strictEqual(resolveStoredMaxTokens({ maxTokens: 16_000, enabledParameters: { maxTokens: false } }, 6144), 6144);
+assert.strictEqual(
+  clampGenerationMaxOutputTokens({
+    provider: "custom",
+    model: "kimi-k2.7",
+    maxTokens: resolveStoredMaxTokens({ maxTokens: 16_000 }, 6144),
+    maxTokensOverride: 8192,
+  }),
+  8192,
+);
 
 const participantSettings = {
   ...DEFAULT_NOODLE_SETTINGS,
@@ -73,6 +133,27 @@ const selectionPersona: NoodleAccount = {
   entityId: "persona-entity",
   handle: "mari",
 };
+
+const largeInvitedRoster = Array.from({ length: 200 }, (_, index) => makeAccount(`invited-${index}`));
+const selectedLargeRosterParticipants = chooseNoodleParticipantAccounts({
+  accounts: largeInvitedRoster,
+  settings: participantSettings,
+  selectedGroupCharacterIds: new Set(),
+  random: () => 0,
+});
+assert.equal(selectedLargeRosterParticipants.length, 2);
+const selectedWithExistingProfile = selectedLargeRosterParticipants.map((account, index) => ({
+  ...account,
+  settings: index === 0 ? { ...account.settings, profile: { profileGenerated: true } } : account.settings,
+}));
+const largeRosterProfileTargets = noodleAccountsNeedingProfiles(selectedWithExistingProfile);
+assert.equal(largeRosterProfileTargets.length, 1);
+assert.ok(selectedLargeRosterParticipants.some((account) => account.id === largeRosterProfileTargets[0]!.id));
+assert.ok(
+  largeRosterProfileTargets.every((account) =>
+    selectedLargeRosterParticipants.some((selected) => selected.id === account.id),
+  ),
+);
 assert.deepEqual(
   [
     ...collectNoodlePriorityAccountIds({
@@ -178,9 +259,16 @@ const charactersOnlySelection = chooseNoodleParticipantAccounts({
   selectedGroupCharacterIds: new Set(),
   random: () => 0.9,
 });
-assert.equal(charactersOnlySelection.every((account) => account.kind === "character"), true);
+assert.equal(
+  charactersOnlySelection.every((account) => account.kind === "character"),
+  true,
+);
 const sparseCharacterSelection = chooseNoodleParticipantAccounts({
-  accounts: [participantAccounts[0]!, randomParticipant, { ...randomParticipant, id: "ambient-two", entityId: "ambient-two" }],
+  accounts: [
+    participantAccounts[0]!,
+    randomParticipant,
+    { ...randomParticipant, id: "ambient-two", entityId: "ambient-two" },
+  ],
   settings: { ...participantSettings, allowRandomUsers: true, participantMin: 3, participantMax: 3 },
   selectedGroupCharacterIds: new Set(),
   random: () => 0.9,
@@ -198,6 +286,7 @@ const repeatPost: NoodlePost = {
   parentPostId: null,
   quotePostId: null,
   source: "generated",
+  access: "public",
   metadata: {},
   authorSnapshot: null,
   createdAt: "2026-07-10T10:00:00.000Z",
@@ -262,7 +351,256 @@ assert.equal(
 assert.equal(canGenerateNoodleActivityForAccountKind("persona"), false);
 assert.equal(canGenerateNoodleActivityForAccountKind("character"), true);
 assert.equal(canGenerateNoodleActivityForAccountKind("random_user"), true);
-assert.equal(noodleRefreshSchema.parse({ reviewImagePromptsBeforeSend: true }).reviewImagePromptsBeforeSend, true);
+assert.equal(
+  noodleGenerationRequestSchema.parse({ mode: "public", reviewImagePromptsBeforeSend: true })
+    .reviewImagePromptsBeforeSend,
+  true,
+);
+assert.equal(noodleGenerationRequestSchema.safeParse({ mode: "public", personaId: "persona-1" }).success, true);
+assert.equal(noodleGenerationRequestSchema.safeParse({ mode: "public", timeZone: "Europe/Warsaw" }).success, true);
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "noodler",
+    targetAccountId: "private-1",
+    noodlerPostGuide: "Write about tonight.",
+    noodlerProjectWork: "Advance the current beat.",
+  }).success,
+  true,
+);
+assert.equal(noodleGenerationRequestSchema.safeParse({}).success, false);
+assert.equal(noodleGenerationRequestSchema.safeParse({ mode: "noodler" }).success, false);
+assert.equal(noodleGenerationRequestSchema.safeParse({ mode: "public", targetAccountId: "private-1" }).success, false);
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "public",
+    noodlerPostGuide: "Write about tonight.",
+  }).success,
+  false,
+);
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "public",
+    noodlerProjectWork: "Advance the current beat.",
+  }).success,
+  false,
+);
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "noodler",
+    targetAccountId: "private-1",
+    personaId: "persona-1",
+  }).success,
+  false,
+);
+// Slice 8b: the manual Guide path may request image-prompt review on NoodleR generation.
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "noodler",
+    targetAccountId: "private-1",
+    reviewImagePromptsBeforeSend: true,
+  }).success,
+  true,
+);
+const noodlerPostMessages = buildNoodlerPostMessages({
+  account: { displayName: "Private Name", handle: "private_handle", bio: "Private bio" },
+  stagePersonality: "Reserved and direct.",
+  disclosureMode: "secret",
+  publicIdentity: { displayName: "Known Public Name", handle: "known_public" },
+  recentPosts: [],
+  request: {
+    noodlerPostGuide: "Write about tonight.",
+    noodlerProjectWork: "Advance the current beat.",
+  },
+  allowImagePrompt: false,
+  generationGuidance: "Adults only; NSFW allowed when it fits.",
+});
+assert.match(noodlerPostMessages[0]?.content ?? "", /exactly one post for one NoodleR creator page/u);
+assert.match(noodlerPostMessages[0]?.content ?? "", /Disclosure is secret/u);
+// Editable generation guidance is injected into the system prompt.
+assert.match(noodlerPostMessages[0]?.content ?? "", /NSFW allowed when it fits/u);
+// With images disabled the model is told not to emit an image prompt.
+assert.match(noodlerPostMessages[0]?.content ?? "", /Do not create a poll or image prompt/u);
+// With images enabled it may return an optional imagePrompt.
+assert.match(
+  buildNoodlerPostMessages({
+    account: { displayName: "Private Name", handle: "private_handle", bio: "Private bio" },
+    stagePersonality: "",
+    disclosureMode: "secret",
+    publicIdentity: null,
+    recentPosts: [],
+    request: {},
+    allowImagePrompt: true,
+    generationGuidance: "",
+  })[0]?.content ?? "",
+  /optional imagePrompt/u,
+);
+assert.match(noodlerPostMessages[1]?.content ?? "", /Private Name/u);
+assert.match(noodlerPostMessages[1]?.content ?? "", /Reserved and direct/u);
+assert.match(noodlerPostMessages[1]?.content ?? "", /Write about tonight\./u);
+assert.match(noodlerPostMessages[1]?.content ?? "", /Advance the current beat\./u);
+assert.doesNotMatch(
+  noodlerPostMessages.map((message) => message.content).join("\n"),
+  /Known Public Name|known_public/u,
+);
+
+const knownPublicIdentity = { displayName: "Known Public Name", handle: "known_public" };
+const renamedPublicIdentity = buildNoodlerPublicIdentity(knownPublicIdentity, {
+  data: JSON.stringify({ name: "Renamed Public Name" }),
+});
+assert.match(
+  noodlerSourceText(JSON.stringify({ name: "Renamed Public Name", personality: "Reserved and direct." })),
+  /Name: Renamed Public Name[\s\S]*Personality: Reserved and direct\./u,
+);
+const protectedStageProfile = {
+  displayName: "After Hours",
+  handle: "after_hours",
+  bio: "Known Public Name after dark.",
+  stagePersonality: "Reserved.",
+  disclosureMode: "secret" as const,
+};
+assert.equal(stageProfileContainsPublicIdentity(protectedStageProfile, knownPublicIdentity), true);
+assert.equal(
+  stageProfileContainsPublicIdentity(
+    { ...protectedStageProfile, bio: "Renamed Public Name after dark." },
+    renamedPublicIdentity,
+  ),
+  true,
+);
+assert.equal(
+  stageProfileContainsPublicIdentity({ ...protectedStageProfile, bio: "Anonymous after dark." }, knownPublicIdentity),
+  false,
+);
+assert.equal(
+  stageProfileContainsPublicIdentity({ ...protectedStageProfile, disclosureMode: "open" }, knownPublicIdentity),
+  false,
+);
+assert.equal(
+  noodleStageProfileDraftRequestSchema.safeParse({
+    noodleAccountId: "public-1",
+    disclosureMode: "hinted",
+    guidance: "Make it warmer.",
+  }).success,
+  true,
+);
+assert.equal(
+  noodleStageProfileDraftRequestSchema.safeParse({
+    disclosureMode: "secret",
+    guidance: "No source selected.",
+  }).success,
+  false,
+);
+const identitySample = "Known Public Name (@known_public) shares a late-night portrait.";
+assert.equal(protectNoodlerGeneratedIdentity(identitySample, "open", knownPublicIdentity), identitySample);
+assert.equal(
+  protectNoodlerGeneratedIdentity(identitySample, "hinted", knownPublicIdentity),
+  "a public persona shares a late-night portrait.",
+);
+assert.equal(
+  protectNoodlerGeneratedIdentity(identitySample, "secret", knownPublicIdentity),
+  "someone shares a late-night portrait.",
+);
+const renamedIdentitySample = "Renamed Public Name shares a late-night portrait.";
+assert.equal(
+  protectNoodlerGeneratedIdentity(renamedIdentitySample, "hinted", renamedPublicIdentity),
+  "a public persona shares a late-night portrait.",
+);
+assert.equal(
+  protectNoodlerGeneratedIdentity(renamedIdentitySample, "secret", renamedPublicIdentity),
+  "someone shares a late-night portrait.",
+);
+assert.equal(
+  protectNoodlerGeneratedIdentity(renamedIdentitySample, "open", renamedPublicIdentity),
+  renamedIdentitySample,
+);
+for (const mode of ["hinted", "secret"] as const) {
+  const imagePrompt = protectNoodlerGeneratedIdentity(
+    "Editorial portrait of Known Public Name, known online as @known_public.",
+    mode,
+    knownPublicIdentity,
+  );
+  assert.doesNotMatch(imagePrompt ?? "", /Known Public Name|known_public/iu);
+}
+const accessCreator = {
+  ...makeAccount("creator-private"),
+  platform: "noodler" as const,
+  settings: {
+    ...makeAccount("creator-private").settings,
+    privacy: {
+      access: { hiddenFromAccountIds: ["blocked-viewer"] },
+    },
+  },
+};
+assert.equal(isNoodlerHiddenFromViewer(accessCreator, "blocked-viewer"), true);
+assert.equal(isNoodlerHiddenFromViewer(accessCreator, "allowed-viewer"), false);
+const lockedPost = { id: "locked-post", access: "locked" as const };
+assert.equal(
+  canViewNoodlerPost({
+    post: { id: "public-post", access: "public" },
+    subscribed: false,
+    unlockedPostIds: new Set(),
+  }),
+  true,
+);
+assert.equal(
+  canViewNoodlerPost({
+    post: lockedPost,
+    subscribed: false,
+    unlockedPostIds: new Set(),
+  }),
+  false,
+);
+assert.equal(
+  canViewNoodlerPost({
+    post: lockedPost,
+    subscribed: true,
+    unlockedPostIds: new Set(),
+  }),
+  true,
+);
+assert.equal(
+  canViewNoodlerPost({
+    post: lockedPost,
+    subscribed: false,
+    unlockedPostIds: new Set([lockedPost.id]),
+  }),
+  true,
+);
+assert.equal(
+  noodleGenerationRequestSchema.safeParse({
+    mode: "noodler",
+    targetAccountId: "creator-private",
+    access: "locked",
+  }).success,
+  true,
+);
+const openMessages = buildNoodlerPostMessages({
+  account: { displayName: "Private Name", handle: "private_handle", bio: "Private bio" },
+  stagePersonality: "Open about the public connection.",
+  disclosureMode: "open",
+  publicIdentity: knownPublicIdentity,
+  recentPosts: [],
+  request: { noodlerPostGuide: "Mention Known Public Name and @known_public." },
+  allowImagePrompt: false,
+  generationGuidance: "",
+});
+assert.match(openMessages.map((message) => message.content).join("\n"), /Known Public Name/u);
+assert.match(openMessages.map((message) => message.content).join("\n"), /known_public/u);
+for (const mode of ["hinted", "secret"] as const) {
+  const protectedMessages = buildNoodlerPostMessages({
+    account: { displayName: "Private Name", handle: "private_handle", bio: "Private bio" },
+    stagePersonality: "Never identify Known Public Name or @known_public.",
+    disclosureMode: mode,
+    publicIdentity: knownPublicIdentity,
+    recentPosts: [],
+    request: { noodlerPostGuide: "Write about Known Public Name (@known_public)." },
+    allowImagePrompt: false,
+    generationGuidance: "",
+  });
+  assert.doesNotMatch(
+    protectedMessages.map((message) => message.content).join("\n"),
+    /Known Public Name|known_public/u,
+  );
+}
 assert.match(NOODLE_PERSONA_AUTHORSHIP_INSTRUCTION, /controlled exclusively by the user/u);
 assert.match(
   NOODLE_PERSONA_AUTHORSHIP_INSTRUCTION,
@@ -413,11 +751,13 @@ const instructions = (input: {
   allowRandomUsers?: boolean;
   enableImagePrompts?: boolean;
   allowGalleryImageAttachments?: boolean;
+  imageGenerationPrompt?: string;
 }) =>
   noodleTimelineFeatureInstructions({
     allowRandomUsers: input.allowRandomUsers ?? false,
     enableImagePrompts: input.enableImagePrompts ?? false,
     allowGalleryImageAttachments: input.allowGalleryImageAttachments ?? false,
+    imageGenerationPrompt: input.imageGenerationPrompt ?? "",
   });
 
 assert.deepEqual(instructions({}), []);
@@ -455,6 +795,15 @@ const resilientRefresh = parseNoodleGeneratedRefresh({
 assert.equal(resilientRefresh.refresh.posts.length, 1);
 assert.equal(resilientRefresh.refresh.interactions.length, 0);
 assert.deepEqual(resilientRefresh.rejected, [{ collection: "interactions", index: 0, issueCount: 1 }]);
+const adjacentRefresh = parseNoodleGeneratedRefreshResponse(`
+{"posts":[{"authorHandle":"alpha","content":"A recovered post."}]}
+{"interactions":[{"actorHandle":"beta","targetTempId":"post-alpha","type":"like"}]}
+{"follows":[{"actorHandle":"alpha","targetHandle":"beta"}]}
+`);
+assert.equal(adjacentRefresh.refresh.posts.length, 1);
+assert.equal(adjacentRefresh.refresh.interactions.length, 1);
+assert.equal(adjacentRefresh.refresh.follows.length, 1);
+assert.deepEqual(adjacentRefresh.rejected, []);
 assert.equal(
   validateNoodleGeneratedRefresh(
     { posts: [], interactions: [], follows: [], digests: [] },
@@ -492,7 +841,7 @@ assert.equal(
 
 assert.equal(
   normalizeNoodleImagePrompt(
-    'Post text: a long social post\nDraft image idea: cel-shaded scientist holding a test tube\nUser instructions: vivid color',
+    "Post text: a long social post\nDraft image idea: cel-shaded scientist holding a test tube\nUser instructions: vivid color",
   ),
   "cel-shaded scientist holding a test tube",
 );
@@ -501,17 +850,147 @@ assert.equal(
   "moonlit laboratory portrait",
 );
 assert.equal(normalizeNoodleImagePrompt('{"content":"do not send this JSON to an image model"}'), null);
+// Source the appearance block from the real resolver rather than a hand-written string, so the
+// shared block's framing is covered by this test and not only the Noodle-side template.
+const noodleImageReferences = await resolveIllustratorCharacterReferences({
+  charactersStore: { list: async () => [] },
+  chatCharacters: [
+    { id: "dottore", name: "Dottore", avatarPath: null, appearance: "blue hair and a white mask" },
+  ],
+  persona: null,
+  requestedNames: ["Dottore"],
+  promptText: "Dottore",
+  includeReferenceImages: false,
+});
+assert.equal(noodleImageReferences.appearanceBlock, "Dottore's Appearance: blue hair and a white mask");
+
 const defaultNoodleImagePrompt = NOODLE_IMAGE_POST.defaultBuilder({
   authorName: "Dottore",
   postContent: "This entire post must not be sent to ComfyUI.",
   draftPrompt: "cel-shaded laboratory selfie",
-  userInstructions: "dramatic blue lighting",
-  characterDescription: "Dottore has blue hair and a white mask.",
+  userInstructions: "Create a social-media-ready character image. Mention build, clothing, pose, lighting.",
+  characterDescription: noodleImageReferences.appearanceBlock ?? "",
+  characterPersonality: "precise, arrogant, impatient",
+  characterImageInstructions: "stark lab photography with cold lighting",
 });
 assert.match(defaultNoodleImagePrompt, /^cel-shaded laboratory selfie/u);
-assert.match(defaultNoodleImagePrompt, /Dottore has blue hair/u);
+assert.match(defaultNoodleImagePrompt, /Dottore's Appearance: blue hair and a white mask/u);
+assert.doesNotMatch(defaultNoodleImagePrompt, /Character appearance notes:/u);
 assert.doesNotMatch(defaultNoodleImagePrompt, /This entire post/u);
 assert.doesNotMatch(defaultNoodleImagePrompt, /Output only|Draft image idea|Post text/u);
+
+// The image model must never receive text written for a language model. Settings instructions go
+// to the timeline model instead, and the surviving blocks carry no labels or framing sentences.
+assert.doesNotMatch(defaultNoodleImagePrompt, /social-media-ready character image|Mention build/u);
+assert.doesNotMatch(
+  defaultNoodleImagePrompt,
+  /Character personality and traits:|Character-specific image instructions:|Let these traits naturally influence/u,
+);
+assert.match(defaultNoodleImagePrompt, /precise, arrogant, impatient/u);
+assert.match(defaultNoodleImagePrompt, /stark lab photography/u);
+
+// ...and the timeline model must receive those instructions, marked as direction rather than text
+// to copy into imagePrompt.
+const imageDirectionInstructions = instructions({
+  enableImagePrompts: true,
+  imageGenerationPrompt: "Mention build, clothing, pose, lighting.",
+});
+assert.equal(imageDirectionInstructions.length, 2);
+assert.match(imageDirectionInstructions[1] ?? "", /Mention build, clothing, pose, lighting\./u);
+assert.match(imageDirectionInstructions[1] ?? "", /instructions to you, not text to copy/u);
+assert.deepEqual(instructions({ enableImagePrompts: true, imageGenerationPrompt: "   " }), [
+  imageGenerationInstruction,
+]);
+assert.deepEqual(instructions({ imageGenerationPrompt: "ignored while image prompts are off" }), []);
+
+assert.equal(
+  characterAppearanceFromRow({
+    data: { description: "  silver hair {{// private note}}\n blue eyes  " },
+  }),
+  "silver hair blue eyes",
+);
+const escapedProfileTarget = buildNoodleProfileTargetBlock(
+  {
+    entityId: `character<&"`,
+    displayName: `Name <&"`,
+    handle: `handle<&"`,
+  },
+  { id: "character", data: { name: "Character" } },
+);
+assert.match(
+  escapedProfileTarget,
+  /<profile_target entityId="character&lt;&amp;&quot;" currentName="Name &lt;&amp;&quot;" currentHandle="handle&lt;&amp;&quot;">/u,
+);
+
+const optedInChats = Array.from({ length: 9 }, (_, index) => ({
+  id: `chat-${index}`,
+  name: `Chat ${index}`,
+  mode: "conversation",
+  metadata: { noodleTimelineContextEnabled: true },
+  characterIds: ["character-alpha"],
+  personaId: null,
+}));
+const optedInChatContext = await buildOptedInChatContext(
+  {
+    list: async () => optedInChats,
+    listMessagesPaginated: async (chatId: string) =>
+      chatId === "chat-0"
+        ? []
+        : [{ role: "assistant", content: `message from ${chatId}`, characterId: "character-alpha" }],
+  } as never,
+  {
+    getById: async () => ({ id: "character-alpha", data: { name: "Alpha" } }),
+    getPersona: async () => null,
+  } as never,
+  ["character-alpha"],
+);
+assert.doesNotMatch(optedInChatContext, /chat-0/u);
+assert.match(optedInChatContext, /chat-8/u);
+assert.equal((optedInChatContext.match(/<chat_context /gu) ?? []).length, 8);
+
+const noodleScheduleNow = new Date("2026-07-21T10:30:00.000Z");
+const generatedScheduleContext = await buildGeneratedCharacterScheduleContext(
+  {
+    list: async () => [
+      {
+        id: "schedule-chat",
+        mode: "conversation",
+        metadata: {
+          conversationSchedulesEnabled: true,
+          conversationTimeZone: "Europe/Warsaw",
+          characterSchedules: {
+            "character-alpha": {
+              weekStart: "2026-07-20T00:00:00.000Z",
+              days: {
+                Tuesday: [
+                  { time: "08:00-12:00", status: "dnd", activity: "laboratory work" },
+                  { time: "12:00-13:00", status: "idle", activity: "lunch" },
+                ],
+              },
+              inactivityThresholdMinutes: 60,
+              talkativeness: 50,
+            },
+          },
+        },
+      },
+    ],
+  } as never,
+  new Map([["character-alpha", "Alpha"]]),
+  "UTC",
+  noodleScheduleNow,
+);
+assert.match(generatedScheduleContext, /Alpha: 08:00-12:00: laboratory work, 12:00-13:00: lunch/u);
+assert.match(formatNoodleCurrentTime(noodleScheduleNow, "Europe/Warsaw"), /12:30/u);
+
+const correctionMessages = [
+  { role: "system" as const, content: "system prompt" },
+  { role: "user" as const, content: "original prompt" },
+  { role: "user" as const, content: "correction prompt" },
+];
+assert.equal(
+  formatNoodleMessagesForLog(correctionMessages),
+  "SYSTEM:\nsystem prompt\n\nUSER:\noriginal prompt\n\nUSER:\ncorrection prompt",
+);
 
 const cutoffAnchor = new Date("2026-07-10T12:00:00.000Z");
 assert.equal(noodlePastMemoryCutoff(cutoffAnchor), "2026-07-08T12:00:00.000Z");
@@ -532,7 +1011,11 @@ assert.equal(
 
 // Explicit legacy chance/maxItems params reproduce pre-toggle behavior (enableEnhancedTimelineWriting off).
 assert.equal(
-  noodlePastMemorySampleSize(() => 0.5, NOODLE_LEGACY_PAST_MEMORY_INCLUSION_CHANCE, NOODLE_LEGACY_PAST_MEMORY_MAX_ITEMS),
+  noodlePastMemorySampleSize(
+    () => 0.5,
+    NOODLE_LEGACY_PAST_MEMORY_INCLUSION_CHANCE,
+    NOODLE_LEGACY_PAST_MEMORY_MAX_ITEMS,
+  ),
   0,
 );
 const legacyThreeItemRolls = [0, 0.999];
@@ -586,8 +1069,30 @@ const partiallyInvalidGeneratedProfiles = parseNoodleGeneratedProfiles({
     { entityId: "valid", name: "Valid Character", handle: "valid_character", bio: "", location: "" },
   ],
 });
-assert.deepEqual(partiallyInvalidGeneratedProfiles.profiles.map((profile) => profile.entityId), ["valid"]);
+assert.deepEqual(
+  partiallyInvalidGeneratedProfiles.profiles.map((profile) => profile.entityId),
+  ["valid"],
+);
 assert.deepEqual(partiallyInvalidGeneratedProfiles.rejected, [{ index: 0, issueCount: 1 }]);
+
+const singlyWrappedGeneratedProfiles = parseNoodleGeneratedProfiles([
+  {
+    profiles: [
+      {
+        entityId: "wrapped-character",
+        name: "Wrapped Character",
+        handle: "wrapped_character",
+        bio: "Recovered from a one-item array wrapper.",
+        location: "Noodle",
+      },
+    ],
+  },
+]);
+assert.deepEqual(
+  singlyWrappedGeneratedProfiles.profiles.map((profile) => profile.entityId),
+  ["wrapped-character"],
+);
+assert.throws(() => parseNoodleGeneratedProfiles([{ profiles: [] }, { profiles: [] }]));
 
 // sampleNoodlePastMemoriesWeighted should reliably favor a much higher-weighted item over
 // several trials, while still keeping baseline-weighted items reachable (not filtered out).
@@ -605,21 +1110,49 @@ for (let trial = 0; trial < trials; trial += 1) {
 }
 assert.ok(highWeightPicks > trials * 0.8, `expected high-weight item to dominate, got ${highWeightPicks}/${trials}`);
 assert.deepEqual(
-  sampleNoodlePastMemoriesWeighted(["only"], 5, () => 1, () => 0.5),
+  sampleNoodlePastMemoriesWeighted(
+    ["only"],
+    5,
+    () => 1,
+    () => 0.5,
+  ),
   ["only"],
 );
-assert.equal(sampleNoodlePastMemoriesWeighted(["a", "b"], 0, () => 1, () => 0.5).length, 0);
+assert.equal(
+  sampleNoodlePastMemoriesWeighted(
+    ["a", "b"],
+    0,
+    () => 1,
+    () => 0.5,
+  ).length,
+  0,
+);
 
 // noodleLorebookTokenBudget scales with active character count but is floored and capped so a
 // single-character Noodle refresh never dips below the floor, and a large roster never exceeds
-// the same global default a normal chat turn would get.
+// Noodle's explicit 8k hard ceiling.
 assert.equal(noodleLorebookTokenBudget(0), LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_FLOOR);
 assert.equal(noodleLorebookTokenBudget(1), LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_FLOOR);
 assert.equal(
   noodleLorebookTokenBudget(10),
-  Math.min(LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET, 10 * LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_PER_ACCOUNT),
+  Math.min(LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_MAX, 10 * LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_PER_ACCOUNT),
 );
-assert.equal(noodleLorebookTokenBudget(100), LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET);
+assert.equal(LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_MAX, 8192);
+assert.equal(noodleLorebookTokenBudget(100), LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_MAX);
+
+const oversizedCarryoverDigests = Array.from({ length: 50 }, (_, index) => ({
+  content: `newest-${index}-${"x".repeat(1180)}`,
+}));
+const boundedCarryoverBlock = buildNoodleCarryoverBlock(oversizedCarryoverDigests, 50, "xml");
+assert.ok(boundedCarryoverBlock);
+assert.ok(boundedCarryoverBlock.length <= NOODLE_CARRYOVER_TOKEN_BUDGET * 4);
+assert.match(boundedCarryoverBlock, /newest-0-/u);
+assert.doesNotMatch(boundedCarryoverBlock, /newest-49-/u);
+assert.ok(boundedCarryoverBlock.indexOf("newest-1-") < boundedCarryoverBlock.indexOf("newest-0-"));
+assert.equal(
+  buildNoodleCarryoverBlock([{ content: "newest" }, { content: "older\nwith detail" }], 2, "none"),
+  "- older\nwith detail\n- newest",
+);
 
 // noodleTimelineVoiceDefaultText(enhanced) feeds the "Noodle Timeline Voice & Tone" prompt
 // override default (NOODLE_TIMELINE_VOICE.defaultBuilder). `enhanced=false` (the setting's

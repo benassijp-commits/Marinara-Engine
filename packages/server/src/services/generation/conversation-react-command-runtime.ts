@@ -138,7 +138,7 @@ async function resolveReactionTarget(
         );
       }
     } else {
-      const resolved = await resolveTargetedCharacterReaction(command, args, chatMembers, targetChar, wanted);
+      const resolved = await resolveTargetedCharacterReaction(args, chatMembers, targetChar, wanted);
       if (!resolved) return null;
       targetId = resolved.id;
       segmentTarget = resolved.target;
@@ -150,7 +150,6 @@ async function resolveReactionTarget(
 }
 
 async function resolveTargetedCharacterReaction(
-  command: ReactCommand,
   args: Parameters<typeof handleConversationReactCommand>[0],
   chatMembers: ChatMember[],
   targetChar: ChatMember,

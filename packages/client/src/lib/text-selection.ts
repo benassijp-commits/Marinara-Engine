@@ -27,9 +27,10 @@ function applyTextSelection(snapshot: TextSelectionSnapshot) {
 export function restoreTextSelectionAfterRender(snapshot: TextSelectionSnapshot): () => void {
   let canceled = false;
   const frameIds: number[] = [];
+  const expectedValue = snapshot.element.value;
 
   const restore = () => {
-    if (!canceled) applyTextSelection(snapshot);
+    if (!canceled && snapshot.element.value === expectedValue) applyTextSelection(snapshot);
   };
 
   restore();

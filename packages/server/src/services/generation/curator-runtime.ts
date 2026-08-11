@@ -7,8 +7,6 @@ export const CURATOR_LOG_MAX_ENTRIES = 200;
 
 const SECRET_STATUSES = ["locked", "hinted", "revealed"] as const;
 const STORYLINE_STATUSES = ["inactive", "active", "paused", "completed"] as const;
-type SecretStatus = (typeof SECRET_STATUSES)[number];
-type StorylineStatus = (typeof STORYLINE_STATUSES)[number];
 type CuratorEntityType = "secret" | "storyline" | "relationship" | "character";
 
 // ──────────────────────────────────────────────

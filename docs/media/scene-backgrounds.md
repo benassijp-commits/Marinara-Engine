@@ -31,10 +31,10 @@ The background is built from your current scene. In a game, this includes the ge
 If Marinara cannot find an image connection to use, the generate step fails with this message:
 
 ```
-Choose an image generation connection for the Background/Illustrator agent, or mark an image generation connection as the default for agents.
+Choose an image generation connection for the Illustrator agent, or mark one as the default image connection.
 ```
 
-To fix this, open the **Connections** panel, expand **Defaults**, and choose an image connection under **Images**, or set a connection for the **Background** agent.
+To fix this, open the **Connections** panel, expand **Defaults**, and choose an image connection under **Images**, or set an image connection override on the **Illustrator** agent.
 
 ## The Gallery panel
 
@@ -46,7 +46,7 @@ At the top of the panel, action buttons appear only when the matching feature ap
 - **Selfie**: generates a character selfie in Conversation mode.
 - **Background**: generates and applies a scene background, as described above.
 - **Video**: makes a scene video from the latest illustration.
-- **Create storyboard**: generates Game Mode storyboard keyframes.
+- **Create storyboard**: generates keyframes for the latest Game Mode turn or completed Roleplay episode when Storyboard is active.
 - **Browse Images**: opens a browser of saved images to insert.
 - **View storyboard**: opens the latest Game Mode storyboard.
 

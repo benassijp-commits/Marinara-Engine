@@ -12,7 +12,7 @@ Presets do not need an API key or account. They only describe how a prompt is bu
 
 ## Opening the Preset Editor
 
-Prompt presets live in the **Presets** panel on the left side of the app.
+Prompt presets live in the **Prompts** section of the **Presets** panel on the left side of the app. The other sections in this panel are **Regexes** and **Functions**.
 
 The panel has three buttons at the top:
 
@@ -82,6 +82,8 @@ A **marker** is an auto-filled section. It has no text of its own. Instead, Mari
 | **Lorebook Marker (After)** | Lorebook entries set to insert after. |
 
 A section that is a marker shows a **MARKER** badge in its row. Expand it to see a note that names the marker type. You cannot type content into most markers, because Marinara generates them for you.
+
+When a preset has no enabled **Dialogue Examples** marker, non-empty Example Dialogue is appended to **Character Info** after Scenario. It uses the preset's XML, Markdown, or unwrapped formatting. Add a Dialogue Examples marker when you want to control its placement explicitly; Marinara will not include it twice.
 
 If your chat has active lorebooks but your preset has no lorebook marker, a warning appears. It reads: "Add a lorebook marker when this preset should receive active lorebook entries." Add a lorebook marker so those entries reach the AI. See [Lorebooks Overview](../lorebooks/overview.md).
 
@@ -169,6 +171,6 @@ To confirm which preset and sections actually reached the AI, use **Peek Prompt*
 - [Preset Variables](preset-variables.md)
 - [Prompt Macros](macros.md)
 - [Generation Parameters](generation-parameters.md)
-- [Chat Settings Presets](chat-settings-presets.md)
+- [Settings Profiles](../chats/settings-profiles.md)
 - [Chat Settings Overview](../chats/chat-settings.md)
 - [Peek Prompt: See What the AI Received](../chats/peek-prompt.md)

@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api-client";
+import { agentKeys } from "./use-agents";
 
 export interface CustomToolRow {
   id: string;
@@ -32,7 +33,6 @@ export function isCustomToolSelectable(tool: CustomToolRow, capabilities?: Custo
 
 const toolKeys = {
   all: ["custom-tools"] as const,
-  detail: (id: string) => ["custom-tools", id] as const,
   capabilities: ["custom-tools", "capabilities"] as const,
 };
 
@@ -40,14 +40,6 @@ export function useCustomTools() {
   return useQuery({
     queryKey: toolKeys.all,
     queryFn: () => api.get<CustomToolRow[]>("/custom-tools"),
-  });
-}
-
-export function useCustomTool(id: string | null) {
-  return useQuery({
-    queryKey: toolKeys.detail(id ?? ""),
-    queryFn: () => api.get<CustomToolRow>(`/custom-tools/${id}`),
-    enabled: !!id,
   });
 }
 
@@ -95,6 +87,7 @@ export function useDeleteCustomTool() {
     mutationFn: (id: string) => api.delete(`/custom-tools/${id}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: toolKeys.all });
+      qc.invalidateQueries({ queryKey: agentKeys.all });
     },
   });
 }

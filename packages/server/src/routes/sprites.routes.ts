@@ -6,7 +6,7 @@ import AdmZip from "adm-zip";
 import { execFile } from "child_process";
 import { existsSync, mkdirSync, createReadStream, readdirSync, unlinkSync, statSync, readFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { writeFile, mkdir, readdir, unlink, copyFile, rm, readFile, mkdtemp } from "fs/promises";
+import { writeFile, mkdir, unlink, copyFile, rm, readFile, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
 import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -48,6 +48,7 @@ import { generateImage } from "../services/image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
+import { resolveImagePromptReviewSize } from "../services/image/image-prompt-review.js";
 import {
   resolveImageConnectionFallback,
   resolveVideoConnectionFallback,
@@ -125,6 +126,11 @@ type SpritePromptOverride = {
   negativePrompt?: string;
 };
 
+type SpriteExpressionReference = {
+  expression?: string;
+  image?: string;
+};
+
 type SpriteCompiledPrompt = {
   prompt: string;
   negativePrompt: string;
@@ -143,6 +149,8 @@ type SpriteGenerateSheetBody = {
   noBackground?: boolean;
   cleanupStrength?: number;
   nativeTransparentPng?: boolean;
+  neutralFullBodyReference?: string;
+  expressionReferences?: SpriteExpressionReference[];
   promptOverrides?: SpritePromptOverride[];
 };
 
@@ -160,6 +168,7 @@ type VideoGenerationConnection = {
   model?: string | null;
   videoGenerationSource?: string | null;
   videoService?: string | null;
+  comfyuiWorkflow?: string | null;
   defaultParameters?: string | null;
 };
 
@@ -185,6 +194,7 @@ type SpritePromptPlan = {
   appearance: string;
   prompt: string;
   matte: SpriteChromaMatte;
+  nativeTransparentPng: boolean;
   backgroundContract: string;
   sheetWidth: number;
   sheetHeight: number;
@@ -248,7 +258,11 @@ function isOpenAIGptImage2Model(model?: string): boolean {
   return !!model && /^gpt-image-2(?:$|-)/i.test(model.trim());
 }
 
-function resolveSpriteSheetCanvas({
+export function resolveSpriteNativeTransparency(model: string | undefined, requested: boolean): boolean {
+  return requested && !isOpenAIGptImage2Model(model);
+}
+
+export function resolveSpriteSheetCanvas({
   cols,
   rows,
   spriteType,
@@ -259,8 +273,9 @@ function resolveSpriteSheetCanvas({
   spriteType?: string;
   model?: string;
 }) {
-  const preferredCellWidth = 512;
-  const preferredCellHeight = spriteType === "full-body" ? 768 : 512;
+  const singleFullBody = spriteType === "full-body" && cols === 1 && rows === 1;
+  const preferredCellWidth = singleFullBody ? 1024 : 512;
+  const preferredCellHeight = singleFullBody ? 1536 : spriteType === "full-body" ? 768 : 512;
   const requestedSheetWidth = cols * preferredCellWidth;
   const requestedSheetHeight = rows * preferredCellHeight;
 
@@ -346,7 +361,9 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
   const isXaiVideo = source === "xai" || serviceHint === "xai";
   const isGoogleVeoVideo = source === "google_veo" || serviceHint === "google_veo";
   const isOpenRouterVideo = source === "openrouter" || serviceHint === "openrouter";
+  const isAtlasVideo = source === "atlas" || serviceHint === "atlas";
   const isSeedanceVideo = source === "seedance" || serviceHint === "seedance";
+  const isComfyUiVideo = source === "comfyui" || serviceHint === "comfyui";
   return {
     source,
     serviceHint,
@@ -358,9 +375,13 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
           ? "https://generativelanguage.googleapis.com/v1beta"
           : isOpenRouterVideo
             ? "https://openrouter.ai/api/v1"
-            : isSeedanceVideo
-              ? "https://api.seedance2.ai"
-              : "https://generativelanguage.googleapis.com/v1beta"),
+            : isAtlasVideo
+              ? "https://api.atlascloud.ai/api/v1"
+              : isSeedanceVideo
+                ? "https://api.seedance2.ai"
+                : isComfyUiVideo
+                  ? "http://127.0.0.1:8188"
+                  : "https://generativelanguage.googleapis.com/v1beta"),
     model:
       connection.model ||
       (isXaiVideo
@@ -369,18 +390,29 @@ function resolveVideoConnection(connection: VideoGenerationConnection) {
           ? "veo-3.1-generate-preview"
           : isOpenRouterVideo
             ? "google/veo-3.1"
-            : isSeedanceVideo
-              ? "seedance-2-0"
-              : "gemini-omni-flash-preview"),
+            : isAtlasVideo
+              ? "google/veo3.1/text-to-video"
+              : isSeedanceVideo
+                ? "seedance-2-0"
+                : isComfyUiVideo
+                  ? ""
+                  : "gemini-omni-flash-preview"),
     resolution: isXaiVideo
       ? videoDefaults.xai.resolution
       : isGoogleVeoVideo
         ? videoDefaults.googleVeo.resolution
         : isOpenRouterVideo
           ? videoDefaults.openrouter.resolution
-          : isSeedanceVideo
-            ? videoDefaults.seedance.resolution
-            : undefined,
+          : isAtlasVideo
+            ? videoDefaults.atlas.resolution
+            : isSeedanceVideo
+              ? videoDefaults.seedance.resolution
+              : isComfyUiVideo
+                ? videoDefaults.comfyui.resolution
+                : undefined,
+    comfyWorkflow: connection.comfyuiWorkflow || undefined,
+    comfyLoras: isComfyUiVideo ? videoDefaults.comfyui.loras : [],
+    comfyFps: isComfyUiVideo ? videoDefaults.comfyui.fps : undefined,
     publicReferenceUpload: resolveVideoReferencePublicUploadOptions(isSeedanceVideo, videoDefaults.seedance),
   };
 }
@@ -508,7 +540,28 @@ function withSpriteBackgroundContract(prompt: SpriteCompiledPrompt, plan: Sprite
     prompt: `${prompt.prompt}\n\n${plan.backgroundContract}`,
     negativePrompt: [
       prompt.negativePrompt,
-      "white background, off-white background, gray background, textured background, gradient background, scenery, floor line, cast shadow, contact shadow, color spill, visible grid lines, panel borders, separator lines",
+      "white background, off-white background, gray background, checkerboard background, fake transparency, transparency grid, textured background, gradient background, scenery, floor line, cast shadow, contact shadow, color spill, visible grid lines, panel borders, separator lines",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  };
+}
+
+function withFullBodyCompositionContract(
+  prompt: SpriteCompiledPrompt,
+  spriteType: SpriteType | undefined,
+): SpriteCompiledPrompt {
+  if (spriteType !== "full-body") return prompt;
+
+  return {
+    prompt: [
+      prompt.prompt,
+      `MANDATORY FULL-BODY COMPOSITION: use tall, pulled-back long shots. In every requested image or sheet cell, show the complete character continuously from the top of the hair through both shoes and the soles of both feet. Keep every silhouette inside its frame with generous empty matte above the head, beside the body, and below the feet. Each character may occupy at most 76% of its image or cell height. A waist-up, knees-up, bust, portrait, close-up, cropped-leg, or missing-feet result is invalid.`,
+      `Portrait reference images define identity and facial expression only. Never copy their camera distance, crop, canvas proportions, or missing lower body.`,
+    ].join("\n\n"),
+    negativePrompt: [
+      prompt.negativePrompt,
+      "waist-up, bust portrait, close-up, medium shot, cowboy shot, knees-up crop, cropped legs, cropped feet, missing feet, cut-off shoes, body outside frame, oversized character",
     ]
       .filter(Boolean)
       .join(", "),
@@ -931,6 +984,70 @@ function resolveReferenceImageBase64(input?: string): string | undefined {
   return undefined;
 }
 
+export type FullBodyReferenceRole =
+  | { kind: "neutral-full-body" }
+  | { kind: "expression"; expression: string }
+  | { kind: "identity" };
+
+export function buildFullBodyReferenceContract(roles: FullBodyReferenceRole[]): string {
+  if (roles.length === 0) return "";
+
+  const instructions = roles.map((role, index) => {
+    const imageNumber = index + 1;
+    if (role.kind === "neutral-full-body") {
+      return `Reference image ${imageNumber} is the user-approved neutral full-body design. Preserve its exact clothing, footwear, accessories, body proportions, colors, and art style.`;
+    }
+    if (role.kind === "expression") {
+      return `Reference image ${imageNumber} is the saved portrait for the "${formatSpriteLabelForPrompt(role.expression)}" expression. Match its face, gaze, mouth, eyebrows, and emotional intensity while expanding the result into the required complete full body.`;
+    }
+    return `Reference image ${imageNumber} is an additional identity reference. Preserve recognizable facial and design traits without copying its crop or pose.`;
+  });
+
+  return [
+    "MANDATORY REFERENCE CONTRACT:",
+    ...instructions,
+    "The references are source material, not a requested collage or panel layout. Output one character only, in one uninterrupted head-to-toe sprite.",
+  ].join(" ");
+}
+
+function resolveFullBodyExpressionReferences(
+  body: SpriteGenerateSheetBody,
+  expression: string,
+): { images: string[]; roles: FullBodyReferenceRole[] } {
+  const images: string[] = [];
+  const roles: FullBodyReferenceRole[] = [];
+  const seen = new Set<string>();
+  const addReference = (input: string | undefined, role: FullBodyReferenceRole) => {
+    const resolved = resolveReferenceImageBase64(input);
+    if (!resolved || seen.has(resolved)) return;
+    seen.add(resolved);
+    images.push(resolved);
+    roles.push(role);
+  };
+
+  addReference(body.neutralFullBodyReference, { kind: "neutral-full-body" });
+
+  const normalizedExpression = normalizeSpriteExpression(expression);
+  const matchingExpressionReference = (body.expressionReferences ?? []).find(
+    (entry) => normalizeSpriteExpression(entry.expression ?? "") === normalizedExpression,
+  );
+  addReference(matchingExpressionReference?.image, {
+    kind: "expression",
+    expression: normalizedExpression || expression,
+  });
+
+  const identityReferences = body.referenceImages?.length
+    ? body.referenceImages
+    : body.referenceImage
+      ? [body.referenceImage]
+      : [];
+  for (const reference of identityReferences) {
+    addReference(reference, { kind: "identity" });
+  }
+
+  return { images: images.slice(0, 16), roles: roles.slice(0, 16) };
+}
+
 async function resolveVideoReferenceImage(input?: string): Promise<VideoReferenceImage | null> {
   const base64 = resolveReferenceImageBase64(input);
   if (!base64) return null;
@@ -1037,7 +1154,7 @@ async function buildSpritePromptPlan(
   const expressionList = expressions.join(", ");
   const promptOverridesStorage = createPromptOverridesStorage(app.db);
   const trimmedAppearance = body.appearance?.trim() || "";
-  const nativeTransparentPng = body.nativeTransparentPng === true;
+  const nativeTransparentPng = resolveSpriteNativeTransparency(imgModel, body.nativeTransparentPng === true);
   const matte = selectSpriteChromaMatte(trimmedAppearance);
   const backgroundOptions = {
     matte,
@@ -1111,6 +1228,7 @@ async function buildSpritePromptPlan(
     appearance: trimmedAppearance,
     prompt,
     matte,
+    nativeTransparentPng,
     backgroundContract: spriteBackgroundContract(backgroundOptions),
     sheetWidth,
     sheetHeight,
@@ -1118,6 +1236,56 @@ async function buildSpritePromptPlan(
     cellHeight,
     promptOverrides: readSpritePromptOverrides(body.promptOverrides),
     promptOverridesStorage,
+  };
+}
+
+async function buildIndividualFullBodyExpressionRequest({
+  body,
+  plan,
+  expression,
+  styleProfiles,
+  imageDefaults,
+}: {
+  body: SpriteGenerateSheetBody;
+  plan: SpritePromptPlan;
+  expression: string;
+  styleProfiles: ImageStyleProfileSettings;
+  imageDefaults?: ImageGenerationDefaultsProfile | null;
+}): Promise<{ prompt: SpriteCompiledPrompt; references: string[] }> {
+  const readableExpression = formatSpriteLabelForPrompt(expression);
+  let sourcePrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_FULL_BODY, {
+    appearance: plan.appearance,
+    pose: `relaxed neutral standing pose with a clearly visible ${readableExpression} facial expression`,
+  });
+  sourcePrompt = `${sourcePrompt} The face must match the requested ${readableExpression} expression while the body remains in the same relaxed neutral standing pose.`;
+  sourcePrompt = applySpriteBackgroundInstruction(sourcePrompt, {
+    matte: plan.matte,
+    nativeTransparentPng: plan.nativeTransparentPng,
+    removeBackground: body.noBackground === true,
+  });
+
+  const compiledPrompt = compileSpritePrompt(sourcePrompt, {
+    appearance: plan.appearance,
+    styleProfiles,
+    imageDefaults,
+  });
+  const reviewedPrompt = resolveSpritePromptOverride(
+    plan.promptOverrides.get(spritePromptReviewId("expression", plan.spriteType, expression)),
+    compiledPrompt,
+  );
+  const references = resolveFullBodyExpressionReferences(body, expression);
+  const referenceContract = buildFullBodyReferenceContract(references.roles);
+  const fullBodyPrompt = withFullBodyCompositionContract(
+    withSpriteBackgroundContract(reviewedPrompt.value, plan),
+    "full-body",
+  );
+
+  return {
+    prompt: {
+      ...fullBodyPrompt,
+      prompt: referenceContract ? `${fullBodyPrompt.prompt}\n\n${referenceContract}` : fullBodyPrompt.prompt,
+    },
+    references: references.images,
   };
 }
 
@@ -1135,7 +1303,7 @@ export async function spritesRoutes(app: FastifyInstance) {
    * GET /api/sprites/:characterId
    * List all sprite expressions for a character.
    */
-  app.get<{ Params: { characterId: string } }>("/:characterId", async (req, reply) => {
+  app.get<{ Params: { characterId: string } }>("/:characterId", async (req) => {
     const { characterId } = req.params;
     return listSpriteInfos(characterId);
   });
@@ -1537,6 +1705,43 @@ export async function spritesRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
     }
 
+    if (plan.fullBodyExpressionMode) {
+      const { sheetWidth, sheetHeight } = resolveSpriteSheetCanvas({
+        cols: 1,
+        rows: 1,
+        spriteType: "full-body",
+        model: imgModel,
+      });
+      const items = await Promise.all(
+        plan.expressions.map(async (expression) => {
+          const request = await buildIndividualFullBodyExpressionRequest({
+            body,
+            plan,
+            expression,
+            styleProfiles: imageSettings.styleProfiles,
+            imageDefaults,
+          });
+          const previewSize = resolveImagePromptReviewSize({
+            connection: conn,
+            prompt: request.prompt.prompt,
+            width: sheetWidth,
+            height: sheetHeight,
+            imageDefaults,
+          });
+          return {
+            id: spritePromptReviewId("expression", plan.spriteType, expression),
+            kind: "sprite",
+            title: `Full-body expression: ${expression.replace(/_/g, " ")}`,
+            prompt: request.prompt.prompt,
+            negativePrompt: request.prompt.negativePrompt,
+            width: previewSize.width,
+            height: previewSize.height,
+          };
+        }),
+      );
+      return { items };
+    }
+
     if (plan.generateExpressionsIndividually) {
       const items = await Promise.all(
         plan.expressions.map(async (expression) => {
@@ -1546,7 +1751,7 @@ export async function spritesRoutes(app: FastifyInstance) {
           });
           expressionPrompt = applySpriteBackgroundInstruction(expressionPrompt, {
             matte: plan.matte,
-            nativeTransparentPng: body.nativeTransparentPng === true,
+            nativeTransparentPng: plan.nativeTransparentPng,
             removeBackground: body.noBackground === true,
           });
           const compiledPrompt = compileSpritePrompt(expressionPrompt, {
@@ -1559,14 +1764,21 @@ export async function spritesRoutes(app: FastifyInstance) {
             compiledPrompt,
           );
           const finalPrompt = withSpriteBackgroundContract(reviewedPrompt.value, plan);
+          const previewSize = resolveImagePromptReviewSize({
+            connection: conn,
+            prompt: finalPrompt.prompt,
+            width: 1024,
+            height: 1024,
+            imageDefaults,
+          });
           return {
             id: spritePromptReviewId("expression", plan.spriteType, expression),
             kind: "sprite",
             title: `Expression: ${expression.replace(/_/g, " ")}`,
             prompt: finalPrompt.prompt,
             negativePrompt: finalPrompt.negativePrompt,
-            width: 1024,
-            height: 1024,
+            width: previewSize.width,
+            height: previewSize.height,
           };
         }),
       );
@@ -1584,12 +1796,22 @@ export async function spritesRoutes(app: FastifyInstance) {
       `${plan.cols}x${plan.rows}-${plan.expressions.join(",")}`,
     );
     const reviewedPrompt = resolveSpritePromptOverride(plan.promptOverrides.get(sheetPromptId), compiledPrompt);
-    const finalPrompt = withSpriteBackgroundContract(
-      withSpriteSheetLayoutContract(reviewedPrompt.value, plan, {
-        reviewedOverride: reviewedPrompt.overridden,
-      }),
-      plan,
+    const finalPrompt = withFullBodyCompositionContract(
+      withSpriteBackgroundContract(
+        withSpriteSheetLayoutContract(reviewedPrompt.value, plan, {
+          reviewedOverride: reviewedPrompt.overridden,
+        }),
+        plan,
+      ),
+      plan.spriteType,
     );
+    const previewSize = resolveImagePromptReviewSize({
+      connection: conn,
+      prompt: finalPrompt.prompt,
+      width: plan.sheetWidth,
+      height: plan.sheetHeight,
+      imageDefaults,
+    });
     return {
       items: [
         {
@@ -1601,8 +1823,8 @@ export async function spritesRoutes(app: FastifyInstance) {
               : `Expression sprites: ${plan.cols}x${plan.rows}`,
           prompt: finalPrompt.prompt,
           negativePrompt: finalPrompt.negativePrompt,
-          width: plan.sheetWidth,
-          height: plan.sheetHeight,
+          width: previewSize.width,
+          height: previewSize.height,
         },
       ],
     };
@@ -1755,6 +1977,9 @@ export async function spritesRoutes(app: FastifyInstance) {
                   durationSeconds,
                   aspectRatio: ANIMATED_EXPRESSION_ASPECT_RATIO,
                   resolution: resolved.resolution,
+                  comfyWorkflow: resolved.comfyWorkflow,
+                  comfyLoras: resolved.comfyLoras,
+                  fps: resolved.comfyFps,
                   referenceImage,
                   publicReferenceUpload: resolved.publicReferenceUpload,
                   fallback: videoFallback,
@@ -1839,8 +2064,8 @@ export async function spritesRoutes(app: FastifyInstance) {
     const imgServiceHint = conn.imageService || imgSource;
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
-    const nativeTransparentPng = body.nativeTransparentPng === true;
-    const shouldCleanBackground = body.noBackground === true || nativeTransparentPng;
+    const nativeTransparentPng = resolveSpriteNativeTransparency(imgModel, body.nativeTransparentPng === true);
+    const shouldCleanBackground = body.noBackground === true || body.nativeTransparentPng === true;
     const plan = await buildSpritePromptPlan(app, body, imgModel);
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
@@ -1859,11 +2084,14 @@ export async function spritesRoutes(app: FastifyInstance) {
       plan.promptOverrides.get(sheetPromptId),
       compiledSheetPrompt,
     );
-    const sheetPrompt = withSpriteBackgroundContract(
-      withSpriteSheetLayoutContract(reviewedSheetPrompt.value, plan, {
-        reviewedOverride: reviewedSheetPrompt.overridden,
-      }),
-      plan,
+    const sheetPrompt = withFullBodyCompositionContract(
+      withSpriteBackgroundContract(
+        withSpriteSheetLayoutContract(reviewedSheetPrompt.value, plan, {
+          reviewedOverride: reviewedSheetPrompt.overridden,
+        }),
+        plan,
+      ),
+      plan.spriteType,
     );
 
     // Parse reference images to raw base64 (supports data URL, raw base64, or local avatar URL)
@@ -1878,6 +2106,93 @@ export async function spritesRoutes(app: FastifyInstance) {
     try {
       return await withSpriteGenerationDeadline(
         (async () => {
+          if (plan.fullBodyExpressionMode) {
+            const cells: Array<{ expression: string; base64: string }> = [];
+            const failedExpressions: Array<{ expression: string; error: string }> = [];
+            const { sheetWidth: targetWidth, sheetHeight: targetHeight } = resolveSpriteSheetCanvas({
+              cols: 1,
+              rows: 1,
+              spriteType: "full-body",
+              model: imgModel,
+            });
+
+            for (const expression of plan.expressions) {
+              try {
+                const request = await buildIndividualFullBodyExpressionRequest({
+                  body,
+                  plan,
+                  expression,
+                  styleProfiles: imageSettings.styleProfiles,
+                  imageDefaults,
+                });
+                const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
+                  prompt: request.prompt.prompt,
+                  negativePrompt: request.prompt.negativePrompt || undefined,
+                  model: imgModel,
+                  width: targetWidth,
+                  height: targetHeight,
+                  referenceImage: request.references[0],
+                  referenceImages: request.references.length > 1 ? request.references : undefined,
+                  transparentBackground: nativeTransparentPng,
+                  imageEndpointId: conn.imageEndpointId || undefined,
+                  comfyWorkflow: conn.comfyuiWorkflow || undefined,
+                  imageDefaults,
+                  fallback: imageFallback,
+                });
+
+                let spriteBuffer: Buffer = Buffer.from(imageResult.base64, "base64");
+                const sharp = await getSharp();
+                const metadata = await sharp(spriteBuffer).metadata();
+                if (metadata.width !== targetWidth || metadata.height !== targetHeight) {
+                  spriteBuffer = await sharp(spriteBuffer)
+                    .resize(targetWidth, targetHeight, {
+                      fit: "contain",
+                      background: nativeTransparentPng
+                        ? { r: 0, g: 0, b: 0, alpha: 0 }
+                        : shouldCleanBackground
+                          ? { r: plan.matte.rgb.red, g: plan.matte.rgb.green, b: plan.matte.rgb.blue, alpha: 1 }
+                          : { r: 255, g: 255, b: 255 },
+                    })
+                    .png()
+                    .toBuffer();
+                }
+
+                if (shouldCleanBackground) {
+                  try {
+                    spriteBuffer = (await removeSpriteBackgroundPng(spriteBuffer, cleanupStrength)).buffer;
+                  } catch (bgErr) {
+                    logger.warn(
+                      bgErr,
+                      'Full-body expression background cleanup failed for "%s"; continuing with the generated image',
+                      expression,
+                    );
+                  }
+                }
+
+                cells.push({ expression, base64: spriteBuffer.toString("base64") });
+              } catch (expressionErr: any) {
+                const message = String(expressionErr?.message || "Generation failed")
+                  .replace(/<[^>]*>/g, "")
+                  .slice(0, 300);
+                logger.warn(expressionErr, 'Full-body expression sprite "%s" generation failed; skipping', expression);
+                failedExpressions.push({ expression, error: message });
+              }
+            }
+
+            if (cells.length === 0) {
+              const allFailedError = new Error("All full-body expression generations failed");
+              (allFailedError as Error & { failedExpressions?: typeof failedExpressions }).failedExpressions =
+                failedExpressions;
+              throw allFailedError;
+            }
+
+            return {
+              sheetBase64: "",
+              cells,
+              ...(failedExpressions.length > 0 ? { failedExpressions } : {}),
+            };
+          }
+
           if (plan.generateExpressionsIndividually) {
             const cells: Array<{ expression: string; base64: string }> = [];
             const failedExpressions: Array<{ expression: string; error: string }> = [];

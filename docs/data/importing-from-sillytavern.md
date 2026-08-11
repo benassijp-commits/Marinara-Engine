@@ -94,7 +94,7 @@ If your server sets `IMPORT_ALLOWED_ROOTS`, Marinara rejects typed paths outside
 
 ## What does not transfer
 
-The folder wizard only scans the seven categories listed above. Other SillyTavern data, such as global app settings, quick replies, and extensions, is not read and is not imported.
+The folder wizard only scans the seven categories listed above. Other SillyTavern data, such as global app settings and quick replies, is not read and is not imported.
 
 SillyTavern's built-in presets are left unchecked by default, so they do not come over unless you check them yourself.
 

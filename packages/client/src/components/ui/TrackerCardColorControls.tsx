@@ -7,24 +7,23 @@ import type {
 } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
 import {
-  cleanTrackerCardColorConfig,
   getTrackerCardFinish,
   getTrackerCardPaintEnabled,
   getTrackerCardPaintOpacity,
   getTrackerCardPortraitStageBackground,
   normalizeTrackerCardColorMode,
-  parseTrackerCardColorConfig,
   type TrackerCardFinish,
   type TrackerCardPaintColors,
   type TrackerCardPaintEnabled,
   type TrackerCardPaintOpacity,
 } from "../../lib/tracker-card-colors";
 import { ColorPicker } from "./ColorPicker";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 export type TrackerCardColorEntityLabel = "Character" | "Persona";
 
 interface TrackerCardColorControlsProps {
-  value: TrackerCardColorConfig | string | null | undefined;
+  value: TrackerCardColorConfig;
   onChange: (value: TrackerCardColorConfig) => void;
   chatColors: TrackerCardPaintColors;
   entityLabel: TrackerCardColorEntityLabel;
@@ -63,17 +62,17 @@ const FINISH_PRESETS: Array<{
   {
     label: "Soft",
     title: "Brighter material with gentle glow and mild separation",
-    finish: { tintIntensity: 100, materialBrightness: 54, glowIntensity: 24, contrastIntensity: 58 },
+    finish: { materialBrightness: 54, glowIntensity: 24, contrastIntensity: 58 },
   },
   {
     label: "Crisp",
     title: "Neutral material with clearer edges and medium glow",
-    finish: { tintIntensity: 100, materialBrightness: 50, glowIntensity: 46, contrastIntensity: 64 },
+    finish: { materialBrightness: 50, glowIntensity: 46, contrastIntensity: 64 },
   },
   {
     label: "Vivid",
     title: "Darker material with strong glow and high contrast",
-    finish: { tintIntensity: 100, materialBrightness: 44, glowIntensity: 82, contrastIntensity: 86 },
+    finish: { materialBrightness: 44, glowIntensity: 82, contrastIntensity: 86 },
   },
 ];
 
@@ -178,6 +177,7 @@ function ChannelToggle({
   label: string;
   onChange: (checked: boolean) => void;
 }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <label
       className={cn(
@@ -185,14 +185,14 @@ function ChannelToggle({
         checked && "bg-[var(--primary)]/22 ring-[var(--primary)]/40",
         disabled && "cursor-not-allowed opacity-55",
       )}
-      title={`${checked ? "Disable" : "Enable"} ${label}`}
+      title={localizeUi("ui.ui.modal.value1Value2", { value1: checked ?localizeUi("ui.panels.extensionsettings.disable") :localizeUi("ui.presets.sectionstab.enable"), value2: label })}
     >
       <input
         type="checkbox"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        aria-label={`${label} channel`}
+        aria-label={localizeUi("ui.ui.channeltoggle.value1Channel", { value1: label })}
         className="peer sr-only"
       />
       <span className="h-3 w-3 rounded-full bg-[var(--muted-foreground)] transition-transform peer-checked:translate-x-3 peer-checked:bg-[var(--primary)] peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--primary)]/60 peer-disabled:cursor-not-allowed" />
@@ -207,7 +207,8 @@ export function TrackerCardColorControls({
   entityLabel,
   disabled = false,
 }: TrackerCardColorControlsProps) {
-  const config = typeof value === "string" ? parseTrackerCardColorConfig(value) : cleanTrackerCardColorConfig(value);
+  const { t: localizeUi } = useUiTranslation();
+  const config = value;
   const mode = normalizeTrackerCardColorMode(config.mode);
   const finish = getTrackerCardFinish(config, mode);
   const paintEnabled = getTrackerCardPaintEnabled(config);
@@ -222,41 +223,39 @@ export function TrackerCardColorControls({
   const paintOpacitySummary = getPaintOpacitySummary(paintOpacity, paintEnabled);
 
   const updateMode = (nextMode: TrackerCardColorMode) => {
-    onChange(
-      cleanTrackerCardColorConfig({
-        ...config,
-        mode: nextMode,
-        ...(nextMode === "custom" && {
-          nameColor: config.nameColor || chatColors.nameColor || "",
-          dialogueColor: config.dialogueColor || chatColors.dialogueColor || "",
-          boxColor: config.boxColor || chatColors.boxColor || "",
-        }),
+    onChange({
+      ...config,
+      mode: nextMode,
+      ...(nextMode === "custom" && {
+        nameColor: config.nameColor || chatColors.nameColor || "",
+        dialogueColor: config.dialogueColor || chatColors.dialogueColor || "",
+        boxColor: config.boxColor || chatColors.boxColor || "",
       }),
-    );
+    });
   };
 
   const updateCustomColor = (key: "nameColor" | "dialogueColor" | "boxColor", color: string) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, mode: "custom", [key]: color }));
+    onChange({ ...config, mode: "custom", [key]: color });
   };
 
   const updateFinish = (key: "materialBrightness" | "glowIntensity" | "contrastIntensity", nextValue: number) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, [key]: nextValue }));
+    onChange({ ...config, [key]: nextValue });
   };
 
   const updateFinishPreset = (nextFinish: TrackerCardFinish) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, ...nextFinish }));
+    onChange({ ...config, ...nextFinish });
   };
 
   const updatePaintOpacity = (key: keyof TrackerCardPaintOpacity, nextValue: number) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, [key]: nextValue }));
+    onChange({ ...config, [key]: nextValue });
   };
 
   const updatePaintEnabled = (key: keyof TrackerCardPaintEnabled, enabled: boolean) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, [key]: enabled }));
+    onChange({ ...config, [key]: enabled });
   };
 
   const updatePortraitStageBackground = (nextBackground: TrackerCardPortraitStageBackground) => {
-    onChange(cleanTrackerCardColorConfig({ ...config, portraitStageBackground: nextBackground }));
+    onChange({ ...config, portraitStageBackground: nextBackground });
   };
 
   return (
@@ -265,10 +264,10 @@ export function TrackerCardColorControls({
         type="button"
         onClick={() => setCollapsed((open) => !open)}
         aria-expanded={!collapsed}
-        title={collapsed ? "Expand tracker card colors" : "Collapse tracker card colors"}
+        title={collapsed ?localizeUi("ui.ui.trackercardcolorcontrols.expandTrackerCardColors") :localizeUi("ui.ui.trackercardcolorcontrols.collapseTrackerCardColors")}
         className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1 rounded-lg px-1 py-0.5 text-left transition-colors hover:bg-[var(--accent)]/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--primary)]/60"
       >
-        <h4 className="min-w-0 truncate text-xs font-semibold text-[var(--foreground)]">{entityLabel} card</h4>
+        <h4 className="min-w-0 truncate text-xs font-semibold text-[var(--foreground)]">{entityLabel} {localizeUi("ui.characters.characterlibraryview.card")}</h4>
         <div className="flex shrink-0 items-center gap-1.5" aria-hidden="true">
           <span
             className={cn("h-4 w-4 rounded ring-1 ring-[var(--border)]", !paintEnabled.displayEnabled && "opacity-35")}
@@ -291,7 +290,7 @@ export function TrackerCardColorControls({
           />
         </div>
         <p className="col-span-2 text-[0.625rem] text-[var(--muted-foreground)]">
-          {modeLabel}, {portraitStageBackgroundLabel.toLowerCase()} stage, finish M/G/C {finishSummary}.
+          {modeLabel}, {portraitStageBackgroundLabel.toLowerCase()} {localizeUi("ui.ui.trackercardcolorcontrols.stageFinishMGC")} {finishSummary}.
         </p>
       </button>
 
@@ -299,9 +298,7 @@ export function TrackerCardColorControls({
         <div className="mt-2 space-y-2">
           <div className="grid gap-1.5 rounded-lg bg-[var(--secondary)]/65 p-1.5 ring-1 ring-[var(--border)]/40">
             <div className="grid min-w-0 gap-1">
-              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">
-                Source
-              </span>
+              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">{localizeUi("ui.noodle.wizard.source")}</span>
               <div className="grid grid-cols-3 gap-0.5 rounded-md bg-[var(--background)]/35 p-0.5">
                 {MODE_OPTIONS.map((option) => {
                   const Icon = option.icon;
@@ -328,9 +325,7 @@ export function TrackerCardColorControls({
             </div>
 
             <div className="grid min-w-0 gap-1">
-              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">
-                Stage
-              </span>
+              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">{localizeUi("ui.ui.trackercardcolorcontrols.stage")}</span>
               <div className="grid grid-cols-4 gap-0.5 rounded-md bg-[var(--background)]/35 p-0.5">
                 {PORTRAIT_STAGE_BACKGROUND_OPTIONS.map((option) => {
                   const Icon = option.icon;
@@ -361,9 +356,7 @@ export function TrackerCardColorControls({
 
           <div className="grid gap-1.5 rounded-lg bg-[var(--secondary)]/65 p-1.5 ring-1 ring-[var(--border)]/40">
             <div className="grid min-w-0 gap-1">
-              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">
-                Finish
-              </span>
+              <span className="px-0.5 text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">{localizeUi("ui.ui.trackercardcolorcontrols.finish")}</span>
               <div className="grid grid-cols-3 gap-0.5 rounded-md bg-[var(--background)]/35 p-0.5">
                 {FINISH_PRESETS.map((preset) => {
                   const selected =
@@ -406,7 +399,7 @@ export function TrackerCardColorControls({
                     </span>
                     <input
                       type="range"
-                      aria-label={`${option.label}: ${option.title}`}
+                      aria-label={localizeUi("ui.ui.customemojitagbutton.value1Value2", { value1: option.label, value2: option.title })}
                       title={option.title}
                       min={0}
                       max={100}
@@ -427,9 +420,7 @@ export function TrackerCardColorControls({
           {mode === "chat" && (
             <div className="grid gap-1.5 rounded-lg bg-[var(--secondary)]/55 p-1.5 ring-1 ring-[var(--border)]/35">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">
-                  Source strength
-                </span>
+                <span className="text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">{localizeUi("ui.ui.trackercardcolorcontrols.sourceStrength")}</span>
                 <span className="font-mono text-[0.5625rem] tabular-nums text-[var(--muted-foreground)]">
                   {paintOpacitySummary}
                 </span>
@@ -444,7 +435,7 @@ export function TrackerCardColorControls({
                     <div
                       key={option.key}
                       className="grid min-w-0 grid-cols-[minmax(5rem,auto)_minmax(0,1fr)_2.1rem] items-center gap-1 rounded-md bg-[var(--background)]/18 px-1 py-0.5"
-                      title={channelEnabled ? option.title : `${option.label} channel is off.`}
+                      title={channelEnabled ? option.title :localizeUi("ui.ui.trackercardcolorcontrols.value1ChannelIsOff", { value1: option.label })}
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
                         <span className="min-w-0 truncate text-[0.5625rem] text-[var(--muted-foreground)]">
@@ -459,7 +450,7 @@ export function TrackerCardColorControls({
                       </span>
                       <input
                         type="range"
-                        aria-label={`${option.label}: ${option.title}`}
+                        aria-label={localizeUi("ui.ui.customemojitagbutton.value1Value2", { value1: option.label, value2: option.title })}
                         title={option.title}
                         min={0}
                         max={100}
@@ -481,9 +472,7 @@ export function TrackerCardColorControls({
           {mode === "custom" && (
             <div className="rounded-lg bg-[var(--secondary)]/55 p-1.5 ring-1 ring-[var(--border)]/35">
               <div className="mb-1.5 flex items-center justify-between gap-2">
-                <span className="text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">
-                  Custom paint
-                </span>
+                <span className="text-[0.5625rem] font-semibold uppercase text-[var(--muted-foreground)]">{localizeUi("ui.ui.trackercardcolorcontrols.customPaint")}</span>
                 <span className="font-mono text-[0.5625rem] tabular-nums text-[var(--muted-foreground)]">
                   {paintOpacitySummary}
                 </span>
@@ -522,14 +511,14 @@ export function TrackerCardColorControls({
                       />
                       <label className="grid min-w-0 gap-1">
                         <span className="flex min-w-0 items-center justify-between gap-2 text-[0.5625rem] text-[var(--muted-foreground)]">
-                          <span className="min-w-0 truncate">{option.label} strength</span>
+                          <span className="min-w-0 truncate">{option.label} {localizeUi("ui.ui.trackercardcolorcontrols.strength")}</span>
                           <span className="shrink-0 font-mono tabular-nums">
                             {getChannelValueLabel(channelEnabled, hasCustomPaint, value)}
                           </span>
                         </span>
                         <input
                           type="range"
-                          aria-label={`${option.label}: ${option.title}`}
+                          aria-label={localizeUi("ui.ui.customemojitagbutton.value1Value2", { value1: option.label, value2: option.title })}
                           title={option.title}
                           min={0}
                           max={100}

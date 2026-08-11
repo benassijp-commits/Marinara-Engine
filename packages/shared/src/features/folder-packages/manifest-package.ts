@@ -6,7 +6,6 @@ export type MarinaraFolderKind =
   | "marinara.agent-folder"
   | "marinara.function-folder"
   | "marinara.theme-folder"
-  | "marinara.extension-folder"
   | "marinara.preset-folder";
 
 export interface MarinaraItemManifest<T = unknown> {
@@ -28,7 +27,6 @@ export interface MarinaraFolderPackage<T = unknown> {
   agents?: MarinaraFolderEntry<T>[];
   functions?: MarinaraFolderEntry<T>[];
   themes?: MarinaraFolderEntry<T>[];
-  extensions?: MarinaraFolderEntry<T>[];
   presets?: MarinaraFolderEntry<T>[];
 }
 

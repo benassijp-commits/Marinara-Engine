@@ -95,10 +95,18 @@ function logAgentDebugToBrowserConsole(entry: AgentDebugEntry) {
   console.groupEnd();
 }
 
+/**
+ * Stable empties for selectors that hide another chat's failures. A selector that returns a
+ * fresh `[]` is a new snapshot on every read, and zustand v5 has no built-in equality check —
+ * React then re-renders forever ("Maximum update depth exceeded", minified error #185) as soon
+ * as anything else updates the store often, e.g. a background chat streaming.
+ */
+export const EMPTY_AGENT_TYPES: string[] = [];
+export const EMPTY_AGENT_FAILURES: AgentFailure[] = [];
+
 interface AgentState {
   activeAgents: string[];
   lastResults: Map<string, AgentResult>;
-  debugLog: AgentDebugEntry[];
   isProcessing: boolean;
   /** Chat IDs with agent work currently in flight. Keeps active-chat UI from flashing for background runs. */
   processingChatIds: string[];
@@ -153,7 +161,6 @@ interface AgentState {
   setProcessing: (processing: boolean, chatId?: string | null) => void;
   addResult: (agentId: string, result: AgentResult) => void;
   addDebugEntry: (entry: Omit<AgentDebugEntry, "timestamp"> & { timestamp?: number }) => void;
-  clearDebugLog: () => void;
   setFailedAgentTypes: (types: string[], chatId?: string | null) => void;
   setFailedAgentFailures: (failures: AgentFailure[], chatId?: string | null) => void;
   clearFailedAgentTypes: (chatId?: string | null) => void;
@@ -195,7 +202,6 @@ type AgentDataState = Pick<
   AgentState,
   | "activeAgents"
   | "lastResults"
-  | "debugLog"
   | "isProcessing"
   | "processingChatIds"
   | "failedAgentTypes"
@@ -226,7 +232,6 @@ function createInitialAgentDataState(): AgentDataState {
   return {
     activeAgents: [],
     lastResults: new Map(),
-    debugLog: [],
     isProcessing: false,
     processingChatIds: [],
     failedAgentTypes: [],
@@ -294,12 +299,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   addDebugEntry: (entry) => {
     const stamped = { ...entry, timestamp: entry.timestamp ?? Date.now() };
     logAgentDebugToBrowserConsole(stamped);
-    set((s) => ({
-      debugLog: [...s.debugLog, stamped].slice(-100),
-    }));
   },
-
-  clearDebugLog: () => set({ debugLog: [] }),
 
   setFailedAgentTypes: (types, chatId = null) =>
     set({
@@ -310,11 +310,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         agentName: agentType,
         error: null,
         reasonLabel: null,
+        retryTarget: null,
       })),
     }),
   setFailedAgentFailures: (failures, chatId = null) =>
     set({
-      failedAgentTypes: failures.map((failure) => failure.agentType),
+      failedAgentTypes: Array.from(new Set(failures.map((failure) => failure.agentType))),
       failedAgentChatId: chatId,
       failedAgentFailures: failures,
     }),

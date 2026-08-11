@@ -47,7 +47,7 @@ If you have many sprites in a folder, you can import them all in one step.
 2. In the **Add Sprite** box, click **Upload Folder**.
 3. Choose the folder that holds your images.
 
-Each file name (without the file extension) becomes the sprite name. A progress line reads "Uploading X/Y sprites" while it runs.
+Each file name (without its suffix) becomes the sprite name. A progress line reads "Uploading X/Y sprites" while it runs.
 
 To make several versions of the same expression, share a name before an underscore. For example, `happy_01.png` and `happy_blush.png` both count as variants of happy.
 

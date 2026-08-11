@@ -1,11 +1,19 @@
 import type { CharacterStat } from "@marinara-engine/shared";
 import {
-  FEATURED_CHARACTER_PORTRAIT_STAGE_REM,
   PERSONA_ADD_STAT_DENSITY_HEIGHT_REM,
   PERSONA_STAT_DENSITY_HEIGHT_REM,
-  TRACKER_PROFILE_PORTRAIT_MEDIA_STAGE_REM,
 } from "./tracker-panel.constants";
-import type { TrackerStatDensity, TrackerStatDisplayScale } from "../tracker-panel.types";
+import type { TrackerStatDensity } from "../tracker-panel.types";
+import type { TrackerStatDisplayMode } from "../../../stores/ui.store";
+
+export function shouldRenderStatGauges(
+  displayMode: TrackerStatDisplayMode,
+  addMode: boolean,
+  deleteMode: boolean,
+  lockMode: boolean,
+) {
+  return displayMode === "gauges" && !addMode && !deleteMode && !lockMode;
+}
 
 export function trackerStatStackHeight(statCount: number, density: TrackerStatDensity, includeAdd: boolean) {
   return (
@@ -14,38 +22,14 @@ export function trackerStatStackHeight(statCount: number, density: TrackerStatDe
   );
 }
 
-export function personaStatStackHeight(statCount: number, density: TrackerStatDensity, includeAdd: boolean) {
-  return trackerStatStackHeight(statCount, density, includeAdd);
-}
-
-export function getPersonaStatDensity(
+export function getTrackerStatDensity(
   statCount: number,
   includeAdd: boolean,
-  allowance = TRACKER_PROFILE_PORTRAIT_MEDIA_STAGE_REM,
-): TrackerStatDensity {
-  if (personaStatStackHeight(statCount, "normal", includeAdd) <= allowance) return "normal";
-  if (personaStatStackHeight(statCount, "compact", includeAdd) <= allowance) return "compact";
-  return "tight";
-}
-
-export function getFeaturedCharacterStatDensity(
-  statCount: number,
-  includeAdd: boolean,
-  allowance = FEATURED_CHARACTER_PORTRAIT_STAGE_REM,
+  allowance: number,
 ): TrackerStatDensity {
   if (trackerStatStackHeight(statCount, "normal", includeAdd) <= allowance) return "normal";
   if (trackerStatStackHeight(statCount, "compact", includeAdd) <= allowance) return "compact";
   return "tight";
-}
-
-export function getTrackerStatDisplayScale(
-  statCount: number,
-  density: TrackerStatDensity,
-  fillAvailable: boolean,
-  includeAdd: boolean,
-): TrackerStatDisplayScale {
-  if (!fillAvailable || density !== "normal") return "standard";
-  return statCount + (includeAdd ? 1 : 0) <= 4 ? "spacious" : "roomy";
 }
 
 export function coerceStatNumber(value: unknown, fallback = 0) {

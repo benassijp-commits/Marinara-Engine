@@ -25,7 +25,7 @@ You can add a custom font by dropping a font file into a folder on the server. T
 4. Open the **Font** dropdown. Your font now appears in the list.
 5. Select it.
 
-Marinara reads these font file types: `.ttf`, `.otf`, `.woff`, and `.woff2`. Files with any other extension are ignored.
+Marinara reads these font file types: `.ttf`, `.otf`, `.woff`, and `.woff2`. Files with any other suffix are ignored.
 
 Marinara builds a display name from the file name. For example, a file named `OpenSans-Bold.ttf` shows up as "Open Sans". So name your files in a clear way if you want a tidy list.
 

@@ -310,7 +310,7 @@ export class OpenAIProvider extends BaseLLMProvider {
   }
 
   private shouldSendTopK(): boolean {
-    return this.apiKey === "local-sidecar";
+    return this.apiKey === "local-sidecar" || this.isGenericCustomProvider();
   }
 
   /**
@@ -679,16 +679,61 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private stripUnsupportedSamplerParameters(body: Record<string, unknown>, options: ChatOptions): void {
     if (!this.isNoTemperatureModel(options.model, options.reasoningEffort)) return;
-    delete body.temperature;
-    delete body.top_p;
-    delete body.top_k;
-    delete body.min_p;
-    delete body.frequency_penalty;
-    delete body.presence_penalty;
+    const explicitCustomParameters = this.isGenericCustomProvider() ? options.customParameters : undefined;
+    const removeUnlessExplicit = (key: string) => {
+      if (!explicitCustomParameters || !Object.prototype.hasOwnProperty.call(explicitCustomParameters, key)) {
+        delete body[key];
+      }
+    };
+    removeUnlessExplicit("temperature");
+    removeUnlessExplicit("top_p");
+    removeUnlessExplicit("top_k");
+    removeUnlessExplicit("min_p");
+    removeUnlessExplicit("frequency_penalty");
+    removeUnlessExplicit("presence_penalty");
   }
 
   private hasActiveReasoningEffort(reasoningEffort?: string | null): boolean {
     return !!reasoningEffort && reasoningEffort !== "none";
+  }
+
+  private hasExplicitReasoningDisable(reasoningEffort?: string | null): boolean {
+    return reasoningEffort === "none";
+  }
+
+  private supportsOpenAIReasoningDisable(model: string): boolean {
+    const normalized = model.toLowerCase().replace(/^openai\//, "");
+    if (normalized.includes("-pro")) return false;
+    const version = normalized.match(/^gpt-5\.(\d+)/)?.[1];
+    return version !== undefined && Number(version) >= 1;
+  }
+
+  private supportsXAIReasoningDisable(model: string): boolean {
+    return model
+      .toLowerCase()
+      .replace(/^x-ai\//, "")
+      .startsWith("grok-4.3");
+  }
+
+  private supportsOpenRouterReasoningDisable(model: string): boolean {
+    const normalized = model.toLowerCase();
+    return (
+      this.supportsOpenAIReasoningDisable(normalized) ||
+      this.supportsXAIReasoningDisable(normalized) ||
+      normalized.startsWith("z-ai/glm-") ||
+      normalized.startsWith("thudm/glm-") ||
+      /^google\/gemini-2\.5-flash(?:-lite)?(?:$|-preview|-latest|:)/u.test(normalized) ||
+      /^anthropic\/claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(normalized)
+    );
+  }
+
+  private requestReasoningLogValue(body: Record<string, unknown>): string {
+    if (typeof body.reasoning_effort === "string") return body.reasoning_effort;
+    if (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning)) return "none";
+    const reasoning = body.reasoning as Record<string, unknown>;
+    if (typeof reasoning.effort === "string") return reasoning.effort;
+    if (reasoning.enabled === true) return "enabled";
+    return Object.keys(reasoning).length > 0 ? "configured" : "none";
   }
 
   private isOpenRouterEndpoint(): boolean {
@@ -724,7 +769,9 @@ export class OpenAIProvider extends BaseLLMProvider {
   private applyChatCompletionsReasoning(body: Record<string, unknown>, options: ChatOptions): void {
     if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
       const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
-      if (effort) body.reasoning_effort = effort;
+      if (effort && (effort !== "none" || this.supportsXAIReasoningDisable(options.model))) {
+        body.reasoning_effort = effort;
+      }
       return;
     }
 
@@ -743,11 +790,54 @@ export class OpenAIProvider extends BaseLLMProvider {
     )
       return;
 
+    if (this.providerKind === "local-sidecar" && this.hasExplicitReasoningDisable(options.reasoningEffort)) {
+      const templateOptions =
+        body.chat_template_kwargs &&
+        typeof body.chat_template_kwargs === "object" &&
+        !Array.isArray(body.chat_template_kwargs)
+          ? (body.chat_template_kwargs as Record<string, unknown>)
+          : {};
+      body.reasoning_format = "none";
+      body.chat_template_kwargs = { ...templateOptions, enable_thinking: false };
+      return;
+    }
+
+    if (this.isGenericCustomProvider()) {
+      if (this.hasExplicitReasoningDisable(options.reasoningEffort)) {
+        body.reasoning_effort = "none";
+      } else if (this.shouldSendReasoningEffort(options.model, options.reasoningEffort)) {
+        body.reasoning_effort = options.reasoningEffort;
+      }
+      return;
+    }
+
     if (
-      this.supportsOpenRouterUnifiedReasoning(options.model) &&
-      this.hasActiveReasoningEffort(options.reasoningEffort)
+      this.isOpenRouterEndpoint() &&
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenRouterReasoningDisable(options.model)
     ) {
-      body.reasoning = { effort: options.reasoningEffort };
+      const existingReasoning =
+        body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+          ? (body.reasoning as Record<string, unknown>)
+          : {};
+      body.reasoning = { ...existingReasoning, effort: "none" };
+      return;
+    }
+
+    if (this.isOpenRouterEndpoint() && this.hasActiveReasoningEffort(options.reasoningEffort)) {
+      const existingReasoning =
+        body.reasoning && typeof body.reasoning === "object" && !Array.isArray(body.reasoning)
+          ? (body.reasoning as Record<string, unknown>)
+          : {};
+      body.reasoning = { ...existingReasoning, effort: options.reasoningEffort };
+      return;
+    }
+
+    if (
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenAIReasoningDisable(options.model)
+    ) {
+      body.reasoning_effort = "none";
       return;
     }
 
@@ -766,7 +856,9 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     if (this.isNativeXAIConfigurableReasoningModel(options.model)) {
       const effort = this.resolveXAIReasoningEffort(options.reasoningEffort);
-      if (effort) body.reasoning = { effort };
+      if (effort && (effort !== "none" || this.supportsXAIReasoningDisable(options.model))) {
+        body.reasoning = { effort };
+      }
       return;
     }
 
@@ -791,6 +883,12 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     const reasoning: Record<string, unknown> = {};
     if (
+      this.hasExplicitReasoningDisable(options.reasoningEffort) &&
+      this.supportsOpenAIReasoningDisable(options.model)
+    ) {
+      reasoning.effort = "none";
+    }
+    if (
       this.shouldSendParameter(options, "reasoningEffort") &&
       this.hasActiveReasoningEffort(options.reasoningEffort)
     ) {
@@ -803,7 +901,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (isOpenAIGpt56Model(normalizedModel) && options.excludePastReasoning !== undefined) {
       reasoning.context = options.excludePastReasoning ? "current_turn" : "all_turns";
     }
-    if (options.enableThinking) {
+    if (!this.hasExplicitReasoningDisable(options.reasoningEffort)) {
       reasoning.summary = "auto";
     }
     if (Object.keys(reasoning).length > 0) {
@@ -846,9 +944,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private supportsGpt5Verbosity(model: string): boolean {
     if (this.isOpenAIChatGPTProvider()) return false;
-    return (
-      (!this.isGenericCustomProvider() || this.isOpenAIGpt55Or56Model(model)) && model.toLowerCase().startsWith("gpt-5")
-    );
+    return this.isGenericCustomProvider() || model.toLowerCase().startsWith("gpt-5");
   }
 
   private applyResponsesTextOptions(body: Record<string, unknown>, options: ChatOptions): void {
@@ -1006,7 +1102,10 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     if (!suppressModelParameters) {
       if (this.shouldSendStopSequences(options.model) && options.stop?.length) body.stop = options.stop;
-      if (options.tools?.length && !options.forceTextualToolCalls) body.tools = options.tools;
+      if (options.tools?.length && !options.forceTextualToolCalls) {
+        body.tools = options.tools;
+        body.tool_choice = options.toolChoice ?? "auto";
+      }
       if (effectiveStream) body.stream_options = { include_usage: true };
 
       // o-series models never support temperature/topP; GPT-5.x only with effort=none
@@ -1052,10 +1151,6 @@ export class OpenAIProvider extends BaseLLMProvider {
         body.verbosity = options.verbosity;
       }
 
-      if (this.shouldSendParameter(options, "reasoningEffort")) {
-        this.applyChatCompletionsReasoning(body, options);
-      }
-
       // OpenRouter provider routing preference
       const openrouterProvider = this.resolveOpenrouterProvider(options.openrouterProvider);
       if (this.shouldApplyOpenRouterProviderOverride(openrouterProvider)) {
@@ -1071,15 +1166,22 @@ export class OpenAIProvider extends BaseLLMProvider {
       }
     }
 
+    if (
+      this.shouldSendParameter(options, "reasoningEffort") &&
+      (!suppressModelParameters || this.isOpenRouterEndpoint())
+    ) {
+      this.applyChatCompletionsReasoning(body, options);
+    }
+
     this.applyOpenRouterServiceTier(body, options);
     this.applyCustomParameters(body, options);
     this.stripUnsupportedSamplerParameters(body, options);
 
     logger.debug(
-      "[OpenAI chat()] stream=%s model=%s reasoning_effort=%s enableThinking=%s verbosity=%s max_completion_tokens=%s max_tokens=%s temperature=%s top_p=%s tools=%s",
+      "[OpenAI chat()] stream=%s model=%s reasoning=%s enableThinking=%s verbosity=%s max_completion_tokens=%s max_tokens=%s temperature=%s top_p=%s tools=%s",
       body.stream,
       body.model,
-      body.reasoning_effort ?? "none",
+      this.requestReasoningLogValue(body),
       !!options.enableThinking,
       body.verbosity ?? "default",
       body.max_completion_tokens ?? "n/a",
@@ -1281,7 +1383,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       (!suppressModelParameters || this.allowsToolCalling)
     ) {
       body.tools = options.tools;
-      body.tool_choice = "auto";
+      body.tool_choice = options.toolChoice ?? "auto";
     }
 
     if (!suppressModelParameters) {
@@ -1331,10 +1433,6 @@ export class OpenAIProvider extends BaseLLMProvider {
         body.verbosity = options.verbosity;
       }
 
-      if (this.shouldSendParameter(options, "reasoningEffort")) {
-        this.applyChatCompletionsReasoning(body, options);
-      }
-
       // OpenRouter provider routing preference
       const openrouterProvider = this.resolveOpenrouterProvider(options.openrouterProvider);
       if (this.shouldApplyOpenRouterProviderOverride(openrouterProvider)) {
@@ -1350,11 +1448,26 @@ export class OpenAIProvider extends BaseLLMProvider {
       }
     }
 
+    if (
+      this.shouldSendParameter(options, "reasoningEffort") &&
+      (!suppressModelParameters || this.isOpenRouterEndpoint())
+    ) {
+      this.applyChatCompletionsReasoning(body, options);
+    }
+
     this.applyOpenRouterServiceTier(body, options);
     this.applyCustomParameters(body, options);
     this.stripUnsupportedSamplerParameters(body, options);
 
-    logger.debug("[OpenAI chatComplete()] stream=%s model=%s onToken=%s", useStream, body.model, !!options.onToken);
+    logger.debug(
+      "[OpenAI chatComplete()] stream=%s model=%s reasoning=%s enableThinking=%s verbosity=%s onToken=%s",
+      useStream,
+      body.model,
+      this.requestReasoningLogValue(body),
+      !!options.enableThinking,
+      body.verbosity ?? "default",
+      !!options.onToken,
+    );
 
     const response = await llmFetch(url, {
       method: "POST",
@@ -1745,7 +1858,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
     // Replay encrypted reasoning items from the previous turn so the model
     // retains its reasoning context and avoids re-deriving (and re-narrating) the same conclusions.
-    if (!isOpenAIChatGPT && options.encryptedReasoningItems?.length) {
+    if (!isOpenAIChatGPT && options.reasoningEffort !== "none" && options.encryptedReasoningItems?.length) {
       let lastAssistantIdx = -1;
       for (let i = input.length - 1; i >= 0; i--) {
         if ((input[i] as Record<string, unknown>).role === "assistant") {
@@ -1772,7 +1885,12 @@ export class OpenAIProvider extends BaseLLMProvider {
       body.stream = false;
     }
 
-    if (!isOpenAIChatGPT && !suppressModelParameters) {
+    if (
+      !isOpenAIChatGPT &&
+      !suppressModelParameters &&
+      this.shouldSendParameter(options, "reasoningEffort") &&
+      options.reasoningEffort !== "none"
+    ) {
       // Request encrypted reasoning items so we can replay them on the next turn.
       body.include = ["reasoning.encrypted_content"];
     }
@@ -1802,7 +1920,7 @@ export class OpenAIProvider extends BaseLLMProvider {
       if (topP != null) body.top_p = topP;
     }
 
-    if (!isOpenAIChatGPT && !suppressModelParameters) {
+    if (!isOpenAIChatGPT && !suppressModelParameters && this.shouldSendParameter(options, "reasoningEffort")) {
       this.applyResponsesReasoning(body, options);
     }
 
@@ -1828,9 +1946,11 @@ export class OpenAIProvider extends BaseLLMProvider {
       !isOpenAIChatGPT &&
       !suppressModelParameters &&
       options.tools?.length &&
+      !options.forceTextualToolCalls &&
       !this.isXAIMultiAgentModel(options.model)
     ) {
       body.tools = this.formatResponsesTools(options.tools);
+      body.tool_choice = options.toolChoice ?? "auto";
     }
 
     if (!isOpenAIChatGPT) {
@@ -1907,24 +2027,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         "OpenAI chatResponses() non-stream response",
       );
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatResponses() non-stream response");
-      // Extract reasoning summaries for non-streaming
-      if (options.onThinking) {
-        const output = json.output as Array<Record<string, unknown>> | undefined;
-        if (output) {
-          for (const item of output) {
-            if (item.type === "reasoning") {
-              const summary = item.summary as Array<Record<string, unknown>> | undefined;
-              if (summary) {
-                for (const part of summary) {
-                  if (part.type === "summary_text" && typeof part.text === "string") {
-                    options.onThinking(part.text);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
       this.emitEncryptedReasoning(json, options);
       const text = this.extractResponsesText(json);
@@ -1958,6 +2061,8 @@ export class OpenAIProvider extends BaseLLMProvider {
     let streamUsage: LLMUsage | undefined;
     let yieldedAny = false;
     let currentEvent = "";
+    let emittedReasoningSummary = "";
+    let streamedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2006,7 +2111,35 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) options.onThinking(delta);
+              if (delta) {
+                streamedReasoningSummary += delta;
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                  streamedReasoningSummary,
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
+              break;
+            }
+            case "response.reasoning_summary_part.added":
+            case "response.reasoning_summary_text.done":
+            case "response.reasoning_summary_part.done": {
+              emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                this.extractResponsesReasoningSummaryEvent(parsed),
+                options,
+                emittedReasoningSummary,
+              );
+              break;
+            }
+            case "response.output_item.done": {
+              const item = parsed.item as Record<string, unknown> | undefined;
+              if (item?.type === "reasoning") {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  { output: [item] },
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
               break;
             }
             case "response.refusal.delta": {
@@ -2032,6 +2165,11 @@ export class OpenAIProvider extends BaseLLMProvider {
                   };
                 }
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 // If no text was streamed (e.g. refusal or content only in the
                 // completed payload), extract it as a last-resort fallback.
                 if (!yieldedAny) {
@@ -2058,6 +2196,11 @@ export class OpenAIProvider extends BaseLLMProvider {
               if (resp) {
                 streamUsage = this.extractResponsesUsage(resp);
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 if (!yieldedAny) {
                   const fallback = this.extractResponsesText(resp);
                   if (fallback) {
@@ -2143,24 +2286,7 @@ export class OpenAIProvider extends BaseLLMProvider {
         "OpenAI chatCompleteResponses() non-stream response",
       );
       OpenAIProvider.assertResponsesSucceeded(json, "OpenAI chatCompleteResponses() non-stream response");
-      // Extract reasoning summaries
-      if (options.onThinking) {
-        const output = json.output as Array<Record<string, unknown>> | undefined;
-        if (output) {
-          for (const item of output) {
-            if (item.type === "reasoning") {
-              const summary = item.summary as Array<Record<string, unknown>> | undefined;
-              if (summary) {
-                for (const part of summary) {
-                  if (part.type === "summary_text" && typeof part.text === "string") {
-                    options.onThinking(part.text);
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+      this.emitMissingResponsesReasoningSummary(json, options, "");
       // Emit encrypted reasoning items for multi-turn context
       this.emitEncryptedReasoning(json, options);
       return this.parseResponsesResult(json);
@@ -2188,6 +2314,8 @@ export class OpenAIProvider extends BaseLLMProvider {
     // Track in-progress function call argument deltas keyed by call_id
     const fnCallArgs = new Map<string, { id: string; name: string; arguments: string }>();
     let currentEvent = "";
+    let emittedReasoningSummary = "";
+    let streamedReasoningSummary = "";
 
     try {
       while (true) {
@@ -2245,17 +2373,39 @@ export class OpenAIProvider extends BaseLLMProvider {
 
             case "response.reasoning_summary_text.delta": {
               const delta = parsed.delta as string | undefined;
-              if (delta && options.onThinking) options.onThinking(delta);
+              if (delta) {
+                streamedReasoningSummary += delta;
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                  streamedReasoningSummary,
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
+              break;
+            }
+
+            case "response.reasoning_summary_part.added":
+            case "response.reasoning_summary_text.done":
+            case "response.reasoning_summary_part.done": {
+              emittedReasoningSummary = this.emitMissingResponsesReasoningSummaryText(
+                this.extractResponsesReasoningSummaryEvent(parsed),
+                options,
+                emittedReasoningSummary,
+              );
               break;
             }
 
             case "response.output_item.added": {
-              // A new output item appeared — could be a function_call
+              // A new output item appeared — could be a function_call. Key the
+              // accumulator by the output item id: the argument delta/done
+              // events below reference the item via item_id, not call_id.
               const item = parsed.item as Record<string, unknown> | undefined;
               if (item?.type === "function_call") {
-                const callId = (item.call_id ?? item.id) as string;
-                fnCallArgs.set(callId, {
-                  id: callId,
+                const itemId = (item.id ?? item.call_id) as string;
+                fnCallArgs.set(itemId, {
+                  // Preserve call_id as the tool-call id downstream needs to
+                  // reference in function_call_output.
+                  id: ((item.call_id ?? item.id) as string) ?? "",
                   name: (item.name as string) ?? "",
                   arguments: (item.arguments as string) ?? "",
                 });
@@ -2264,23 +2414,23 @@ export class OpenAIProvider extends BaseLLMProvider {
             }
 
             case "response.function_call_arguments.delta": {
-              const callId = parsed.call_id as string | undefined;
+              const itemId = (parsed.item_id ?? parsed.call_id) as string | undefined;
               const delta = parsed.delta as string | undefined;
-              if (callId && delta) {
-                const entry = fnCallArgs.get(callId);
+              if (itemId && delta) {
+                const entry = fnCallArgs.get(itemId);
                 if (entry) entry.arguments += delta;
               }
               break;
             }
 
             case "response.function_call_arguments.done": {
-              const callId = parsed.call_id as string | undefined;
-              if (callId) {
-                const entry = fnCallArgs.get(callId);
+              const itemId = (parsed.item_id ?? parsed.call_id) as string | undefined;
+              if (itemId) {
+                const entry = fnCallArgs.get(itemId);
                 if (entry) {
                   // Overwrite with the final arguments if provided
                   const args = parsed.arguments as string | undefined;
-                  if (args) entry.arguments = args;
+                  if (typeof args === "string" && args) entry.arguments = args;
                 }
               }
               break;
@@ -2290,16 +2440,22 @@ export class OpenAIProvider extends BaseLLMProvider {
               // Finalize function_call items
               const item = parsed.item as Record<string, unknown> | undefined;
               if (item?.type === "function_call") {
-                const callId = ((item.call_id ?? item.id) as string) ?? "";
-                const entry = fnCallArgs.get(callId);
+                const itemId = ((item.id ?? item.call_id) as string) ?? "";
+                const entry = fnCallArgs.get(itemId);
                 functionCalls.push({
-                  id: callId,
+                  id: entry?.id ?? ((item.call_id ?? item.id) as string) ?? "",
                   type: "function",
                   function: {
                     name: entry?.name ?? (item.name as string) ?? "",
                     arguments: entry?.arguments ?? (item.arguments as string) ?? "",
                   },
                 });
+              } else if (item?.type === "reasoning") {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  { output: [item] },
+                  options,
+                  emittedReasoningSummary,
+                );
               }
               break;
             }
@@ -2309,6 +2465,11 @@ export class OpenAIProvider extends BaseLLMProvider {
               if (resp) {
                 streamUsage = this.extractResponsesUsage(resp);
                 this.emitEncryptedReasoning(resp, options);
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
                 const status = resp.status as string | undefined;
                 if (status === "incomplete") {
                   finishReason = OpenAIProvider.normalizeResponsesIncompleteFinishReason(
@@ -2339,6 +2500,13 @@ export class OpenAIProvider extends BaseLLMProvider {
               const reason = (resp?.incomplete_details as Record<string, unknown>)?.reason ?? "unknown";
               logger.warn("[OpenAI Responses] chatCompleteResponses stream incomplete (reason=%s)", reason);
               finishReason = OpenAIProvider.normalizeResponsesIncompleteFinishReason(reason);
+              if (resp) {
+                emittedReasoningSummary = this.emitMissingResponsesReasoningSummary(
+                  resp,
+                  options,
+                  emittedReasoningSummary,
+                );
+              }
               break;
             }
           }
@@ -2417,6 +2585,82 @@ export class OpenAIProvider extends BaseLLMProvider {
     if (!options.onEncryptedReasoning) return;
     const items = this.extractEncryptedReasoningItems(json);
     if (items.length > 0) options.onEncryptedReasoning(items);
+  }
+
+  /** Extract the displayable summary from Responses API reasoning output items. */
+  private extractResponsesReasoningSummary(json: Record<string, unknown>): string {
+    const output = json.output as Array<Record<string, unknown>> | undefined;
+    if (!output) return "";
+
+    let summaryText = "";
+    for (const item of output) {
+      if (item.type !== "reasoning" || !Array.isArray(item.summary)) continue;
+      for (const part of item.summary) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          (part as Record<string, unknown>).type === "summary_text" &&
+          typeof (part as Record<string, unknown>).text === "string"
+        ) {
+          summaryText += (part as Record<string, unknown>).text;
+        }
+      }
+    }
+    return summaryText;
+  }
+
+  /** Extract a completed displayable summary from Responses API stream events. */
+  private extractResponsesReasoningSummaryEvent(event: Record<string, unknown>): string {
+    if (typeof event.text === "string") return event.text;
+
+    const part = event.part as Record<string, unknown> | undefined;
+    if (part?.type === "summary_text" && typeof part.text === "string") {
+      return part.text;
+    }
+    return "";
+  }
+
+  /**
+   * Emit only summary text that has not already arrived through another
+   * Responses event. OpenAI may repeat the full summary in text.done,
+   * part.done, output_item.done, and response.completed events.
+   */
+  private emitMissingResponsesReasoningSummaryText(
+    finalSummary: string,
+    options: ChatOptions,
+    emittedSummary: string,
+  ): string {
+    if (!options.onThinking) return emittedSummary;
+    if (!finalSummary || finalSummary === emittedSummary || emittedSummary.startsWith(finalSummary)) {
+      return emittedSummary;
+    }
+
+    if (finalSummary.startsWith(emittedSummary)) {
+      options.onThinking(finalSummary.slice(emittedSummary.length));
+      return finalSummary;
+    }
+
+    let overlap = Math.min(emittedSummary.length, finalSummary.length);
+    while (overlap > 0 && !emittedSummary.endsWith(finalSummary.slice(0, overlap))) {
+      overlap -= 1;
+    }
+    const missingSuffix = finalSummary.slice(overlap);
+    if (missingSuffix) options.onThinking(missingSuffix);
+    return emittedSummary + missingSuffix;
+  }
+
+  /**
+   * Recover reasoning summaries from final Responses payloads. Some models or
+   * gateways omit summary delta events even though the completed output item
+   * contains the requested summary.
+   */
+  private emitMissingResponsesReasoningSummary(
+    json: Record<string, unknown>,
+    options: ChatOptions,
+    emittedSummary: string,
+  ): string {
+    const finalSummary = this.extractResponsesReasoningSummary(json);
+    return this.emitMissingResponsesReasoningSummaryText(finalSummary, options, emittedSummary);
   }
 
   /** Extract usage from a Responses API result */

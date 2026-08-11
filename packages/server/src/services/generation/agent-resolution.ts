@@ -2,8 +2,8 @@ import {
   BUILT_IN_AGENTS,
   DEFAULT_AGENT_TOOLS,
   getDefaultAgentPrompt,
-  getBuiltInAgentDefaultPrompt,
   getDefaultBuiltInAgentSettings,
+  isBuiltInAgentHostManaged,
   isBuiltInAgentRuntimeDisabled,
   isAgentConfigDeleted,
   isRetiredBuiltInAgentId,
@@ -115,10 +115,6 @@ export type ResolvedAgentPipelineAgents = {
   agentConnectionWarnings: AgentConnectionWarning[];
 };
 
-function resolveAgentRuntimePhase(_agentType: string, configuredPhase: string): string {
-  return normalizeAgentPhaseValue(configuredPhase);
-}
-
 function parseAgentSettings(settings: unknown): Record<string, unknown> {
   if (!settings) return {};
   if (typeof settings === "string") {
@@ -152,14 +148,18 @@ function applyMusicPlayerSourceToMusicDjSettings(
   };
 }
 
+function musicAgentUsesSource(settings: Record<string, unknown>, source: "youtube" | "custom"): boolean {
+  return settings.musicProvider === source || settings.musicPlayerSource === source;
+}
+
 function getAgentFallbackPrompt(agentType: string, settings: Record<string, unknown>): string {
-  if (agentType === "spotify" && (settings.musicProvider === "youtube" || settings.musicPlayerSource === "youtube")) {
+  if (agentType === "spotify" && musicAgentUsesSource(settings, "youtube")) {
     return getDefaultAgentPrompt("youtube");
   }
-  if (agentType === "spotify" && (settings.musicProvider === "custom" || settings.musicPlayerSource === "custom")) {
+  if (agentType === "spotify" && musicAgentUsesSource(settings, "custom")) {
     return getDefaultAgentPrompt("local-music");
   }
-  return getBuiltInAgentDefaultPrompt(agentType) || getDefaultAgentPrompt(agentType);
+  return getDefaultAgentPrompt(agentType);
 }
 
 function resolveConnectionCustomParameters(connection: { defaultParameters?: unknown }): Record<string, unknown> {
@@ -173,7 +173,7 @@ function resolveConnectionMaxOutputTokens(connection: { provider: string; model:
 
 async function resolveAgentConnectionProvider(args: {
   connections: ConnectionsStore;
-  agentProviderCache: Map<string, AgentProviderCacheEntry>;
+  agentProviderCache: Map<string | null, AgentProviderCacheEntry>;
   connectionId: string | null;
   fallbackProvider: BaseLLMProvider;
   fallbackModel: string;
@@ -188,6 +188,9 @@ async function resolveAgentConnectionProvider(args: {
   onFallback?: GenerationFallbackNotifier;
   resolveBaseUrl(connection: { baseUrl: string | null; provider: string }): string;
 }): Promise<AgentConnectionResolution> {
+  const cached = args.agentProviderCache.get(args.connectionId);
+  if (cached) return { entry: cached };
+
   if (!args.connectionId) {
     const provider = withConnectionFallbackProvider({
       primary: args.fallbackProvider,
@@ -197,22 +200,19 @@ async function resolveAgentConnectionProvider(args: {
       category: "agents",
       onFallback: args.onFallback,
     });
-    return {
-      entry: {
-        provider,
-        model: args.fallbackModel,
-        customParameters: args.fallbackCustomParameters,
-        maxOutputTokens: args.fallbackMaxOutputTokens,
-        maxParallelJobs: args.fallbackMaxParallelJobs,
-        enableCaching: args.fallbackEnableCaching,
-        anthropicExtendedCacheTtl: args.fallbackAnthropicExtendedCacheTtl,
-        cachingAtDepth: args.fallbackCachingAtDepth,
-      },
+    const resolved = {
+      provider,
+      model: args.fallbackModel,
+      customParameters: args.fallbackCustomParameters,
+      maxOutputTokens: args.fallbackMaxOutputTokens,
+      maxParallelJobs: args.fallbackMaxParallelJobs,
+      enableCaching: args.fallbackEnableCaching,
+      anthropicExtendedCacheTtl: args.fallbackAnthropicExtendedCacheTtl,
+      cachingAtDepth: args.fallbackCachingAtDepth,
     };
+    args.agentProviderCache.set(args.connectionId, resolved);
+    return { entry: resolved };
   }
-
-  const cached = args.agentProviderCache.get(args.connectionId);
-  if (cached) return { entry: cached };
 
   const agentConn = await args.connections.getWithKey(args.connectionId);
   if (!agentConn) {
@@ -244,6 +244,9 @@ async function resolveAgentConnectionProvider(args: {
     agentConn.maxContext,
     agentConn.openrouterProvider,
     agentConn.maxTokensOverride,
+    agentConn.claudeFastMode === "true",
+    agentConn.treatAsLocalEndpoint === "true",
+    agentConn.defaultParameters,
   );
   const resolved = {
     provider: withConnectionFallbackProvider({
@@ -297,13 +300,15 @@ export async function resolveAgentPipelineAgents({
   const enabledConfigs = configuredAgents.filter(
     (agent) =>
       !isAgentConfigDeleted(agent.settings) &&
+      !isBuiltInAgentHostManaged(agent.type as string) &&
       !isBuiltInAgentRuntimeDisabled(agent.type as string) &&
       !isRetiredBuiltInAgentId(agent.type as string),
   );
   const resolvedAgents: ResolvedAgent[] = [];
-  const agentProviderCache = new Map<string, AgentProviderCacheEntry>();
-  const localSidecarAvailableForTrackers =
-    sidecarModelService.getConfig().useForTrackers && sidecarModelService.getConfiguredModelRef() !== null;
+  const agentProviderCache = new Map<string | null, AgentProviderCacheEntry>();
+  // An agent may explicitly select the local sidecar even when the global
+  // "use for trackers" switch is off. The provider starts it on demand.
+  const localSidecarAvailableForTrackers = sidecarModelService.getConfiguredModelRef() !== null;
 
   if (localSidecarAvailableForTrackers) {
     agentProviderCache.set(LOCAL_SIDECAR_CONNECTION_ID, {
@@ -372,7 +377,6 @@ export async function resolveAgentPipelineAgents({
       settings.enabledTools = [...DEFAULT_AGENT_TOOLS[cfg.type as string]!];
     }
     let selectedPromptTemplate = resolveAgentPromptTemplate({
-      agentType: cfg.type as string,
       promptTemplate: normalizeProseGuardianPromptTemplate(cfg.type as string, cfg.promptTemplate),
       fallbackPromptTemplate: getAgentFallbackPrompt(cfg.type as string, settings),
       settings,
@@ -432,7 +436,8 @@ export async function resolveAgentPipelineAgents({
       id: cfg.id,
       type: cfg.type,
       name: cfg.name,
-      phase: resolveAgentRuntimePhase(cfg.type as string, cfg.phase as string),
+      isCustomAgent: !BUILT_IN_AGENTS.some((agent) => agent.id === cfg.type),
+      phase: normalizeAgentPhaseValue(cfg.phase),
       promptTemplate: selectedPromptTemplate,
       connectionId: effectiveConnectionId,
       settings,
@@ -453,6 +458,7 @@ export async function resolveAgentPipelineAgents({
       ? BUILT_IN_AGENTS.filter((agent) => {
           if (resolvedTypes.has(agent.id)) return false;
           if (deletedBuiltInTypes.has(agent.id)) return false;
+          if (isBuiltInAgentHostManaged(agent.id)) return false;
           if (isBuiltInAgentRuntimeDisabled(agent.id)) return false;
           return perChatAgentSet.has(agent.id);
         })
@@ -530,7 +536,6 @@ export async function resolveAgentPipelineAgents({
       builtInSettings.enabledTools = [...DEFAULT_AGENT_TOOLS[builtIn.id]!];
     }
     let selectedPromptTemplate = resolveAgentPromptTemplate({
-      agentType: builtIn.id,
       promptTemplate: "",
       fallbackPromptTemplate: getAgentFallbackPrompt(builtIn.id, builtInSettings),
       settings: builtInSettings,
@@ -540,7 +545,8 @@ export async function resolveAgentPipelineAgents({
       id: `builtin:${builtIn.id}`,
       type: builtIn.id,
       name: builtIn.name,
-      phase: resolveAgentRuntimePhase(builtIn.id, builtIn.phase),
+      isCustomAgent: false,
+      phase: normalizeAgentPhaseValue(builtIn.phase),
       promptTemplate: selectedPromptTemplate,
       connectionId: builtInConnectionId,
       settings: builtInSettings,

@@ -4,23 +4,22 @@
 // avatar + status, then the effective about-me (per-chat override, else the
 // card/persona default), with set / edit / clear of the chat-specific override.
 // ──────────────────────────────────────────────
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Loader2, Pencil, RotateCcw, Save, Settings2, Smile, Trash2, Undo2, User, Wand2, X } from "lucide-react";
+import { Pencil, RotateCcw, Save, Smile, Trash2, Undo2, User, X } from "lucide-react";
 import { toast } from "sonner";
-import { resolveAboutMeSources, type AboutMeSourceConfig, type Chat } from "@marinara-engine/shared";
+import type { Chat } from "@marinara-engine/shared";
 import { useChat, useUpdateChatMetadata } from "../../hooks/use-chats";
-import { useCharacter, usePersonas, useGenerateAboutMe } from "../../hooks/use-characters";
-import { useConnections } from "../../hooks/use-connections";
+import { useCharacter, usePersonas } from "../../hooks/use-characters";
 import { useConversationCustomEmojis } from "../../hooks/use-conversation-custom-emojis";
 import { useChatStore } from "../../stores/chat.store";
-import { cn, getAvatarCropStyle, type AvatarCropValue } from "../../lib/utils";
+import type { AvatarCrop } from "@marinara-engine/shared";
+import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { parseChatMetadata } from "../../lib/chat-display";
-import { filterLanguageGenerationConnections } from "../../lib/connection-filters";
 import { renderInlineWithCustomEmojis } from "../../lib/custom-emoji-render";
-import { AboutMeSourcePicker } from "../characters/AboutMeSourcePicker";
 import { EmojiPicker } from "../ui/EmojiPicker";
 import { CustomEmojiTab } from "../chat/CustomEmojiTab";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface AnchorRect {
   top: number;
@@ -38,7 +37,7 @@ interface AboutMeViewerModalProps {
   id: string;
   anchorRect?: AnchorRect | null;
   avatarUrl?: string | null;
-  avatarCrop?: AvatarCropValue | null;
+  avatarCrop?: AvatarCrop | null;
   displayName?: string | null;
   nameColor?: string | null;
   status?: "online" | "idle" | "dnd" | "offline" | null;
@@ -95,10 +94,6 @@ interface CharacterConvoProfile {
   name: string;
   displayName: string;
   aboutMe: string;
-  /** Card fields used as AI-write source material. */
-  card: { description: string; personality: string; scenario: string; backstory: string; appearance: string };
-  convoBehavior: string;
-  sources?: AboutMeSourceConfig;
 }
 
 function parseCharacterConvo(data: unknown): CharacterConvoProfile {
@@ -112,21 +107,10 @@ function parseCharacterConvo(data: unknown): CharacterConvoProfile {
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const name = str(parsed?.name);
   const displayName = typeof ext.convoDisplayName === "string" && ext.convoDisplayName ? ext.convoDisplayName : name;
-  const behavior =
-    ext.convoBehavior && typeof ext.convoBehavior === "object" ? (ext.convoBehavior as { instruction?: string }) : null;
   return {
     name,
     displayName,
     aboutMe: str(ext.aboutMe),
-    card: {
-      description: str(parsed?.description),
-      personality: str(parsed?.personality),
-      scenario: str(parsed?.scenario),
-      backstory: str(ext.backstory),
-      appearance: str(ext.appearance),
-    },
-    convoBehavior: str(behavior?.instruction),
-    sources: (ext.aboutMeSources as AboutMeSourceConfig | undefined) ?? undefined,
   };
 }
 
@@ -143,6 +127,7 @@ export function AboutMeViewerModal({
   status,
   activity,
 }: AboutMeViewerModalProps) {
+  const { t: localizeUi } = useUiTranslation();
   const activeChatId = useChatStore((s) => s.activeChatId);
   const { data: chat } = useChat(activeChatId);
   const { data: character } = useCharacter(kind === "character" ? id : null);
@@ -162,9 +147,6 @@ export function AboutMeViewerModal({
             name,
             displayName: dn,
             aboutMe: typeof persona?.aboutMe === "string" ? persona.aboutMe : "",
-            card: { description: "", personality: "", scenario: "", backstory: "", appearance: "" },
-            convoBehavior: "",
-            sources: undefined,
           };
         })();
 
@@ -185,67 +167,20 @@ export function AboutMeViewerModal({
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
-  // Value the draft started at (edit-entry) so a Revert can undo AI-write / typing.
+  // Value the draft started at so Revert can undo unsaved typing.
   const [editBaseline, setEditBaseline] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [sourcesOpen, setSourcesOpen] = useState(false);
-  const [sourceOverride, setSourceOverride] = useState<AboutMeSourceConfig | null>(null);
-  const [connectionId, setConnectionId] = useState("");
   const cardRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const emojiBtnRef = useRef<HTMLButtonElement>(null);
   const emojiPanelRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
 
-  // AI-write (characters only): draws from the sources configured via the ⚙️. In the
-  // chat popout the chat-context source is available (this writes a chat-specific bio).
-  const generateAboutMe = useGenerateAboutMe();
-  const { data: connectionsList } = useConnections();
-  const connectionOptions = useMemo(
-    () =>
-      filterLanguageGenerationConnections(
-        (connectionsList ?? []) as Array<{ id: string; name: string; model?: string | null }>,
-      ),
-    [connectionsList],
-  );
-  const effectiveConnectionId =
-    connectionId && connectionOptions.some((c) => c.id === connectionId)
-      ? connectionId
-      : (connectionOptions[0]?.id ?? "");
-  const resolvedSources = sourceOverride ?? resolveAboutMeSources(profile.sources);
-  const canAiWrite = kind === "character";
-
   useEffect(() => {
     setEditing(false);
     setDraft("");
     setEmojiOpen(false);
-    setSourcesOpen(false);
-    setSourceOverride(null);
   }, [id, kind, open]);
-
-  const handleAiWrite = async () => {
-    if (!canAiWrite || !effectiveConnectionId || generateAboutMe.isPending) return;
-    try {
-      const result = await generateAboutMe.mutateAsync({
-        connectionId: effectiveConnectionId,
-        kind: "character",
-        name: profile.name,
-        ...profile.card,
-        convoBehavior: profile.convoBehavior,
-        sources: resolvedSources,
-        characterId: id,
-        chatId: activeChatId ?? undefined,
-      });
-      if (!result.aboutMe.trim() && draft.trim()) {
-        toast.message("The model left it blank — keeping your text.");
-        return;
-      }
-      setDraft(result.aboutMe);
-      toast.success("About me drafted — review and save");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to generate about me");
-    }
-  };
 
   const renderAbout = (text: string) =>
     renderInlineWithCustomEmojis(text, "about-me", emojiMap, (t, kp) => [<span key={kp}>{t}</span>]);
@@ -321,9 +256,9 @@ export function AboutMeViewerModal({
     if (top + ch > vh - 8) top = vh - ch - 8;
     if (top < 8) top = 8;
     setPos({ top, left });
-    // `sourcesOpen`/`draft` change the card height (the AI-write source panel and
-    // generated text), so re-measure and re-clamp to keep it on screen.
-  }, [open, anchorRect, editing, effective, isMobile, sourcesOpen, draft]);
+    // Editing and draft changes can change the card height, so re-measure and
+    // re-clamp to keep it on screen.
+  }, [open, anchorRect, editing, effective, isMobile, draft]);
 
   if (!open) return null;
 
@@ -343,9 +278,9 @@ export function AboutMeViewerModal({
       else delete next[id];
       await writeOverrides(next);
       setEditing(false);
-      toast.success(draft.trim() ? "Chat-specific about me saved" : "Reverted to the default about me");
+      toast.success(draft.trim() ?localizeUi("ui.modals.aboutmeviewermodal.chatSpecificAboutMeSaved") :localizeUi("ui.modals.aboutmeviewermodal.revertedToTheDefaultAboutMe"));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save");
+      toast.error(err instanceof Error ? err.message :localizeUi("ui.modals.aboutmeviewermodal.failedToSave"));
     }
   };
 
@@ -356,9 +291,9 @@ export function AboutMeViewerModal({
     try {
       await writeOverrides(next);
       setEditing(false);
-      toast.success("Reverted to the default about me");
+      toast.success(localizeUi("ui.modals.aboutmeviewermodal.revertedToTheDefaultAboutMe"));
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to clear");
+      toast.error(err instanceof Error ? err.message :localizeUi("ui.modals.aboutmeviewermodal.failedToClear"));
     }
   };
 
@@ -372,6 +307,7 @@ export function AboutMeViewerModal({
         icon: "⭐",
         label: "Custom emojis",
         render: (query) => <CustomEmojiTab onInsert={insertEmoji} query={query} />,
+        renderSearch: (query) => <CustomEmojiTab onInsert={insertEmoji} query={query} searchResultsOnly />,
       }}
     />
   );
@@ -429,7 +365,7 @@ export function AboutMeViewerModal({
           type="button"
           onClick={onClose}
           className="absolute right-2 top-2 rounded-lg bg-black/25 p-1 text-white/90 transition-colors hover:bg-black/40"
-          aria-label="Close"
+          aria-label={localizeUi("capabilities.actions.close")}
         >
           <X size="0.875rem" />
         </button>
@@ -478,7 +414,7 @@ export function AboutMeViewerModal({
             {kind === "character" && (
               <p className="mari-about-me-presence mt-0.5 text-[0.75rem] text-[var(--muted-foreground)]">
                 {statusLabel(status)}
-                {activity ? ` · ${activity}` : ""}
+                {activity ?localizeUi("ui.modals.aboutmeviewermodal.value1", { value1: activity }) : ""}
               </p>
             )}
           </div>
@@ -491,9 +427,7 @@ export function AboutMeViewerModal({
             )}
           >
             <div className="mb-1.5 flex shrink-0 items-center justify-between gap-2">
-              <span className="mari-about-me-label text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
-                About Me
-              </span>
+              <span className="mari-about-me-label text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">{localizeUi("ui.characters.convoprofilefields.aboutMe")}</span>
               <span
                 className={cn(
                   "mari-about-me-badge rounded-full px-1.5 py-0.5 text-[0.5625rem] font-medium",
@@ -502,7 +436,7 @@ export function AboutMeViewerModal({
                     : "bg-[var(--background)]/60 text-[var(--muted-foreground)]",
                 )}
               >
-                {hasOverride ? "Chat-specific" : "Default"}
+                {hasOverride ?localizeUi("ui.modals.aboutmeviewermodal.chatSpecific") :localizeUi("ui.noodle.noodlehome.default")}
               </span>
             </div>
 
@@ -518,7 +452,7 @@ export function AboutMeViewerModal({
                 {effective.trim() ? (
                   renderAbout(effective)
                 ) : (
-                  <span className="text-[var(--muted-foreground)]">No about me set.</span>
+                  <span className="text-[var(--muted-foreground)]">{localizeUi("ui.modals.aboutmeviewermodal.noAboutMeSet")}</span>
                 )}
               </div>
             ) : (
@@ -541,7 +475,7 @@ export function AboutMeViewerModal({
                     onChange={(e) => setDraft(e.target.value)}
                     rows={5}
                     autoFocus
-                    placeholder="What this person shows in this conversation… :emoji: works too"
+                    placeholder={localizeUi("ui.modals.aboutmeviewermodal.whatThisPersonShowsInThisConversationEmojiWorks")}
                     className={cn(
                       "w-full rounded-lg border border-[var(--border)] bg-[var(--background)] p-2 pr-9 text-[0.8125rem] leading-relaxed outline-none transition-colors placeholder:text-[var(--muted-foreground)]/40 focus:border-[var(--primary)]/40 focus:ring-1 focus:ring-[var(--primary)]/20",
                       isMobile ? "h-full resize-none" : "resize-y",
@@ -559,63 +493,12 @@ export function AboutMeViewerModal({
                       }
                       setEmojiOpen((v) => !v);
                     }}
-                    aria-label="Emoji"
+                    aria-label={localizeUi("chat.input.emoji")}
                     className="absolute bottom-2 right-2 rounded-md p-1 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                   >
                     <Smile size="1rem" />
                   </button>
                 </div>
-                {canAiWrite && (
-                  <div className="mt-2 shrink-0 space-y-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <select
-                        value={effectiveConnectionId}
-                        onChange={(e) => setConnectionId(e.target.value)}
-                        aria-label="Generation connection"
-                        className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-1.5 py-1 text-[0.6875rem] outline-none focus:border-[var(--primary)]/40"
-                      >
-                        {connectionOptions.length === 0 && <option value="">No connections</option>}
-                        {connectionOptions.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                            {c.model ? ` — ${c.model}` : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        onClick={() => setSourcesOpen((v) => !v)}
-                        aria-label="AI Write sources"
-                        title="Choose what AI Write reads from"
-                        className={cn(
-                          "rounded-md border border-[var(--border)] p-1 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
-                          sourcesOpen
-                            ? "bg-[var(--accent)] text-[var(--foreground)]"
-                            : "text-[var(--muted-foreground)]",
-                        )}
-                      >
-                        <Settings2 size="0.8125rem" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleAiWrite}
-                        disabled={!effectiveConnectionId || generateAboutMe.isPending}
-                        className="inline-flex items-center gap-1 rounded-md bg-[var(--primary)] px-2 py-1 text-[0.6875rem] font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:opacity-50"
-                        title="Draft this chat-specific about me from the selected sources"
-                      >
-                        {generateAboutMe.isPending ? (
-                          <Loader2 size="0.75rem" className="animate-spin" />
-                        ) : (
-                          <Wand2 size="0.75rem" />
-                        )}
-                        {generateAboutMe.isPending ? "Writing…" : "AI Write"}
-                      </button>
-                    </div>
-                    {sourcesOpen && (
-                      <AboutMeSourcePicker value={resolvedSources} onChange={setSourceOverride} allowChatContext />
-                    )}
-                  </div>
-                )}
               </>
             )}
           </div>
@@ -631,9 +514,7 @@ export function AboutMeViewerModal({
                     disabled={isPending}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
                   >
-                    <Trash2 size="0.8125rem" />
-                    Clear
-                  </button>
+                    <Trash2 size="0.8125rem" />{localizeUi("lorebook.editor.batch.clear")}</button>
                 )}
                 <button
                   type="button"
@@ -644,9 +525,7 @@ export function AboutMeViewerModal({
                   }}
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-2.5 py-1.5 text-xs font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
                 >
-                  <Pencil size="0.8125rem" />
-                  Edit
-                </button>
+                  <Pencil size="0.8125rem" />{localizeUi("ui.noodle.noodlepostcard.edit")}</button>
               </>
             ) : (
               <>
@@ -654,21 +533,17 @@ export function AboutMeViewerModal({
                   <button
                     type="button"
                     onClick={() => setDraft(editBaseline)}
-                    title="Undo the changes to this about me"
+                    title={localizeUi("ui.characters.convoprofilefields.undoTheChangesToThisAboutMe")}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
                   >
-                    <Undo2 size="0.8125rem" />
-                    Revert
-                  </button>
+                    <Undo2 size="0.8125rem" />{localizeUi("ui.characters.convoprofilefields.revert")}</button>
                 )}
                 <button
                   type="button"
                   onClick={() => setEditing(false)}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)]"
                 >
-                  <RotateCcw size="0.8125rem" />
-                  Cancel
-                </button>
+                  <RotateCcw size="0.8125rem" />{localizeUi("chat.delete.dialog.cancel")}</button>
                 <button
                   type="button"
                   onClick={handleSave}
@@ -676,15 +551,12 @@ export function AboutMeViewerModal({
                   className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-2.5 py-1.5 text-xs font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:opacity-50"
                 >
                   <Save size="0.8125rem" />
-                  {isPending ? "Saving…" : "Save"}
+                  {isPending ?localizeUi("chat.settings.inlineEditor.saving") :localizeUi("ui.noodle.noodlehome.save")}
                 </button>
               </>
             )}
           </div>
-          <p className="mt-2 shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
-            Default about me is edited on the {kind === "persona" ? "persona" : "character"} card. A chat-specific
-            override only applies here.
-          </p>
+          <p className="mt-2 shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">{localizeUi("ui.modals.aboutmeviewermodal.defaultAboutMeIsEditedOnThe")} {kind === "persona" ?localizeUi("ui.modals.aboutmeviewermodal.persona") :localizeUi("ui.noodle.noodlehome.character")} {localizeUi("ui.modals.aboutmeviewermodal.cardAChatSpecificOverrideOnlyAppliesHere")}</p>
         </div>
 
         {/* Mobile: emoji picker docked in normal flow at the sheet's bottom, so it

@@ -16,6 +16,8 @@ export interface CompiledImagePrompt {
 export interface CompileImagePromptInput {
   kind: ImagePromptKind;
   prompt: string;
+  /** Additional provider-visible prompt text used only to suppress exact repeated inputs. */
+  dedupeAgainstPrompt?: string | null;
   negativePrompt?: string | null;
   styleProfiles: ImageStyleProfileSettings;
   styleProfileId?: string | null;
@@ -28,9 +30,69 @@ export interface CompileImagePromptInput {
   protectedPositive?: string | null;
   /** Apply the selected grammar to generated prose that is normally preserved for review/readability. */
   applyPromptModeToSourcePrompt?: boolean;
+  /**
+   * Suppress appending the profile's raw styleText to the prompt. Used when the
+   * style is already conveyed another way (e.g. fed to the prompt-building LLM
+   * as guidance), so it is not duplicated verbatim into the final image prompt.
+   */
+  omitProfileStyleText?: boolean;
+  /**
+   * Suppress generic per-kind composition tags when a dedicated prompt template
+   * already owns layout and framing (for example Comic Page versus Illustration).
+   */
+  omitProfileSubjectTags?: boolean;
+}
+
+/**
+ * The active profile's style text when it should steer generation (a real base
+ * style, not "auto"). Empty when there is no explicit style to apply.
+ */
+export function resolveImageStyleGuidanceText(
+  styleProfiles: ImageStyleProfileSettings,
+  styleProfileId?: string | null,
+): string {
+  const profile = findImageStyleProfile(styleProfiles, styleProfileId || styleProfiles.defaultProfileId);
+  const styleText = profile.styleText?.trim() ?? "";
+  return styleText && profile.baseStyle !== "auto" ? styleText : "";
+}
+
+/**
+ * Guidance block appended to an image prompt-builder's system prompt so the
+ * generated prompt reflects the configured style instead of having the raw
+ * style text pasted verbatim into the final prompt.
+ */
+export function formatImageStylePromptGuidance(styleText: string): string {
+  const trimmed = styleText.trim();
+  if (!trimmed) return "";
+  return `\n\nVisual style guidance: compose the image prompt so it naturally reflects this style: ${trimmed}. Weave the style into the description; do not copy this guidance verbatim into your output.`;
 }
 
 export function compileImagePrompt(input: CompileImagePromptInput): CompiledImagePrompt {
+  const initial = compileImagePromptPass(input, false, false);
+  const generatedStyle = input.generatedStyle?.trim() ?? "";
+  const userPositive = input.userPositive?.trim() ?? "";
+  if (!generatedStyle && !userPositive) return initial;
+
+  // Only trust deduplication after transformation and compaction. If they removed the
+  // source copy, rebuild with explicit inputs protected from the compacting budget.
+  const { fragmentMode } = resolveImagePromptCompilationMode(input, initial.profile);
+  const providerVisiblePrompt = [initial.prompt, input.dedupeAgainstPrompt].filter(Boolean).join("\n");
+  const protectGeneratedStyle =
+    Boolean(generatedStyle) &&
+    !promptContainsPositiveNormalizedValue(providerVisiblePrompt, generatedStyle, fragmentMode);
+  const protectUserPositive =
+    Boolean(userPositive) &&
+    !promptContainsPositiveNormalizedValue(providerVisiblePrompt, userPositive, fragmentMode);
+  if (!protectGeneratedStyle && !protectUserPositive) return initial;
+
+  return compileImagePromptPass(input, protectGeneratedStyle, protectUserPositive);
+}
+
+function compileImagePromptPass(
+  input: CompileImagePromptInput,
+  protectGeneratedStyle: boolean,
+  protectUserPositive: boolean,
+): CompiledImagePrompt {
   const profile = findImageStyleProfile(
     input.styleProfiles,
     input.styleProfileId || input.imageDefaults?.styleProfileId || input.styleProfiles.defaultProfileId,
@@ -41,23 +103,28 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
   const movedNegativeFragments: string[] = [];
 
   const generatedStyle = input.generatedStyle?.trim() ?? "";
+  const userPositive = input.userPositive?.trim() ?? "";
+  const {
+    preserveGeneratedPrompt,
+    compactPrompt,
+    fragmentMode,
+  } = resolveImagePromptCompilationMode(input, profile);
+  const duplicateComparisonPrompt = [input.prompt, input.dedupeAgainstPrompt].filter(Boolean).join("\n");
+  const generatedStylePart = protectGeneratedStyle
+    ? generatedStyle
+    : omitPromptValueAlreadyPresent(generatedStyle, duplicateComparisonPrompt, fragmentMode, positiveDiagnostics);
+  const userPositivePart = protectUserPositive
+    ? userPositive
+    : omitPromptValueAlreadyPresent(userPositive, duplicateComparisonPrompt, fragmentMode, positiveDiagnostics);
   const promptPrefix = imagePromptPrefixFromDefaults(input.imageDefaults);
   const negativePromptPrefix = imageNegativePromptPrefixFromDefaults(input.imageDefaults);
-  const taggedPromptMode = promptMode === "tagged" || promptMode === "danbooru";
-  const applyPromptModeToSourcePrompt = input.applyPromptModeToSourcePrompt === true;
-  const preserveGeneratedPrompt =
-    !applyPromptModeToSourcePrompt &&
-    (input.kind === "illustration" || input.kind === "background" || input.kind === "selfie");
-  const compactTags = !applyPromptModeToSourcePrompt && !preserveGeneratedPrompt && taggedPromptMode;
-  const compactVisualPrompt =
-    profile.baseStyle !== "z_image_turbo" && ["avatar", "portrait", "sprite"].includes(input.kind);
-  const compactPrompt = compactTags || compactVisualPrompt;
   const sourceCueText = [input.prompt, input.userPositive].filter(Boolean).join("\n");
   const sourceCues = compactPrompt ? deriveTaggedSourceCues(sourceCueText) : [];
-  const profileSubjectTags = reconcileProfileSubjectTags(profile.subjectTags[input.kind] ?? "", sourceCues);
-  const fragmentMode = compactPrompt ? "tagged" : promptMode;
+  const profileSubjectTags = input.omitProfileSubjectTags
+    ? ""
+    : reconcileProfileSubjectTags(profile.subjectTags[input.kind] ?? "", sourceCues);
   const profileStyleText =
-    compactPrompt || (profile.styleText && generatedStyle)
+    input.omitProfileStyleText || compactPrompt || (profile.styleText && generatedStyle)
       ? ""
       : profile.styleText && profile.baseStyle !== "auto"
         ? profile.styleText
@@ -69,12 +136,24 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
     ? [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
         { value: input.protectedPositive, sourcePrompt: false, hardPrefix: true },
+        // Explicit profile configuration is a provider-facing prefix, even for
+        // compact avatar/portrait prompts. Protect it from priority sorting and
+        // the compact token budget so inferred source cues cannot move ahead of
+        // or silently replace the user's configured tags.
+        { value: profile.positiveTags, sourcePrompt: false, hardPrefix: true },
+        { value: profileSubjectTags, sourcePrompt: false, hardPrefix: true },
         { value: sourceCues.join(", "), sourcePrompt: false },
-        { value: generatedStyle, sourcePrompt: true },
+        {
+          value: generatedStylePart,
+          sourcePrompt: !protectGeneratedStyle,
+          hardPrefix: protectGeneratedStyle,
+        },
         { value: input.prompt, sourcePrompt: true },
-        { value: input.userPositive, sourcePrompt: true },
-        { value: profileSubjectTags, sourcePrompt: false },
-        { value: profile.positiveTags, sourcePrompt: false },
+        {
+          value: userPositivePart,
+          sourcePrompt: !protectUserPositive,
+          hardPrefix: protectUserPositive,
+        },
       ]
     : [
         { value: promptPrefix, sourcePrompt: false, hardPrefix: true },
@@ -82,9 +161,9 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
         { value: profile.positiveTags, sourcePrompt: false },
         { value: profileSubjectTags, sourcePrompt: false },
         { value: profileStyleText, sourcePrompt: false },
-        { value: generatedStyle, sourcePrompt: false },
+        { value: generatedStylePart, sourcePrompt: false },
         { value: input.prompt, sourcePrompt: true },
-        { value: input.userPositive, sourcePrompt: true },
+        { value: userPositivePart, sourcePrompt: !protectUserPositive },
       ];
   const negativeParts = [
     negativePromptPrefix,
@@ -132,7 +211,11 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
     hardPrefix.length,
   );
   if (positive.length === 0) {
-    positive = fallbackPositiveFragments(input, promptMode, compactPrompt);
+    positive = fallbackPositiveFragments(
+      [generatedStylePart, input.prompt, userPositivePart],
+      promptMode,
+      compactPrompt,
+    );
   }
   const negative = dedupeFragments(negativeFragments, profile.rules.dedupeStrength, negativeDiagnostics);
 
@@ -148,12 +231,62 @@ export function compileImagePrompt(input: CompileImagePromptInput): CompiledImag
   };
 }
 
+function resolveImagePromptCompilationMode(input: CompileImagePromptInput, profile: ImageStyleProfile) {
+  const promptMode = profile.promptMode;
+  const taggedPromptMode = promptMode === "tagged" || promptMode === "danbooru";
+  const applyPromptModeToSourcePrompt = input.applyPromptModeToSourcePrompt === true;
+  const preserveGeneratedPrompt =
+    !applyPromptModeToSourcePrompt &&
+    (input.kind === "illustration" || input.kind === "background" || input.kind === "selfie");
+  const compactTags = !applyPromptModeToSourcePrompt && !preserveGeneratedPrompt && taggedPromptMode;
+  const compactVisualPrompt =
+    profile.baseStyle !== "z_image_turbo" && ["avatar", "portrait", "sprite"].includes(input.kind);
+  const compactPrompt = compactTags || compactVisualPrompt;
+  return {
+    preserveGeneratedPrompt,
+    compactPrompt,
+    fragmentMode: compactPrompt ? ("tagged" as const) : promptMode,
+  };
+}
+
+function omitPromptValueAlreadyPresent(
+  value: string,
+  prompt: string,
+  promptMode: ImageStyleProfile["promptMode"],
+  diagnostics: string[],
+): string {
+  if (!value || !promptContainsPositiveNormalizedValue(prompt, value, promptMode)) return value;
+  diagnostics.push(value);
+  return "";
+}
+
+function promptContainsPositiveNormalizedValue(
+  prompt: string,
+  value: string,
+  promptMode: ImageStyleProfile["promptMode"],
+): boolean {
+  const normalizedValue = normalizePromptContainmentText(value);
+  if (!normalizedValue) return false;
+  const positivePrompt = splitPromptFragments(prompt, promptMode)
+    .filter((fragment) => !extractNegativeFragment(fragment) && !hasAvoidInstructionPrefix(fragment))
+    .join(" ");
+  return ` ${normalizePromptContainmentText(positivePrompt)} `.includes(` ${normalizedValue} `);
+}
+
+function normalizePromptContainmentText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function fallbackPositiveFragments(
-  input: CompileImagePromptInput,
+  values: Array<string | null | undefined>,
   promptMode: ImageStyleProfile["promptMode"],
   compactPrompt: boolean,
 ): string[] {
-  const fallbackFragments = [input.generatedStyle, input.prompt, input.userPositive]
+  const fallbackFragments = values
     .flatMap((value) => splitPromptFragments(value, "natural"))
     .filter((fragment) => !extractNegativeFragment(fragment) && !hasAvoidInstructionPrefix(fragment))
     .map((fragment) => cleanPromptFragment(fragment, promptMode))
@@ -237,9 +370,15 @@ function splitPromptListItems(value: string): string[] {
   return parts;
 }
 
-function splitNaturalPromptClauses(value: string): string[] {
-  const parts: string[] = [];
+type NaturalPromptClause = {
+  value: string;
+  startsAtBoundary: boolean;
+};
+
+function splitNaturalPromptClauses(value: string): NaturalPromptClause[] {
+  const parts: NaturalPromptClause[] = [];
   let current = "";
+  let startsAtBoundary = true;
   let parenDepth = 0;
   let bracketDepth = 0;
   let braceDepth = 0;
@@ -248,7 +387,7 @@ function splitNaturalPromptClauses(value: string): string[] {
 
   const pushCurrent = () => {
     const clean = current.trim();
-    if (clean) parts.push(clean);
+    if (clean) parts.push({ value: clean, startsAtBoundary });
     current = "";
   };
 
@@ -287,10 +426,20 @@ function splitNaturalPromptClauses(value: string): string[] {
     else if (char === "}" && braceDepth > 0) braceDepth -= 1;
 
     const insideGroup = parenDepth > 0 || bracketDepth > 0 || braceDepth > 0;
-    const startsNegativeClause = /^\s*(?:avoid|no|without)\b/i.test(value.slice(index + 1));
-    if (!insideGroup && (char === "\n" || (char === "," && startsNegativeClause))) {
+    if (!insideGroup && char === "\n") {
       pushCurrent();
+      startsAtBoundary = true;
       continue;
+    }
+    if (!insideGroup && char === ",") {
+      const startsNegativeClause = /^\s*(?:avoid|no|without|exclude|do not include|don't include)\b/i.test(
+        value.slice(index + 1),
+      );
+      if (startsNegativeClause) {
+        pushCurrent();
+        startsAtBoundary = false;
+        continue;
+      }
     }
 
     current += char;
@@ -298,6 +447,71 @@ function splitNaturalPromptClauses(value: string): string[] {
 
   pushCurrent();
   return parts;
+}
+
+function isStandaloneNegativeListInstruction(value: string): boolean {
+  return /^(?:avoid|exclude|do not include|don't include)\b/i.test(value.trim());
+}
+
+function splitStandaloneNegativeInstruction(value: string): string[] {
+  const clean = value.trim();
+  const match = clean.match(/^(?:avoid|exclude|do not include|don't include)\s+(.+)$/i);
+  if (!match?.[1]) return [clean];
+
+  const body = match[1].trim();
+  const sentenceBoundary = findTopLevelSentenceBoundary(body);
+  const listText = (sentenceBoundary >= 0 ? body.slice(0, sentenceBoundary) : body)
+    .replace(/[.!?]+$/g, "")
+    .trim();
+  const trailingText = sentenceBoundary >= 0 ? body.slice(sentenceBoundary + 1).trim() : "";
+  const negativeItems = splitPromptListItems(listText)
+    .map((item) => item.replace(/^(?:and|or)\s+/i, "").trim())
+    .filter(Boolean)
+    .map((item) => `avoid ${item}`);
+
+  return [...negativeItems, ...(trailingText ? [trailingText] : [])];
+}
+
+function findTopLevelSentenceBoundary(value: string): number {
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let quote: '"' | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (char === "(") parenDepth += 1;
+    else if (char === ")" && parenDepth > 0) parenDepth -= 1;
+    else if (char === "[") bracketDepth += 1;
+    else if (char === "]" && bracketDepth > 0) bracketDepth -= 1;
+    else if (char === "{") braceDepth += 1;
+    else if (char === "}" && braceDepth > 0) braceDepth -= 1;
+
+    const insideGroup = parenDepth > 0 || bracketDepth > 0 || braceDepth > 0;
+    if (!insideGroup && /[.!?]/.test(char) && (!value[index + 1] || /\s/.test(value[index + 1]!))) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 export function mergeCompiledPromptMeta(
@@ -335,6 +549,7 @@ function splitPromptFragments(
   const normalized = text
     .replace(/\r\n?/g, "\n")
     .replace(/[.!?]\s+(?=(?:avoid|no|without|exclude|do not include|don't include)\b)/gi, "\n")
+    .replace(/((?:^|\n)(?:avoid|no|without|exclude|do not include|don't include)\s+[^.!?\n]+[.!?])\s+(?=\S)/gim, "$1\n")
     .replace(/\b(?:avoid|negative prompt|undesired content)\s*:/gi, "\navoid ")
     .replace(/\b(?:SD|Stable Diffusion)\/Illustrious\s+tags?\s*:/gi, "\n")
     .replace(/\b(?:positive prompt|tags?)\s*:/gi, "\n");
@@ -342,10 +557,16 @@ function splitPromptFragments(
   if (promptMode === "natural") {
     const fragments: string[] = [];
     for (const part of splitNaturalPromptClauses(normalized)) {
-      const clean = part.trim();
+      const clean = part.value.trim();
       if (!clean) continue;
       if (hasAvoidInstructionPrefix(clean)) {
-        fragments.push(...splitPromptListItems(clean));
+        // Generated prompts use sentence-level avoid lists; inline clauses must retain the
+        // one-item negation behavior that keeps following positive descriptors intact.
+        const listItems =
+          part.startsAtBoundary && isStandaloneNegativeListInstruction(clean)
+            ? splitStandaloneNegativeInstruction(clean)
+            : splitPromptListItems(clean);
+        fragments.push(...listItems);
       } else {
         fragments.push(clean);
       }
@@ -731,7 +952,8 @@ function extractNegativeFragment(fragment: string): string | null {
   const clean = fragment.trim();
   const match = clean.match(/^(?:avoid|no|without|exclude|do not include|don't include)\s+(.+)/i);
   if (!match?.[1]) return null;
-  const negative = (splitPromptListItems(match[1])[0] ?? "")
+  const firstSentence = match[1].split(/[.!?]+(?:\s+|$)/u, 1)[0] ?? match[1];
+  const negative = (splitPromptListItems(firstSentence)[0] ?? "")
     .replace(/[.]+$/g, "")
     .replace(/^(?:any|all)\s+/i, "")
     .trim();

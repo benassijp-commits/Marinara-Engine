@@ -89,8 +89,8 @@ class SidecarProcessService {
   private stopRequestId = 0;
   private unexpectedCrashCount = 0;
   private unexpectedCrashWindowStartedAt = 0;
-  private lastReadyAt = 0;
   private starting = false;
+  private manuallyUnloaded = false;
   private syncLock: Promise<void> = Promise.resolve();
   private childErrors = new WeakMap<ChildProcess, Error>();
 
@@ -140,6 +140,7 @@ class SidecarProcessService {
     const stopRequestId = this.requestStopForStartup("restart");
     return this.withLock(async () => {
       this.clearStopRequest(stopRequestId);
+      this.manuallyUnloaded = false;
       this.clearStartupFailure();
       this.unexpectedCrashCount = 0;
       this.unexpectedCrashWindowStartedAt = 0;
@@ -201,24 +202,37 @@ class SidecarProcessService {
     });
   }
 
+  async unload(): Promise<void> {
+    const stopRequestId = this.requestStopForStartup("unload");
+
+    return this.withLock(async () => {
+      try {
+        this.manuallyUnloaded = true;
+        await this.stopAndUpdateStatusUnlocked();
+      } finally {
+        this.clearStopRequest(stopRequestId);
+      }
+    });
+  }
+
   async stop(): Promise<void> {
     const stopRequestId = this.requestStopForStartup("stop");
 
     return this.withLock(async () => {
       try {
-        await this.stopUnlocked();
-        this.clearStartupFailure();
-        this.unexpectedCrashCount = 0;
-        this.unexpectedCrashWindowStartedAt = 0;
-        if (sidecarModelService.getConfiguredModelRef()) {
-          sidecarModelService.setStatus("downloaded");
-        } else {
-          sidecarModelService.setStatus("not_downloaded");
-        }
+        await this.stopAndUpdateStatusUnlocked();
       } finally {
         this.clearStopRequest(stopRequestId);
       }
     });
+  }
+
+  private async stopAndUpdateStatusUnlocked(): Promise<void> {
+    await this.stopUnlocked();
+    this.clearStartupFailure();
+    this.unexpectedCrashCount = 0;
+    this.unexpectedCrashWindowStartedAt = 0;
+    sidecarModelService.setStatus(sidecarModelService.getConfiguredModelRef() ? "downloaded" : "not_downloaded");
   }
 
   killCurrentChildForProcessExit(): void {
@@ -243,7 +257,7 @@ class SidecarProcessService {
     }
   }
 
-  private requestStopForStartup(reason: "restart" | "stop" | "sync"): number {
+  private requestStopForStartup(reason: "restart" | "stop" | "sync" | "unload"): number {
     this.stopRequested = true;
     this.stopRequestId += 1;
     const stopRequestId = this.stopRequestId;
@@ -321,10 +335,21 @@ class SidecarProcessService {
     const modelRef = sidecarModelService.getConfiguredModelRef();
     const backend = sidecarModelService.getResolvedBackend();
 
+    if (options.forceStart) {
+      this.manuallyUnloaded = false;
+    }
+
     if (!modelRef) {
       await this.stopUnlocked();
       this.clearStartupFailure();
       sidecarModelService.setStatus("not_downloaded");
+      return;
+    }
+
+    if (this.manuallyUnloaded) {
+      await this.stopUnlocked();
+      this.clearStartupFailure();
+      sidecarModelService.setStatus("downloaded");
       return;
     }
 
@@ -754,7 +779,6 @@ class SidecarProcessService {
 
   private markReady(): void {
     this.ready = true;
-    this.lastReadyAt = Date.now();
     this.clearStartupFailure();
     sidecarModelService.setStatus("ready");
     sidecarModelService.clearLegacyRuntimeStamp();

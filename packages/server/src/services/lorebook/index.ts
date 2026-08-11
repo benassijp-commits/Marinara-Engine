@@ -18,6 +18,7 @@ import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
 import { GAME_LOREBOOK_KEEPER_SOURCE_ID } from "./game-lorebook-scope.js";
 import {
   scanForActivatedEntries,
+  lorebookEntryPassesContextFilters,
   passesForcedEntryActivationGates,
   type ScanMessage,
   type ScanOptions,
@@ -32,6 +33,7 @@ export interface LorebookScanResult {
   worldInfoBefore: string;
   worldInfoAfter: string;
   depthEntries: Array<{ content: string; role: "system" | "user" | "assistant"; depth: number; order: number }>;
+  outlets: Record<string, string>;
   totalEntries: number;
   totalTokensEstimate: number;
   activatedEntryIds: string[];
@@ -48,6 +50,89 @@ export interface LorebookScanResult {
   updatedEntryStateOverrides?: Record<string, { ephemeral?: number | null; enabled?: boolean }>;
   /** Updated per-chat timing states for sticky/cooldown/delay. Caller should persist to chat metadata. */
   updatedEntryTimingStates?: Record<string, LorebookEntryTimingState>;
+}
+
+export function scopeLorebookScanResultToCharacterContext(
+  result: LorebookScanResult,
+  entries: LorebookEntry[],
+  options: {
+    characterId: string;
+    characterTags?: string[];
+    generationTriggers?: string[];
+  },
+): LorebookScanResult {
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const activatedById = new Map(result.activatedEntries.map((entry) => [entry.id, entry]));
+  const scopedActivatedEntries: ActivatedEntry[] = [];
+
+  for (const entryId of result.activatedEntryIds) {
+    const storedEntry = entriesById.get(entryId);
+    const activation = activatedById.get(entryId);
+    if (!storedEntry || !activation) continue;
+    if (
+      !lorebookEntryPassesContextFilters(storedEntry, {
+        activeCharacterIds: [options.characterId],
+        activeCharacterTags: options.characterTags ?? [],
+        generationTriggers: options.generationTriggers ?? ["chat"],
+      })
+    ) {
+      continue;
+    }
+
+    scopedActivatedEntries.push({
+      entry: { ...storedEntry, content: activation.content },
+      rawContent: storedEntry.content,
+      matchedKeys: activation.matchedKeys,
+      activationSources: activation.activationSources,
+      injectionOrder: storedEntry.order,
+      sticky: activation.matchType === "sticky",
+    });
+  }
+
+  const processed = processActivatedEntries(scopedActivatedEntries, 0);
+  const scopedIds = new Set(scopedActivatedEntries.map((entry) => entry.entry.id));
+  const scopedSkippedEntries = result.budgetSkippedEntries.filter((entry) => {
+    const storedEntry = entriesById.get(entry.id);
+    return (
+      !!storedEntry &&
+      lorebookEntryPassesContextFilters(storedEntry, {
+        activeCharacterIds: [options.characterId],
+        activeCharacterTags: options.characterTags ?? [],
+        generationTriggers: options.generationTriggers ?? ["chat"],
+      })
+    );
+  });
+
+  return {
+    ...result,
+    ...processed,
+    activatedEntryIds: scopedActivatedEntries.map((entry) => entry.entry.id),
+    activatedEntries: result.activatedEntries.filter((entry) => scopedIds.has(entry.id)),
+    budgetSkippedEntries: scopedSkippedEntries,
+  };
+}
+
+export async function scopeLorebookScanResultToCharacter(
+  db: DB,
+  result: LorebookScanResult,
+  characterId: string,
+  generationTriggers: string[] = ["chat"],
+): Promise<LorebookScanResult> {
+  const lorebooks = createLorebooksStorage(db);
+  const characters = createCharactersStorage(db);
+  const entryIds = uniqueStrings([
+    ...result.activatedEntryIds,
+    ...result.budgetSkippedEntries.map((entry) => entry.id),
+  ]);
+  const entries = await lorebooks.listEligibleEntriesByIds(entryIds);
+  const character = await characters.getById(characterId);
+  const data = character ? safeJsonParse<CharacterData | null>((character as { data?: unknown }).data, null) : null;
+
+  return scopeLorebookScanResultToCharacterContext(result, entries, {
+    characterId,
+    characterTags: data ? readStringArray(data.tags) : [],
+    generationTriggers,
+  });
 }
 
 export type LorebookBudgetSkipReason = "lorebook" | "chat" | "both" | "location";
@@ -401,8 +486,8 @@ function resolveFinalLorebookContent(
 function lorebookSelectionOrder(a: ActivatedEntry, b: ActivatedEntry): number {
   if (a.entry.constant && !b.entry.constant) return -1;
   if (!a.entry.constant && b.entry.constant) return 1;
-  if (a.matchedLatestUserMessage && !b.matchedLatestUserMessage) return -1;
-  if (!a.matchedLatestUserMessage && b.matchedLatestUserMessage) return 1;
+  if (a.matchedCurrentContext && !b.matchedCurrentContext) return -1;
+  if (!a.matchedCurrentContext && b.matchedCurrentContext) return 1;
   return a.injectionOrder - b.injectionOrder;
 }
 
@@ -565,7 +650,7 @@ function mergeActivatedEntries(...groups: ActivatedEntry[][]): ActivatedEntry[] 
         ...existing.activationSources,
         ...candidate.activationSources,
       ]) as LorebookActivationSource[],
-      matchedLatestUserMessage: existing.matchedLatestUserMessage || candidate.matchedLatestUserMessage,
+      matchedCurrentContext: existing.matchedCurrentContext || candidate.matchedCurrentContext,
       sticky: existing.sticky || candidate.sticky,
     });
   }
@@ -1043,6 +1128,7 @@ export async function processLorebooks(
       worldInfoBefore: "",
       worldInfoAfter: "",
       depthEntries: [],
+      outlets: {},
       totalEntries: 0,
       totalTokensEstimate: 0,
       activatedEntryIds: [],

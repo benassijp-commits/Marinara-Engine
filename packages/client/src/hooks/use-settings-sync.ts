@@ -14,19 +14,22 @@
 // edits trigger a push — transient UI state (modal open, detail panels, etc.)
 // is filtered out via `pickSyncedSettings`.
 import { useEffect } from "react";
-import { normalizeImageStyleProfileSettings, normalizeQuoteFormat } from "@marinara-engine/shared";
+import {
+  normalizeImageStyleProfileSettings,
+  normalizeQuoteFormat,
+  type AppSettingsResponse,
+} from "@marinara-engine/shared";
 import { api } from "../lib/api-client";
 import { normalizeConversationTimeZone } from "../lib/conversation-time-zone";
 import {
   normalizeTrackerPanelSizeProfile,
+  normalizeTrackerStatDisplayMode,
   normalizeTrackerTemperatureUnit,
   normalizeTrackerThoughtBubbleDisplay,
   normalizeScenePromptPreferences,
   pickSyncedSettings,
   useUIStore,
 } from "../stores/ui.store";
-
-type SettingsResponse = { value: string | null };
 
 const SETTINGS_KEY = "ui";
 const SETTINGS_PATH = `/app-settings/${SETTINGS_KEY}`;
@@ -38,14 +41,24 @@ type SyncedSettingsObject = ReturnType<typeof pickSyncedSettings>;
 type ServerSettingsPayload = SyncedSettingsObject & { __updatedAt?: number };
 type ParsedSettings = Partial<SyncedSettingsObject> & Record<string, unknown>;
 
-const DEVICE_LOCAL_SETTING_KEYS = ["fontSize", "chatFontSize"] as const;
+const LOCAL_ONLY_SETTING_KEYS = [
+  "fontSize",
+  "chatFontSize",
+  "trackerPanelOpen",
+  "impersonatePromptTemplate",
+  "activeImpersonatePromptTemplateId",
+] as const;
 
-export function omitDeviceLocalSettings(settings: ParsedSettings): ParsedSettings {
+export function omitLocalOnlySettings(settings: ParsedSettings): ParsedSettings {
   const sanitized = { ...settings };
-  for (const key of DEVICE_LOCAL_SETTING_KEYS) {
+  for (const key of LOCAL_ONLY_SETTING_KEYS) {
     delete sanitized[key];
   }
   return sanitized;
+}
+
+export function hasMissingSyncedSettings(settings: Record<string, unknown>, expectedKeys: readonly string[]): boolean {
+  return expectedKeys.some((key) => !(key in settings));
 }
 
 function readLocalUpdatedAt(): number | null {
@@ -158,14 +171,15 @@ export function useSettingsSync() {
           writeLocalUpdatedAt(localUpdatedAt);
         }
 
-        const data = await api.get<SettingsResponse>(SETTINGS_PATH);
+        const data = await api.get<AppSettingsResponse>(SETTINGS_PATH);
         if (disposed) return;
         if (data.value) {
           try {
             const parsed = parseServerSettingsValue(data.value);
             if (parsed.settings && typeof parsed.settings === "object") {
-              const hadDeviceLocalSettings = DEVICE_LOCAL_SETTING_KEYS.some((key) => key in parsed.settings);
-              parsed.settings = omitDeviceLocalSettings(parsed.settings);
+              const hadLocalOnlySettings = LOCAL_ONLY_SETTING_KEYS.some((key) => key in parsed.settings);
+              const hadMissingSyncedSettings = hasMissingSyncedSettings(parsed.settings, Object.keys(localSettings));
+              parsed.settings = omitLocalOnlySettings(parsed.settings);
 
               // Migrate old flat gradient fields → per-scheme nested (v10 → v11).
               if ("convoGradientFrom" in parsed.settings || "convoGradientTo" in parsed.settings) {
@@ -190,6 +204,9 @@ export function useSettingsSync() {
               delete parsed.settings.trackerPanelWidth;
               parsed.settings.trackerPanelThoughtBubbleDisplay = normalizeTrackerThoughtBubbleDisplay(
                 parsed.settings.trackerPanelThoughtBubbleDisplay,
+              );
+              parsed.settings.trackerStatDisplayMode = normalizeTrackerStatDisplayMode(
+                parsed.settings.trackerStatDisplayMode,
               );
               parsed.settings.trackerPanelDockedThoughtsAlwaysVisible =
                 parsed.settings.trackerPanelDockedThoughtsAlwaysVisible === true;
@@ -219,17 +236,17 @@ export function useSettingsSync() {
                 useUIStore.setState(parsed.settings);
                 lastPushed = serialize();
                 if (serverUpdatedAt !== null) writeLocalUpdatedAt(serverUpdatedAt);
-                if (hadDeviceLocalSettings) {
+                if (hadLocalOnlySettings || hadMissingSyncedSettings) {
                   try {
+                    const rewriteUpdatedAt = hadMissingSyncedSettings ? Date.now() : (serverUpdatedAt ?? Date.now());
                     await api.put(SETTINGS_PATH, {
-                      value: buildServerSettingsValue(
-                        pickSyncedSettings(useUIStore.getState()),
-                        serverUpdatedAt ?? Date.now(),
-                      ),
+                      value: buildServerSettingsValue(pickSyncedSettings(useUIStore.getState()), rewriteUpdatedAt),
                     });
+                    writeLocalUpdatedAt(rewriteUpdatedAt);
                   } catch {
-                    // Cleanup is best-effort; this browser still ignores
-                    // legacy size values from the server blob.
+                    // Rewriting legacy/incomplete blobs is best-effort. This
+                    // browser still ignores removed keys and retains local
+                    // values for newly synced preferences.
                   }
                 }
               }

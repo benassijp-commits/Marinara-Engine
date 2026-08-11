@@ -46,8 +46,8 @@ export interface ActivatedEntry {
   matchedKeys: string[];
   /** Every mechanism that activated this entry in this generation. */
   activationSources: LorebookActivationSource[];
-  /** True when a primary key matched the latest user message directly. */
-  matchedLatestUserMessage?: boolean;
+  /** True when keyword or semantic activation reflects the current user context. */
+  matchedCurrentContext?: boolean;
   /** Priority order for injection */
   injectionOrder: number;
   /** True when sticky state kept this entry active without a fresh keyword match */
@@ -456,7 +456,6 @@ export function scanForActivatedEntries(
     scanDepth = 0,
     gameState = null,
     timingStates = new Map(),
-    currentMessageIndex = messages.length,
     chatEmbedding = null,
     semanticEmbeddingsByLorebookId = new Map<string, number[] | null>(),
     semanticThreshold = 0.3,
@@ -569,7 +568,7 @@ export function scanForActivatedEntries(
     // Test primary keys
     const { matched, matchedKeys } = testPrimaryKeys(entry.keys, entryScanText, matchOptions);
     if (!matched) continue;
-    const matchedLatestUserMessage =
+    const matchedCurrentContext =
       latestUserText.length > 0 ? testPrimaryKeys(entry.keys, latestUserText, matchOptions).matched : false;
 
     // Test secondary keys (selective mode)
@@ -584,14 +583,14 @@ export function scanForActivatedEntries(
     activated.push({
       entry,
       matchedKeys,
-      matchedLatestUserMessage,
+      matchedCurrentContext,
       activationSources: [recursionPass ? "recursive" : "keyword"],
       injectionOrder: entry.order,
     });
     activatedIds.add(entry.id);
   }
 
-  // ── Semantic fallback: check entries with embeddings that weren't keyword-matched ──
+  // ── Semantic matching: add vector matches that weren't already activated ──
   if (
     (chatEmbedding && chatEmbedding.length > 0) ||
     Array.from(semanticEmbeddingsByLorebookId.values()).some((embedding) => embedding && embedding.length > 0)
@@ -643,6 +642,10 @@ export function scanForActivatedEntries(
       activated.push({
         entry: candidate.entry,
         matchedKeys: [`[semantic:${candidate.similarity.toFixed(3)}]`],
+        // Semantic candidates describe the same current scan context as a key
+        // matched in the latest user turn. Giving both this marker keeps the
+        // budget selector neutral between keyword and vector activation.
+        matchedCurrentContext: latestUserText.length > 0,
         injectionOrder: candidate.entry.order,
         activationSources: [recursionPass ? "recursive" : "semantic"],
       });

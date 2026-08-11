@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api, isJsonRepairApiError } from "../lib/api-client";
 import { chatKeys } from "./use-chats";
@@ -34,6 +35,7 @@ import type {
   TacticalCombatState,
   TacticalAction,
   TacticalEvent,
+  RPGStatPool,
 } from "@marinara-engine/shared";
 import type { Chat } from "@marinara-engine/shared";
 
@@ -104,10 +106,22 @@ interface RecruitPartyMemberResponse {
   cardCreated: boolean;
 }
 
-interface RegeneratePartyCardResponse {
-  sessionChat: Chat;
+interface RegenerateCharacterSheetResponse {
   characterName: string;
-  gameCard: unknown;
+  gameCard: {
+    name: string;
+    shortDescription: string;
+    class: string;
+    abilities: string[];
+    strengths: string[];
+    weaknesses: string[];
+    extra: Record<string, string>;
+    rpgStats?: {
+      attributes: Array<{ name: string; value: number }>;
+      hp: { value: number; max: number };
+      pools?: RPGStatPool[];
+    };
+  };
 }
 
 interface RemovePartyMemberResponse {
@@ -135,15 +149,6 @@ interface MapMoveResponse {
   map: GameMap;
   maps?: GameMap[];
   activeGameMapId?: string | null;
-}
-
-export type UpdateGameMapBindingInput =
-  | { target: "map"; chatId: string; mapId: string; spatialLocationId: string | null }
-  | { target: "cell"; chatId: string; mapId: string; x: number; y: number; spatialLocationId: string | null }
-  | { target: "node"; chatId: string; mapId: string; nodeId: string; spatialLocationId: string | null };
-
-interface UpdateGameMapBindingResponse extends MapMoveResponse {
-  sessionChat: Chat;
 }
 
 interface UpdateGameWidgetsResponse {
@@ -493,21 +498,23 @@ export function useRecruitPartyMember() {
   });
 }
 
-export function useRegeneratePartyCard() {
-  const qc = useQueryClient();
+export function useRegenerateCharacterSheet() {
+  const { t } = useTranslation();
 
   return useMutation({
-    mutationFn: (data: { chatId: string; characterName: string; characterId?: string; connectionId?: string }) =>
-      api.post<RegeneratePartyCardResponse>("/game/party/card/regenerate", data),
-    onSuccess: (res, variables) => {
-      qc.setQueryData(chatKeys.detail(variables.chatId), res.sessionChat);
-      qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
-      qc.invalidateQueries({ queryKey: chatKeys.list() });
-      toast.success(`${res.characterName}'s sheet was regenerated.`);
+    mutationFn: (data: {
+      chatId: string;
+      characterId: string;
+      characterName: string;
+      connectionId?: string;
+      debugMode?: boolean;
+    }) => api.post<RegenerateCharacterSheetResponse>("/game/character-sheet/regenerate", data),
+    onSuccess: (res) => {
+      toast.success(t("game.characterSheet.regenerate.ready", { name: res.characterName }));
     },
     onError: (err) => {
-      console.error("[regeneratePartyCard] Error:", err);
-      toast.error(err.message || "Failed to regenerate party sheet.");
+      console.error("[regenerateCharacterSheet] Error:", err);
+      toast.error(err.message || t("game.characterSheet.regenerate.error"));
     },
   });
 }
@@ -618,22 +625,6 @@ export function useMoveOnMap() {
       }
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
       qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
-    },
-  });
-}
-
-export function useUpdateGameMapBinding() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: UpdateGameMapBindingInput) =>
-      api.put<UpdateGameMapBindingResponse>("/game/map/binding", data),
-    onSuccess: (response, variables) => {
-      useGameModeStore.getState().setMaps(response.maps ?? [response.map], response.activeGameMapId);
-      qc.setQueryData(chatKeys.detail(variables.chatId), response.sessionChat);
-      if (useChatStore.getState().activeChatId === variables.chatId) {
-        useChatStore.getState().setActiveChat(response.sessionChat);
-      }
-      void qc.invalidateQueries({ queryKey: chatKeys.list() });
     },
   });
 }
@@ -766,6 +757,8 @@ export function useSyncGameState(activeChatId: string, chatMeta: Record<string, 
       useGameModeStore.getState().setMaps(metadataMaps, activeMapId);
     } else if (chatMeta.gameMap && chatMeta.gameMap !== state.currentMap) {
       useGameModeStore.getState().setCurrentMap(chatMeta.gameMap as GameMap);
+    } else if (!chatMeta.gameMap) {
+      useGameModeStore.getState().setMaps([], null);
     }
     if (Array.isArray(chatMeta.gameNpcs)) {
       useGameModeStore.getState().setNpcs(chatMeta.gameNpcs as any[]);
@@ -851,29 +844,6 @@ export function useTacticalCombatAction() {
   });
 }
 
-export function useCombatLoot() {
-  return useMutation({
-    mutationFn: async (data: { chatId: string; enemyCount: number }) => {
-      const res = await api.post<{
-        drops: Array<{ item?: { name?: string | null } | null; quantity?: number | null } | null>;
-      }>("/game/combat/loot", data);
-
-      return {
-        drops: (res.drops ?? [])
-          .filter((drop): drop is NonNullable<(typeof res.drops)[number]> => !!drop?.item?.name)
-          .map((drop) => ({ name: drop.item!.name!, quantity: drop.quantity ?? undefined })),
-      };
-    },
-  });
-}
-
-export function useLootGenerate() {
-  return useMutation({
-    mutationFn: (data: { chatId: string; count?: number }) =>
-      api.post<{ drops: unknown[] }>("/game/loot/generate", data),
-  });
-}
-
 export function useAdvanceTime() {
   const qc = useQueryClient();
   return useMutation({
@@ -917,7 +887,6 @@ export function useUpdateWeather() {
   });
 }
 
-
 export function useUpdateReputation() {
   const qc = useQueryClient();
   const store = useGameModeStore;
@@ -929,46 +898,5 @@ export function useUpdateReputation() {
       qc.invalidateQueries({ queryKey: chatKeys.detail(variables.chatId) });
       qc.invalidateQueries({ queryKey: [...gameKeys.all, "journal", variables.chatId] });
     },
-  });
-}
-
-
-export function useGameJournal(chatId: string | null) {
-  return useQuery({
-    queryKey: [...gameKeys.all, "journal", chatId],
-    queryFn: () => api.get<{ journal: unknown; recap: string }>(`/game/${chatId}/journal`),
-    enabled: !!chatId,
-    staleTime: 30_000,
-  });
-}
-
-// ── Checkpoints ──
-
-export function useGameCheckpoints(chatId: string | null) {
-  return useQuery({
-    queryKey: [...gameKeys.all, "checkpoints", chatId],
-    queryFn: () => api.get<import("@marinara-engine/shared").GameCheckpoint[]>(`/game/${chatId}/checkpoints`),
-    enabled: !!chatId,
-    staleTime: 30_000,
-  });
-}
-
-export function useCreateCheckpoint() {
-  return useMutation({
-    mutationFn: (data: { chatId: string; label: string; triggerType: string }) =>
-      api.post<{ id: string }>("/game/checkpoint", data),
-  });
-}
-
-export function useLoadCheckpoint() {
-  return useMutation({
-    mutationFn: (data: { chatId: string; checkpointId: string }) =>
-      api.post<{ ok: boolean; messageId: string }>("/game/checkpoint/load", data),
-  });
-}
-
-export function useDeleteCheckpoint() {
-  return useMutation({
-    mutationFn: (id: string) => api.delete<{ ok: boolean }>(`/game/checkpoint/${id}`),
   });
 }

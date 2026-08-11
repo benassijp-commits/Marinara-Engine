@@ -5,26 +5,18 @@ import type {
   Message,
   MessageAttachment,
   PendingSpatialTransition,
-  SpatialContextDefinition,
   SpatialContextResponse,
   SpatialDefinitionIssue,
 } from "@marinara-engine/shared";
 import { api, ApiError } from "../lib/api-client";
 import { useChatStore } from "../stores/chat.store";
+import { dispatchCapabilityClientEvent } from "../lib/capability-client-events";
 import { chatKeys } from "./use-chats";
 
 export const spatialContextKeys = {
   all: ["spatial-context"] as const,
   detail: (chatId: string) => [...spatialContextKeys.all, chatId] as const,
 };
-
-export interface UpdateSpatialContextInput {
-  chatId: string;
-  expectedRevision: number;
-  expectedCurrentLocationId: string | null;
-  replacementCurrentLocationId?: string | null;
-  definition: SpatialContextDefinition;
-}
 
 export interface GenerateSpatialMapDraftInput extends GenerateSpatialMapDraftRequest {
   chatId: string;
@@ -89,7 +81,7 @@ export function getSpatialContextProblem(error: unknown): SpatialContextProblem 
     return {
       status: null,
       code: null,
-      message: error instanceof Error ? error.message : "The hierarchical map could not be saved.",
+      message: error instanceof Error ? error.message : "The world map could not be saved.",
       issues: [],
       conflict: false,
     };
@@ -100,7 +92,7 @@ export function getSpatialContextProblem(error: unknown): SpatialContextProblem 
   return {
     status: error.status,
     code,
-    message: error.message || "The hierarchical map could not be saved.",
+    message: error.message || "The world map could not be saved.",
     issues: readIssues(payload.issues),
     conflict: error.status === 409 || code === "spatial_definition_stale" || code === "spatial_current_location_stale",
   };
@@ -119,22 +111,6 @@ export function useSpatialContext(chatId: string | null, enabled = true) {
   });
 }
 
-export function useUpdateSpatialContext() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ chatId, ...request }: UpdateSpatialContextInput) =>
-      api.put<SpatialContextResponse>(`/chats/${chatId}/spatial-context`, request),
-    onSuccess: (response, variables) => {
-      queryClient.setQueryData(spatialContextKeys.detail(variables.chatId), response);
-    },
-    onError: (error, variables) => {
-      if (getSpatialContextProblem(error).conflict) {
-        void queryClient.invalidateQueries({ queryKey: spatialContextKeys.detail(variables.chatId) });
-      }
-    },
-  });
-}
-
 export function useCommitSpatialOwnerTurn() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -142,9 +118,18 @@ export function useCommitSpatialOwnerTurn() {
       api.post<CommitSpatialOwnerTurnResponse>(`/chats/${chatId}/spatial-context/turn`, request),
     onSuccess: (response, variables) => {
       queryClient.setQueryData(spatialContextKeys.detail(variables.chatId), response.spatial);
-      useChatStore
-        .getState()
-        .clearPendingSpatialTransition(variables.chatId, variables.transition.commandId);
+      useChatStore.getState().clearPendingSpatialTransition(variables.chatId, variables.transition.commandId);
+      dispatchCapabilityClientEvent({
+        packageId: "hierarchical-maps",
+        type: "spatial_transition_committed",
+        chatId: variables.chatId,
+        data: {
+          chatId: variables.chatId,
+          commandId: variables.transition.commandId,
+          currentLocationId: response.spatial.currentLocationId,
+          definitionRevision: response.spatial.definition?.revision,
+        },
+      });
       void queryClient.invalidateQueries({ queryKey: chatKeys.messages(variables.chatId) });
       void queryClient.invalidateQueries({ queryKey: chatKeys.messageCount(variables.chatId) });
       void queryClient.invalidateQueries({ queryKey: chatKeys.list() });

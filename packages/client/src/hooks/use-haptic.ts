@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api-client";
-import type { HapticStatus, HapticDeviceCommand } from "@marinara-engine/shared";
+import type { HapticStatus } from "@marinara-engine/shared";
 
 const HAPTIC_KEY = ["haptic", "status"] as const;
 export const HAPTIC_INTIFACE_URL_STORAGE_KEY = "marinara_haptic_intiface_url";
@@ -41,28 +41,5 @@ export function useHapticStartScan() {
   return useMutation({
     mutationFn: () => api.post("/haptic/scan/start"),
     onSuccess: () => qc.invalidateQueries({ queryKey: HAPTIC_KEY }),
-  });
-}
-
-/** Stop scanning for devices. */
-export function useHapticStopScan() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () => api.post("/haptic/scan/stop"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: HAPTIC_KEY }),
-  });
-}
-
-/** Send a manual command to a device. */
-export function useHapticCommand() {
-  return useMutation({
-    mutationFn: (cmd: HapticDeviceCommand) => api.post("/haptic/command", cmd),
-  });
-}
-
-/** Stop all devices. */
-export function useHapticStopAll() {
-  return useMutation({
-    mutationFn: () => api.post("/haptic/stop-all"),
   });
 }

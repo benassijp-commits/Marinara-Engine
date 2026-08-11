@@ -1,6 +1,6 @@
 # Custom CSS Themes (Theme Library)
 
-This guide explains how to change the whole look of Marinara Engine with a custom CSS theme. You will learn how to create, import, export, and activate themes. You will also see which CSS variables you can change and how themes work with extensions and Card CSS.
+This guide explains how to change the whole look of Marinara Engine with a custom CSS theme. You will learn how to create, import, export, and activate themes. You will also see which CSS variables you can change and how themes work with Card CSS.
 
 ## What a custom theme is
 
@@ -13,8 +13,8 @@ Only one custom theme can be active at a time. You can keep as many themes in yo
 ## Where to find the Theme Library
 
 1. Open **Settings**.
-2. Open the **Addons** tab. The tab opens with the line "Extensions add trusted browser or server behavior; custom themes change Marinara's look."
-3. Scroll past the **Extension Library** section. The **Theme Library** section sits below it.
+2. Open the **Addons** tab.
+3. Find the **Theme Library** section.
 
 The section is titled **Theme Library** and reads "Create, import, activate, edit, export, or remove custom CSS themes."
 
@@ -109,22 +109,19 @@ To manage themes over a network:
 
 Without this, theme changes over a network fail. For the full setup, see the [Server Configuration Reference](../CONFIGURATION.md) and the [Remote Access guide](../REMOTE_ACCESS.md).
 
-## How themes, extensions, and Card CSS work together
+## How themes and Card CSS work together
 
-Marinara has three ways to add custom CSS. They are separate features and can all be active at once.
+Marinara has two ways to add custom CSS. They are separate features and can both be active at once.
 
 A custom theme repaints the whole app. It is allowed to override Marinara's core variables, use `!important`, and use `position: fixed`. That is the point of a theme.
 
-Extensions can also inject CSS into the page. You manage them in **Settings -> Addons -> Extension Library**, right above the Theme Library. Extension CSS follows the same rules as theme CSS, so an enabled extension can also change how the app looks. See the [Extensions guide](../extending/extensions.md).
-
 Card CSS is different. A character or persona creator can embed CSS in a card, and you turn it on per chat. Card CSS is cleaned more strictly. It cannot override the app's core variables, `!important` is stripped, and `position: fixed` becomes `position: absolute`. It styles chat messages, not the whole app. See the [Card CSS Theming Guide](card-css-theming.md).
 
-If the app looks wrong, an active theme, an enabled extension, and Card CSS are all worth checking. Any of the three could be the cause.
+If the app looks wrong, an active theme and Card CSS are both worth checking. Either could be the cause.
 
 ## Related guides
 
 - [Card CSS Theming Guide](card-css-theming.md)
 - [Appearance Settings](appearance-settings.md)
-- [Extensions](../extending/extensions.md)
 - [Server Configuration Reference](../CONFIGURATION.md)
 - [Remote Access: Basic Auth and IP Allowlist](../REMOTE_ACCESS.md)

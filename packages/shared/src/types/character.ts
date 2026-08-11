@@ -46,6 +46,8 @@ export interface CharacterExtensions {
   boxColor?: string;
   /** Marinara Engine: RPG stats toggle + custom attributes */
   rpgStats?: RPGStatsConfig;
+  /** Marinara Engine: per-character Tracker fields copied into each new Roleplay chat. */
+  trackerCustomFieldDefaults?: CharacterTrackerCustomFieldDefault[];
   /** Marinara Engine: Conversation-mode availability status */
   conversationStatus?: import("./chat.js").ConversationPresenceStatus;
   /** Marinara Engine: pronunciation override used when sending this character's name to TTS. */
@@ -63,9 +65,10 @@ export interface CharacterExtensions {
   /** Marinara Engine (Conversation mode ONLY): behavior directive + insertion strategy.
    *  Never read in RP/VN/Game. */
   convoBehavior?: ConvoBehaviorConfig;
-  /** Marinara Engine (Conversation mode ONLY): which sources the AI-write "about me"
-   *  draws on. Never read in RP/VN/Game. */
-  aboutMeSources?: AboutMeSourceConfig;
+  /** Marinara Engine: character-specific direction for Conversation selfie image prompts. */
+  conversationImageInstructions?: string;
+  /** Marinara Engine: also apply conversationImageInstructions to this character's Noodle images. */
+  applyConversationImageInstructionsToNoodle?: boolean;
   [key: string]: unknown;
 }
 
@@ -86,25 +89,6 @@ export interface ConvoBehaviorConfig {
   insertionStrategy: ConvoBehaviorInsertionStrategy;
 }
 
-/** Which sources the AI-write "about me" draws on. Per-character; default = personality only. */
-export interface AboutMeSourceConfig {
-  description?: boolean;
-  personality?: boolean;
-  scenario?: boolean;
-  backstory?: boolean;
-  appearance?: boolean;
-  /** The Convo behavior directive. */
-  convoBehavior?: boolean;
-  /** The character's linked + embedded lorebook entries. */
-  lorebook?: boolean;
-  /** When set, only these linked lorebook entry ids are included; absent → all of them. */
-  lorebookEntryIds?: string[];
-  /** Recent chat messages — only meaningful for a chat-specific (override) about me. */
-  chatContext?: boolean;
-  /** How many recent messages to include when chatContext is on. */
-  chatContextLimit?: number;
-}
-
 /** RPG stats configuration attached to a character card. */
 export interface RPGStatPool {
   name: string;
@@ -122,6 +106,12 @@ export interface RPGStatsConfig {
   hp: { value: number; max: number };
   /** HP-like bars such as HP, MP, EP, Sanity, etc. */
   pools?: RPGStatPool[];
+}
+
+/** A character-profile default for a text-valued Character Tracker field. */
+export interface CharacterTrackerCustomFieldDefault {
+  name: string;
+  value: string;
 }
 
 /** Depth-injected prompt attached to a character. */
@@ -153,7 +143,8 @@ export type CharacterBookEntryPosition =
   | 3
   | 4
   | 5
-  | 6;
+  | 6
+  | 7;
 export type CharacterBookEntryRole = "system" | "user" | "assistant" | 0 | 1 | 2;
 
 /** A single entry in a character book. */
@@ -203,6 +194,10 @@ export interface CharacterCardVersion {
   source: "manual" | "agent" | "command" | "restore" | string;
   reason: string;
   createdAt: string;
+  /** Monotonic display revision within this card's history. */
+  revision: number;
+  /** True for the live card state included at the top of history. */
+  isCurrent?: boolean;
 }
 
 /** Snapshot data saved for a previous persona card state. */
@@ -242,6 +237,10 @@ export interface PersonaCardVersion {
   source: "manual" | "agent" | "command" | "restore" | string;
   reason: string;
   createdAt: string;
+  /** Monotonic display revision within this card's history. */
+  revision: number;
+  /** True for the live persona state included at the top of history. */
+  isCurrent?: boolean;
 }
 
 /** A group of characters (e.g. "Fatui Harbingers") — acts as a preset that adds all members to a chat. */

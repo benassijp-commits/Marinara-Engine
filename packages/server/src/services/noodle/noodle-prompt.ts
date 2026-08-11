@@ -23,6 +23,8 @@ export const NOODLE_PERSONA_AUTHORSHIP_INSTRUCTION =
   "- The user persona is controlled exclusively by the user. Never generate posts, replies, likes, reposts, poll votes, or follows as a persona. Personas may only be mentioned or targeted by other accounts.";
 export const NOODLE_PERSONA_IDENTITY_INSTRUCTION =
   "- Every persona account is a separate user identity. Preserve the accountKey on historical posts and replies: changing the currently selected persona never changes, merges, or reattributes activity created by another persona.";
+export const NOODLE_UNIQUE_CONTENT_INSTRUCTION =
+  "- Never reuse the same message text for more than one post or reply by the same account. In particular, do not copy a new post's content into a reply or duplicate a reply as a new post.";
 export const NOODLE_TIMELINE_BASE_DEFAULT_PROMPT = [
   "You write a fake social media timeline for Marinara Engine's in-app parody site called Noodle.",
   NOODLE_ADULT_PLATFORM_POLICY,
@@ -31,6 +33,7 @@ export const NOODLE_TIMELINE_BASE_DEFAULT_PROMPT = [
   "- To respond directly to an existing comment, create a reply interaction for its post and set parentInteractionId to that comment's exact replyId.",
   "- Do not make an account interact with the same existing post again when it has already liked, reposted, voted, or replied there, unless that account was tagged or is answering a direct response to its own comment. Never make an account reply to its own comment.",
   "- Avoid repeating an account's recent post topic or phrasing. Continue an existing thread only when new activity gives the account a reason to return.",
+  NOODLE_UNIQUE_CONTENT_INSTRUCTION,
   NOODLE_PERSONA_AUTHORSHIP_INSTRUCTION,
   NOODLE_PERSONA_IDENTITY_INSTRUCTION,
   "- For each interaction, set either targetTempId or targetPostId and set the unused target field to null.",
@@ -98,7 +101,7 @@ export const NOODLE_RECALLED_MEMORY_INSTRUCTION =
 
 type NoodleTimelineFeatureSettings = Pick<
   NoodleSettings,
-  "allowRandomUsers" | "enableImagePrompts" | "allowGalleryImageAttachments"
+  "allowRandomUsers" | "enableImagePrompts" | "allowGalleryImageAttachments" | "imageGenerationPrompt"
 >;
 
 type RandomSource = () => number;
@@ -347,12 +350,15 @@ export function sampleNoodlePastMemoriesWeighted<T>(
  * Noodle can batch far more characters into one refresh (up to 100, or uncapped with "All
  * invited") than a normal chat turn (1-2 characters), so it scales its own lorebook budget by
  * active character count rather than reusing DEFAULT_LOREBOOK_TOKEN_BUDGET outright — a
- * single-character refresh gets at least the floor, and a large roster is capped at the same
- * default a normal chat turn would get, never more.
+ * single-character refresh gets at least the floor, and a large roster is capped at Noodle's
+ * explicit 8k-token hard ceiling, never more.
  */
 export function noodleLorebookTokenBudget(activeCharacterCount: number): number {
   const scaled = Math.max(activeCharacterCount, 0) * LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_PER_ACCOUNT;
-  return Math.min(LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET, Math.max(LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_FLOOR, scaled));
+  return Math.min(
+    LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_MAX,
+    Math.max(LIMITS.NOODLE_LOREBOOK_TOKEN_BUDGET_FLOOR, scaled),
+  );
 }
 
 export function noodleTimelineFeatureInstructions(settings: NoodleTimelineFeatureSettings): string[] {
@@ -367,6 +373,11 @@ export function noodleTimelineFeatureInstructions(settings: NoodleTimelineFeatur
     ...(settings.enableImagePrompts
       ? [
           "- When image generation is enabled, imagePrompt must contain only the final concrete visual description for the attached image: either a character-focused image of the author/their scene/selfie, or an in-character meme they would plausibly post. Do not put the post JSON, field names, meta-commentary, instructions to another model, or the full post text inside imagePrompt.",
+          ...(settings.imageGenerationPrompt?.trim()
+            ? [
+                `- Apply these user image directions when writing imagePrompt. They are instructions to you, not text to copy into imagePrompt: ${settings.imageGenerationPrompt.trim()}`,
+              ]
+            : []),
         ]
       : []),
     ...(settings.allowGalleryImageAttachments

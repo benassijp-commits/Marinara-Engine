@@ -1,10 +1,22 @@
-import { sanitizeFolderSegment } from "@marinara-engine/shared";
+import {
+  CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
+  agentResultTypeSchema,
+  createImportedAgentType,
+  getFolderManifestConfig,
+  normalizeCustomAgentCapabilities,
+  normalizeAgentPhaseForType,
+  normalizeAgentPhaseValue,
+  sanitizeFolderSegment,
+  type CustomAgentCapability,
+} from "@marinara-engine/shared";
 import type { ZipFileInput } from "./download-zip";
 import {
-  createCustomToolFolderPackageEntries,
-  type CustomToolTransferConfig,
-} from "./custom-tool-transfer";
-import { reservePackageFolderSegment } from "./folder-package-transfer";
+  getPackagePathBasename,
+  normalizePackagePath,
+  reservePackageFolderSegment,
+  type FolderPackageImportEntry,
+} from "./folder-package-transfer";
 
 export type AgentTransferConfig = {
   type: string;
@@ -32,9 +44,29 @@ const TRANSFER_UNSAFE_AGENT_SETTING_KEYS = new Set([
   "targetLorebookId",
   "imageConnectionId",
   "lorebookWriteEnabled",
+  "customAgentRepositorySource",
+  CUSTOM_AGENT_IMPORT_SOURCE_SETTING,
+  CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING,
 ]);
 
 const TRANSFER_UNSAFE_ENABLED_TOOLS = new Set(["save_lorebook_entry"]);
+const AGENT_PACKAGE_ROOT_FILENAMES = new Set(["marinara-agent.json", "marinara-agents.json"]);
+
+export function countSkippedAgentImportFunctions(
+  agentEntries: FolderPackageImportEntry[],
+  functionEntries: FolderPackageImportEntry[],
+) {
+  const claimedAgentPaths = new Set(
+    agentEntries.map((entry) => normalizePackagePath(entry.path).toLowerCase()),
+  );
+  return functionEntries.filter((entry) => {
+    const path = normalizePackagePath(entry.path).toLowerCase();
+    return (
+      !claimedAgentPaths.has(path) &&
+      !AGENT_PACKAGE_ROOT_FILENAMES.has(getPackagePathBasename(path).toLowerCase())
+    );
+  }).length;
+}
 
 export function sanitizeAgentSettingsForTransfer(settings: Record<string, unknown>) {
   const sanitized = { ...settings };
@@ -51,10 +83,83 @@ export function sanitizeAgentSettingsForTransfer(settings: Record<string, unknow
   return sanitized;
 }
 
-export function createAgentFolderPackageFiles(
-  agents: AgentTransferConfig[],
-  options: { customTools?: CustomToolTransferConfig[] } = {},
-): ZipFileInput[] {
+/** Imported agents never receive tool access from the file they came from. */
+export function sanitizeAgentSettingsForImport(settings: Record<string, unknown>) {
+  const sanitized = sanitizeAgentSettingsForTransfer(settings);
+  delete sanitized.enabledTools;
+  return sanitized;
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseAgentSettings(value: unknown): Record<string, unknown> {
+  if (isJsonRecord(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return isJsonRecord(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+export function normalizeAgentImportEntry(entry: unknown, resolveTextFile?: (path: unknown) => string | null) {
+  const source = getFolderManifestConfig(entry);
+  if (!isJsonRecord(source)) return null;
+
+  const sourceType = typeof source.type === "string" ? source.type.trim() : "";
+  const name = typeof source.name === "string" ? source.name.trim() : "";
+  const description = typeof source.description === "string" ? source.description : "";
+  if (!sourceType || !name) return null;
+  const type = createImportedAgentType(sourceType);
+  const phase = normalizeAgentPhaseForType(type, normalizeAgentPhaseValue(source.phase));
+
+  const settingsText = resolveTextFile?.(source.settingsPath);
+  const settings = sanitizeAgentSettingsForImport(parseAgentSettings(settingsText ?? source.settings));
+  if (typeof source.author === "string" && !settings.author) {
+    settings.author = source.author;
+  }
+  if (Array.isArray(source.promptTemplates) && settings.promptTemplates === undefined) {
+    settings.promptTemplates = source.promptTemplates;
+  }
+  if (typeof settings.author !== "string" || !settings.author.trim()) {
+    settings.author = "Unknown";
+  }
+  const parsedResultType = agentResultTypeSchema.safeParse(
+    typeof source.resultType === "string" ? source.resultType : settings.resultType,
+  );
+  const resultType = parsedResultType.success ? parsedResultType.data : undefined;
+  const permissionSettings = { ...settings };
+  delete permissionSettings[CUSTOM_AGENT_PERMISSIONS_EXPLICIT_SETTING];
+  if (resultType) permissionSettings.resultType = resultType;
+  const requestedCapabilities = (
+    Object.entries(normalizeCustomAgentCapabilities(permissionSettings)) as Array<[CustomAgentCapability, boolean]>
+  )
+    .filter(([, enabled]) => enabled === true)
+    .map(([capability]) => capability);
+
+  return {
+    type,
+    name,
+    description,
+    phase,
+    enabled: true,
+    connectionId: null,
+    imagePath: null,
+    promptTemplate:
+      resolveTextFile?.(source.promptTemplatePath) ??
+      (typeof source.promptTemplate === "string" ? source.promptTemplate : ""),
+    settings,
+    requestedCapabilities,
+    ...(resultType ? { resultType } : {}),
+  };
+}
+
+export function createAgentFolderPackageFiles(agents: AgentTransferConfig[]): ZipFileInput[] {
   const usedSegments = new Set<string>();
   const entries = agents.map((agent) => {
     const segment = reservePackageFolderSegment(agent.type || agent.name, "agent", usedSegments);
@@ -83,18 +188,12 @@ export function createAgentFolderPackageFiles(
       config,
     };
   });
-  const functionEntries =
-    options.customTools && options.customTools.length > 0
-      ? createCustomToolFolderPackageEntries(options.customTools)
-      : [];
-
   const envelope = {
     kind: "marinara.agent-folder",
     version: 1 as const,
     exportedAt: new Date().toISOString(),
     folderName: "Agents",
     agents: entries.map(({ entry }) => entry),
-    ...(functionEntries.length > 0 ? { functions: functionEntries.map(({ entry }) => entry) } : {}),
   };
 
   return [
@@ -104,7 +203,6 @@ export function createAgentFolderPackageFiles(
       { path: `${folderPath}/${promptTemplatePath}`, content: config.promptTemplate },
       { path: `${folderPath}/${settingsPath}`, content: JSON.stringify(config.settings, null, 2) },
     ]),
-    ...functionEntries.flatMap(({ files }) => files),
   ];
 }
 

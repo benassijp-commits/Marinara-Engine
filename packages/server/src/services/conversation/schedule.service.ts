@@ -4,17 +4,16 @@
 // Generates and manages weekly schedules for characters in Conversation mode.
 // Schedules are stored in chat metadata and drive the status system.
 
-import { createLLMProvider } from "../llm/provider-registry.js";
 import type { BaseLLMProvider } from "../llm/base-provider.js";
 import {
   CONVERSATION_SCHEDULE_DAYS,
+  getAdjacentScheduleBlocks,
   getActiveStatusOverride,
   getCurrentStatus,
   getEffectiveCurrentStatus,
   type CharacterSchedules,
   type ConversationMessageIntent,
   type ConversationPresenceStatus,
-  type ConversationStatusOverride,
   type CurrentConversationStatus,
   type DaySchedule,
   type ScheduleBlock,
@@ -25,12 +24,18 @@ import {
 // live in @marinara-engine/shared so the client presence dots derive status the
 // same way the server does. Re-export them here so existing server imports from
 // "./schedule.service.js" keep resolving unchanged.
-export { getActiveStatusOverride, getCurrentStatus, getEffectiveCurrentStatus };
+export {
+  getActiveStatusOverride,
+  getAdjacentScheduleBlocks as getAdjacentBlocks,
+  getCurrentStatus,
+  getEffectiveCurrentStatus,
+};
 export type { CharacterSchedules, ConversationMessageIntent, CurrentConversationStatus, DaySchedule, ScheduleBlock, WeekSchedule };
 
 // ── Constants ──
 
 const DAYS = CONVERSATION_SCHEDULE_DAYS;
+const ROUTINE_SUMMARY_DEFAULT_MAX_TOKENS = 8192;
 
 export type WeekScheduleDraftMode = "rewrite" | "adjust" | "vary" | "repair";
 
@@ -312,7 +317,12 @@ export async function generateScheduleRoutineSummary(
       { role: "system", content: systemPrompt },
       { role: "user", content: "Summarize the routine." },
     ],
-    { model, temperature: 0.55, maxTokens: Math.min(provider.maxTokensOverrideValue ?? 512, 512) },
+    {
+      model,
+      temperature: 0.55,
+      maxTokens: provider.maxTokensOverrideValue ?? ROUTINE_SUMMARY_DEFAULT_MAX_TOKENS,
+      reasoningEffort: "low",
+    },
   );
   const summary = (result.content ?? "").replace(/^```(?:text)?/i, "").replace(/```$/i, "").trim();
   if (!summary) throw new Error("Routine summary was empty");
@@ -533,63 +543,6 @@ export function getMentionDelay(status: ConversationPresenceStatus): number {
     case "offline":
       return 0;
   }
-}
-
-export function getAdjacentBlocks(
-  schedule: WeekSchedule,
-  now: Date = new Date(),
-): { previous: ScheduleBlock | null; current: ScheduleBlock | null; next: ScheduleBlock | null } {
-  const todayName = DAYS[(now.getDay() + 6) % 7]!;
-  const yesterdayName = DAYS[(now.getDay() + 5) % 7]!;
-  const tomorrowName = DAYS[now.getDay() % 7]!;
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-  function parseBlockMinutes(block: ScheduleBlock): { start: number; end: number } | null {
-    const [startStr, endStr] = block.time.split("-");
-    if (!startStr || !endStr) return null;
-    const [sh, sm] = startStr.split(":").map(Number);
-    const [eh, em] = endStr.split(":").map(Number);
-    const start = (sh ?? 0) * 60 + (sm ?? 0);
-    const end = (eh ?? 0) * 60 + (em ?? 0);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    return { start, end };
-  }
-
-  const candidates: Array<{ block: ScheduleBlock; start: number; end: number }> = [];
-  const addBlocks = (blocks: ScheduleBlock[] | undefined, dayOffset: number) => {
-    for (const block of blocks ?? []) {
-      const range = parseBlockMinutes(block);
-      if (!range) continue;
-      const start = dayOffset * 1440 + range.start;
-      let end = dayOffset * 1440 + range.end;
-      if (range.end <= range.start) end += 1440;
-      candidates.push({ block, start, end });
-    }
-  };
-
-  addBlocks(schedule.days[yesterdayName], -1);
-  addBlocks(schedule.days[todayName], 0);
-  addBlocks(schedule.days[tomorrowName], 1);
-  candidates.sort((a, b) => a.start - b.start);
-
-  let previous: ScheduleBlock | null = null;
-  let current: ScheduleBlock | null = null;
-  let next: ScheduleBlock | null = null;
-  for (const candidate of candidates) {
-    if (candidate.start <= currentMinutes && currentMinutes < candidate.end) {
-      current = candidate.block;
-      continue;
-    }
-    if (candidate.end <= currentMinutes) {
-      previous = candidate.block;
-      continue;
-    }
-    if (!next && candidate.start > currentMinutes) {
-      next = candidate.block;
-    }
-  }
-
-  return { previous, current, next };
 }
 
 export function blockDurationMinutes(block: ScheduleBlock): number {

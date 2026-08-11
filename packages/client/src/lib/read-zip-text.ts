@@ -41,25 +41,6 @@ export function isZipFile(file: File) {
   return name.endsWith(".zip") || file.type === "application/zip" || file.type === "application/x-zip-compressed";
 }
 
-export async function readTextFileFromZip(file: File, preferredPaths: string[]) {
-  const preferred = new Set(preferredPaths.map((path) => path.toLowerCase()));
-  let fallbackJsonEntry: ZipCentralDirectoryEntry | null = null;
-
-  const { bytes, entries } = await readZipCentralDirectory(file);
-  for (const entry of entries) {
-    const normalizedName = entry.filename.replace(/^\/+/, "").toLowerCase();
-    if (preferred.has(normalizedName)) {
-      return await readZipTextEntry(bytes, entry);
-    }
-    if (!fallbackJsonEntry && normalizedName.endsWith(".json") && !normalizedName.endsWith("/")) {
-      fallbackJsonEntry = entry;
-    }
-  }
-
-  if (fallbackJsonEntry) return await readZipTextEntry(bytes, fallbackJsonEntry);
-  throw new Error("No JSON file found in zip");
-}
-
 export async function readTextFilesFromZip(file: File): Promise<ZipTextEntry[]> {
   const { bytes, entries } = await readZipCentralDirectory(file);
   const textEntries: ZipTextEntry[] = [];

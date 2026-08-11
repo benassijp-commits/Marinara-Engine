@@ -2,7 +2,7 @@
 
 This guide is developer material for contributors. It describes the code organization of Marinara Engine: shared foundations, feature systems, mode ownership, and where each piece of code belongs. It also lists the current large files and the direction for future refactor work.
 
-Scope: `packages/client/src`, `packages/server/src`, and `packages/shared/src`. The repo keeps no committed test suite. Temporary `.test.ts` files are gitignored and removed after use.
+Scope: `packages/client/src`, `packages/server/src`, and `packages/shared/src`. The repo keeps no conventional `.test.ts` suite. Tracked regression scripts and Playwright smoke coverage provide automated validation; temporary `.test.ts` proof files are gitignored and removed after use.
 
 File counts, line counts, and route counts drift as the repo changes. This map gives approximate shapes and names. Always check the current tree for exact numbers.
 
@@ -25,7 +25,7 @@ Use these codes when planning moves, labeling issues, or adding a short file hea
 | `FEATURE-SIDECAR` | Local model runtime, scene analysis, downloads, process control | sidecar store, `/api/sidecar`, sidecar services |
 | `FEATURE-TTS` | TTS config, voice routing, cache keys, audio playback | TTS settings/hooks/routes/services |
 | `FEATURE-IMPORT` | SillyTavern and Marinara importers and migration helpers | import routes/services |
-| `TEST` | Temporary proof tests only | Temporary `packages/server/src/**/__tests__/` files, removed after use |
+| `TEST` | Tracked regression and browser smoke coverage, plus temporary proof tests when needed | `scripts/regressions`, `e2e`, and temporary `packages/server/src/**/__tests__/` files removed after use |
 
 Prefer making the path communicate the section. A comment like `// Section: MODE-GAME` is only useful while a file still sits in a mixed directory.
 
@@ -89,7 +89,7 @@ Current top-level shape:
 - `services/game`: GM prompts, dice, combat, state machine, party prompts, maps, weather, time, sessions, checkpoints, reputation, assets.
 - `services/sidecar`: local runtime, model management, scene analysis, scene postprocessing.
 - `services/agents`: agent execution and knowledge routing.
-- Feature foundations: `services/import`, `services/lorebook`, `services/image`, `services/haptic`, `services/tools`, `services/extensions`, `services/regex`, `services/professor-mari`, `services/mari-db`, `services/turn-games`, `services/spotify`, `services/video`, `services/generation`, `services/chat-summary`, `services/achievements`, `services/prompt-overrides`, `services/setup`, `services/noodle`, `services/memory-recall`, and `discord-webhook.ts`.
+- Feature foundations: `services/import`, `services/lorebook`, `services/image`, `services/haptic`, `services/tools`, `services/regex`, `services/professor-mari`, `services/mari-db`, `services/turn-games`, `services/spotify`, `services/video`, `services/generation`, `services/chat-summary`, `services/achievements`, `services/prompt-overrides`, `services/setup`, `services/noodle`, `services/memory-recall`, and `discord-webhook.ts`.
 - `db/schema`: file-table definitions for data stored under `DATA_DIR/storage`.
 - `db/file-schema.ts`, `db/file-query.ts`: native table metadata and query expressions.
 - `db/file-backed-store.ts`: in-memory table store, transaction boundary, crash recovery, and JSON snapshot persistence. See [File-Native Storage (Developers)](file-storage.md).
@@ -262,7 +262,7 @@ The old flat `types`, `schemas`, and `constants` layout is no longer the whole s
 4. If only the server needs it, keep it out of `packages/shared`.
 5. Route files should validate HTTP input and call services. Domain decisions should move into services.
 6. Stores should be either global (`ui`, `chat`, `sidecar`) or mode-specific (`game-mode`, `encounter`). Avoid one store quietly owning multiple modes.
-7. Metadata should become discriminated by `ChatMode`: base metadata plus conversation, roleplay, and game extensions.
+7. Metadata should become discriminated by `ChatMode`: base metadata plus conversation, roleplay, and game fields.
 8. Move one feature at a time. Leave compatibility exports or wrappers when a broad import path would otherwise churn the repo.
 9. After each move, run lint:
 

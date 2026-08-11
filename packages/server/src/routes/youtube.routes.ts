@@ -177,7 +177,7 @@ export async function youtubeRoutes(app: FastifyInstance) {
    * GET /api/youtube/status?agentId=xxx
    * Returns whether a YouTube Data API key is configured.
    */
-  app.get<{ Querystring: { agentId?: string } }>("/status", async (req, reply) => {
+  app.get<{ Querystring: { agentId?: string } }>("/status", async (req) => {
     const agent = await resolveAgent(req.query.agentId);
     if (!agent) return { configured: false };
     return { configured: !!readApiKey(parseSettings(agent)) };

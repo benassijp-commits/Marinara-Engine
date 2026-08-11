@@ -10,6 +10,8 @@ Marinara keeps your data in a local data folder on the machine that runs the ser
 
 When upgrading from a version that bundled first-party agents, maps, calls, or Conversation games, the first start downloads their matching optional packages from the official catalog. Existing chat selections, agent settings, stored runtime data, and history are preserved. Keep the server online for that first start. If the catalog cannot be reached, Marinara retries the migration the next time it starts instead of deleting or disabling your stored configuration.
 
+If you use a downloaded documentation language (**Settings** → **General** → **Documentation Language**), the first start after an update also checks that language pack for changes and refreshes it automatically. If the download source cannot be reached, Marinara keeps your installed pack (any guides missing from it show in English) and tries again on the next start. Your language choice is never reset by an update.
+
 To learn where your data lives and how to save a copy, see [Backing Up and Restoring Marinara](data/backup-and-restore.md).
 
 ## Back up first
@@ -22,7 +24,7 @@ Upgrades are safe, but a backup is cheap insurance. Make one before any large ju
 4. Click **Download Backup**.
 5. Save the `.zip` file somewhere safe.
 
-You should see the button change to **Creating backup...** while it works. When it finishes, your browser saves a `.zip` archive of your data.
+You should see the button change to **Creating backup…** while it works. When it finishes, your browser saves a `.zip` archive of your data.
 
 Full steps for backups and restoring are in [Backing Up and Restoring Marinara](data/backup-and-restore.md).
 
@@ -39,6 +41,8 @@ If you used the Windows installer or a git checkout, the launcher updates you au
 
 The launcher fetches the latest code, reinstalls what changed, rebuilds the app, and starts the new version. This works for both the installer and a manual clone.
 
+For one launch, run `start.bat --skip-update`. To keep the installed Engine version across launches, set `AUTO_UPDATE_ENABLED=false` in the project `.env`. This only disables automatic Engine updates; manual commands and **Settings → Advanced → Check for Updates** remain available.
+
 If the launcher says Node.js is too old, install Node.js 24 LTS, then start Marinara again. LTS means Long Term Support, the recommended stable release of Node.js.
 
 You can also download the newest installer from the GitHub Releases page and run it. It uses the same git-based path, so future updates still run through the launcher.
@@ -52,6 +56,8 @@ Close Marinara Engine, then run the launcher from your Marinara folder.
 ```
 
 The launcher fetches the latest code, reinstalls changed dependencies, rebuilds, and starts the new version.
+
+Use `./start.sh --skip-update` for one launch, or set `AUTO_UPDATE_ENABLED=false` in `.env` for a persistent opt-out. Manual update commands and the in-app update controls remain available.
 
 If it says Node.js is too old, install Node.js 24 LTS, then run the launcher again.
 
@@ -92,6 +98,8 @@ cd Marinara-Engine
 ./start-termux.sh --skip-update
 ```
 
+For a persistent opt-out, set `AUTO_UPDATE_ENABLED=false` in the project `.env`. This affects only launcher-managed Engine updates; manual updates and the in-app update controls remain available.
+
 If you use the Android app icon (the APK), open it and tap **Install / Start Marinara**. The APK is a sideloaded app, which means you installed it outside the official app store. It is a shell over Termux, so it updates the same Termux copy behind it.
 
 ### iPhone and iPad
@@ -124,11 +132,11 @@ The **Release Channel** dropdown picks which builds you track. It has two choice
 
 Choosing **Staging/UAT** shows a warning: "Staging builds are pre-release tester builds. Back up your app data before applying them."
 
-Switching channels is treated as a deliberate choice. When you pick a different channel from a browser on the machine that runs the server, the update button changes to **Switch to** followed by the channel name, and it works even when ordinary in-app updates are turned off. It shows **Switching...** while it runs. Normal same-channel updates still need the setup described under Apply Update below, and remote devices always do.
+Switching channels is treated as a deliberate choice. When you pick a different channel from a browser on the machine that runs the server, the update button changes to **Switch to** followed by the channel name, and it works even when ordinary in-app updates are turned off. It shows **Switching…** while it runs. Normal same-channel updates still need the setup described under Apply Update below, and remote devices always do.
 
 ### Check for Updates
 
-Click **Check for Updates**. The button shows **Checking...** while it works.
+Click **Check for Updates**. The button shows **Checking…** while it works.
 
 Below the button you see your **Release** version and your **Build** commit code. A **Branch** line also appears when the branch is known.
 
@@ -171,7 +179,7 @@ The **Refresh App** button sits in the same **Updates** section. It is not a ser
 
 Use **Refresh App** when the app looks stale or shows a blank screen after an update, but the server is already running the new version. It fixes a stuck web page. It does not change the server code, so it is not a substitute for a real upgrade.
 
-The button shows **Refreshing...** while it works, then the app reloads.
+The button shows **Refreshing…** while it works, then the app reloads.
 
 ## If an upgrade fails
 

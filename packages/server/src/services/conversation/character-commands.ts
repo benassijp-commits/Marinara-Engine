@@ -28,10 +28,10 @@
 // - [dm: character="CharName", message="text"] (Roleplay-only: open a direct-message conversation)
 //
 // Assistant commands (Professor Mari):
-// - [create_persona: name="...", description="...", personality="...", appearance="..."]
-// - [create_character: name="...", description="...", personality="...", first_message="...", scenario="...", backstory="...", appearance="...", mes_example="...", creator_notes="...", system_prompt="...", post_history_instructions="...", creator="...", character_version="...", tags="tag1, tag2", alternate_greetings="hello || hi", talkativeness=0.5, fav=true, world="...", depth_prompt="...", depth_prompt_depth=4, depth_prompt_role="system"]
-// - [update_character: name="...", description="...", personality="...", first_message="...", scenario="...", backstory="...", appearance="...", mes_example="...", creator_notes="...", system_prompt="...", post_history_instructions="...", creator="...", character_version="...", tags="tag1, tag2", alternate_greetings="hello || hi", talkativeness=0.5, fav=true, world="...", depth_prompt="...", depth_prompt_depth=4, depth_prompt_role="system"]
-// - [update_persona: name="...", description="...", personality="...", appearance="...", scenario="...", backstory="..."]
+// - [create_persona: name="...", description="...", personality="...", appearance="...", about_me="..."]
+// - [create_character: name="...", description="...", personality="...", first_message="...", scenario="...", backstory="...", appearance="...", about_me="...", mes_example="...", creator_notes="...", system_prompt="...", post_history_instructions="...", creator="...", character_version="...", tags="tag1, tag2", alternate_greetings="hello || hi", talkativeness=0.5, fav=true, world="...", depth_prompt="...", depth_prompt_depth=4, depth_prompt_role="system"]
+// - [update_character: name="...", description="...", personality="...", first_message="...", scenario="...", backstory="...", appearance="...", about_me="...", mes_example="...", creator_notes="...", system_prompt="...", post_history_instructions="...", creator="...", character_version="...", tags="tag1, tag2", alternate_greetings="hello || hi", talkativeness=0.5, fav=true, world="...", depth_prompt="...", depth_prompt_depth=4, depth_prompt_role="system"]
+// - [update_persona: name="...", description="...", personality="...", appearance="...", scenario="...", backstory="...", about_me="..."]
 // - <create_lorebook>{"name":"...","description":"...","category":"...","tags":["..."],"entries":[{"name":"...","content":"...","keys":["..."],"tag":"..."}]}</create_lorebook>
 // - <update_lorebook>{"name":"Existing","description":"...","entries":[{"name":"Entry","content":"refined content","keys":["..."]}]}</update_lorebook>
 // - <create_preset>{"name":"...","description":"...","sections":[{"name":"...","content":"...","role":"system"}],"choiceBlocks":[{"variableName":"...","question":"...","options":[{"label":"...","value":"..."}]}]}</create_preset>
@@ -198,6 +198,7 @@ export interface CreatePersonaCommand {
   description?: string;
   personality?: string;
   appearance?: string;
+  aboutMe?: string;
 }
 
 export interface CreateCharacterCommand {
@@ -209,6 +210,7 @@ export interface CreateCharacterCommand {
   scenario?: string;
   backstory?: string;
   appearance?: string;
+  aboutMe?: string;
   mesExample?: string;
   creatorNotes?: string;
   systemPrompt?: string;
@@ -234,6 +236,7 @@ export interface UpdateCharacterCommand {
   scenario?: string;
   backstory?: string;
   appearance?: string;
+  aboutMe?: string;
   mesExample?: string;
   creatorNotes?: string;
   systemPrompt?: string;
@@ -258,6 +261,7 @@ export interface UpdatePersonaCommand {
   appearance?: string;
   scenario?: string;
   backstory?: string;
+  aboutMe?: string;
 }
 
 export interface CreateLorebookEntryCommand {
@@ -1057,6 +1061,7 @@ function applyCommonCharacterFields(
   assignText("scenario", "scenario");
   assignText("backstory", "backstory");
   assignText("appearance", "appearance");
+  assignText("aboutMe", "about_me");
   assignText("mesExample", "mes_example");
   assignText("creatorNotes", "creator_notes");
   assignText("systemPrompt", "system_prompt");
@@ -1260,6 +1265,8 @@ export function parseCharacterCommands(content: string): {
     if (personality) cmd.personality = personality;
     const appearance = parseQuotedParam(params, "appearance");
     if (appearance) cmd.appearance = appearance;
+    const aboutMe = parseQuotedParam(params, "about_me");
+    if (aboutMe) cmd.aboutMe = aboutMe;
     if (cmd.name) commands.push(cmd);
   }
 
@@ -1296,6 +1303,8 @@ export function parseCharacterCommands(content: string): {
     if (scenario !== undefined) cmd.scenario = scenario;
     const backstory = parseQuotedParam(params, "backstory", true);
     if (backstory !== undefined) cmd.backstory = backstory;
+    const aboutMe = parseQuotedParam(params, "about_me", true);
+    if (aboutMe !== undefined) cmd.aboutMe = aboutMe;
     if (cmd.name) commands.push(cmd);
   }
 
@@ -1460,7 +1469,7 @@ export function parseCharacterCommandsBySpeaker(
     if (key && !nameToId.has(key)) nameToId.set(key, character.id);
   }
 
-  // Segment the response by leading "Name: " line prefixes, mirroring the client's
+  // Segment the response by leading "Name:" line prefixes, mirroring the client's
   // parseNamePrefixFormat so server-side attribution matches the rendered split.
   // Segment the timestamp-stripped shape — the client strips leaked [HH:MM]
   // tokens before rendering, so a line like "[12:01] Alice: hey" is Alice's
@@ -1483,14 +1492,16 @@ export function parseCharacterCommandsBySpeaker(
     currentLines = [];
   };
   for (const line of attributionContent.split("\n")) {
-    const colonIdx = line.indexOf(": ");
+    const colonIdx = line.indexOf(":");
     if (colonIdx > 0) {
+      const rawText = line.slice(colonIdx + 1);
+      const sameLineText = rawText.endsWith("\r") ? rawText.slice(0, -1) : rawText;
       const mappedId = nameToId.get(normalizeTextForMatch(line.slice(0, colonIdx)));
-      if (mappedId) {
+      if (mappedId && (sameLineText.length === 0 || /^[\t ]/u.test(sameLineText))) {
         flush();
         inLeadingRegion = false;
         currentId = mappedId;
-        currentLines = [line.slice(colonIdx + 2)];
+        currentLines = [sameLineText.replace(/^[\t ]+/u, "")];
         continue;
       }
     }
@@ -1500,7 +1511,7 @@ export function parseCharacterCommandsBySpeaker(
 
   // Credit the leading region (above the first name prefix) to the speaker whose
   // section it opens, not the generation-primary character.
-  const firstNamed = segments.find((segment) => !segment.leading);
+  const firstNamed = segments.find((segment) => !segment.leading && segment.text.trim().length > 0);
   if (firstNamed) {
     for (const segment of segments) {
       if (segment.leading) segment.characterId = firstNamed.characterId;

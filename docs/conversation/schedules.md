@@ -26,10 +26,10 @@ In the new-chat setup wizard, **Autonomous Messages** is on by default. You can 
 
 ### Chat Check-In Cap
 
-Below the toggle, the **Chat Check-In Cap** dropdown limits how many times per day characters may reach out in this chat.
+Below the toggle, **Chat Check-In Cap** limits how many times per day characters may reach out in this chat.
 
 - The default option is **Default chat ceiling (talkativeness-based)**. The limit comes from each character's talkativeness.
-- You can instead pick a fixed number from **1 check-in / day** up to **8 check-ins / day**.
+- Choose **Numeric value** to show a number field and enter any positive whole-number ceiling. Higher ceilings can create many model requests and notifications.
 
 This cap is a ceiling for the whole chat. A character's own limit, set in its schedule, can only lower this number, never raise it.
 
@@ -107,6 +107,12 @@ Use **Add block** to add a time range. Use the trash icon to remove one. Each da
 The block status changes what a character does when the check-in time passes. A character with an **Offline** block never messages first during that time. A character with a **Busy** block waits three times longer than usual before reaching out.
 
 When you finish, click **Save schedule**. **Cancel** closes the editor without saving.
+
+### Move a schedule between characters or installations
+
+Use **Export schedule** at the bottom of the editor to download the current draft as a JSON file. The export includes the weekly blocks, routine summary, talkativeness, check-in moments, and advanced timing settings.
+
+Open another character's schedule editor and choose **Import schedule** to load that file. Marinara validates the file before replacing the editor draft and moves the imported routine to the current week. The import is not saved automatically: choose **Save schedule** to keep it, or **Cancel** to leave the character's existing schedule unchanged.
 
 ### Schedule generation preferences
 

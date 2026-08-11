@@ -12,6 +12,9 @@ import { logger } from "../lib/logger.js";
 import { getFileStorageDir } from "../config/runtime-config.js";
 import * as schema from "./schema/index.js";
 import { inArray, isFileCondition, isFileOrdering, type FileCondition, type FileOrdering } from "./file-query.js";
+import { migrateLegacyNoodleAccountRow } from "./noodle-platform-migration.js";
+import { migrateLegacyNoodlePostAccessRow } from "./noodle-access-migration.js";
+import { migrateRetiredChatModeRow, RETIRED_CHAT_MODE_TABLES } from "./retired-chat-mode-migration.js";
 import {
   getFileTableConfig,
   FileUniqueConstraintError,
@@ -67,6 +70,12 @@ type TableSnapshotManifest = {
   savedAt: string;
   backend: "file-native";
   tables: Record<string, number>;
+};
+
+type FileTransactionContext = {
+  snapshots: Map<string, Row[]>;
+  dirtyTables: Set<string>;
+  flushed: boolean;
 };
 
 export type QuarantinedStorageTable = {
@@ -160,7 +169,13 @@ export const FILE_BACKED_TABLES = [
   "persona_groups",
   "noodle_accounts",
   "noodle_posts",
+  "noodle_account_subscriptions",
+  "noodle_post_unlocks",
   "noodle_interactions",
+  "noodler_creator_reply_claims",
+  "noodler_prepared_posts",
+  "noodler_automatic_attempts",
+  "noodler_reserve_state",
   "noodle_activity_digests",
   "noodle_refresh_runs",
   "lorebooks",
@@ -180,6 +195,7 @@ export const FILE_BACKED_TABLES = [
   "custom_tools",
   "game_state_snapshots",
   "spatial_context_snapshots",
+  "capability_documents",
   "game_engine_state",
   "game_checkpoints",
   "game_scene_videos",
@@ -204,20 +220,57 @@ export const FILE_BACKED_TABLES = [
   "chat_presets",
   "prompt_overrides",
   "installed_extensions",
+  "library_folders",
 ] as const;
 
 type FileBackedTable = (typeof FILE_BACKED_TABLES)[number];
 
 const FILE_BACKED_TABLE_SET = new Set<string>(FILE_BACKED_TABLES);
-const TABLES_REVERSE = [...FILE_BACKED_TABLES].reverse();
 const isWindows = process.platform === "win32";
 const warnedFlushFailures = new Set<string>();
 
 // Parent→child delete graph. Exported as the single source of truth: the Mari
 // DB CLI (services/mari-db) consumes it for cascade deletes and its
 // dangling-reference validator, so every new relation added here reaches both.
+/**
+ * Tables whose rows are claims against a provider budget: a commit that survives in memory
+ * but not on disk would hand back capacity that was already spent, so these flush durably
+ * at commit instead of on the batched timer.
+ */
+const DURABLE_ON_COMMIT_TABLES = new Set<string>([
+  "noodler_automatic_attempts",
+  "noodler_creator_reply_claims",
+  "noodler_reserve_state",
+  "noodler_prepared_posts",
+]);
+
 export const CASCADES: Array<{ parent: FileBackedTable; child: FileBackedTable; parentKey: string; childKey: string }> =
   [
+    {
+      parent: "noodle_accounts",
+      child: "noodle_account_subscriptions",
+      parentKey: "id",
+      childKey: "viewerAccountId",
+    },
+    {
+      parent: "noodle_accounts",
+      child: "noodle_account_subscriptions",
+      parentKey: "id",
+      childKey: "creatorAccountId",
+    },
+    { parent: "noodle_accounts", child: "noodle_post_unlocks", parentKey: "id", childKey: "viewerAccountId" },
+    { parent: "noodle_accounts", child: "noodle_accounts", parentKey: "id", childKey: "noodleAccountId" },
+    { parent: "noodle_accounts", child: "noodle_posts", parentKey: "id", childKey: "authorAccountId" },
+    { parent: "noodle_posts", child: "noodle_post_unlocks", parentKey: "id", childKey: "postId" },
+    { parent: "noodle_posts", child: "noodle_interactions", parentKey: "id", childKey: "postId" },
+    { parent: "noodle_posts", child: "noodler_creator_reply_claims", parentKey: "id", childKey: "postId" },
+    {
+      parent: "noodle_accounts",
+      child: "noodler_creator_reply_claims",
+      parentKey: "id",
+      childKey: "creatorAccountId",
+    },
+    { parent: "noodle_accounts", child: "noodler_prepared_posts", parentKey: "id", childKey: "creatorAccountId" },
     { parent: "chats", child: "messages", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "conversation_call_sessions", parentKey: "id", childKey: "chatId" },
     { parent: "chats", child: "conversation_call_messages", parentKey: "id", childKey: "chatId" },
@@ -540,6 +593,27 @@ async function quarantineUnrecoverableFiles(paths: string[], context: string): P
   return quarantined;
 }
 
+function isRowRecord(value: unknown): value is Row {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function preserveMalformedRowSource(path: string, table: string): Promise<QuarantinedFile[]> {
+  if (!existsSync(path)) return [];
+  const to = quarantinePath(path, corruptionTimestamp());
+  try {
+    await copyFile(path, to);
+    return [{ from: path, to }];
+  } catch (err) {
+    logger.error(
+      err,
+      "[file-storage] Failed to preserve table %s source %s before removing malformed rows.",
+      table,
+      path,
+    );
+    return [];
+  }
+}
+
 function parseJsonFile<T>(path: string, fallback: T): ParseResult<T> {
   if (!existsSync(path)) {
     const backupPath = `${path}.bak`;
@@ -853,13 +927,15 @@ class FileTableStore {
   private debounceTimer: NodeJS.Timeout | null = null;
   private safetyTimer: NodeJS.Timeout | null = null;
   private beforeExitHandler: (() => void) | null = null;
-  private loadedManifest: TableSnapshotManifest | null = null;
   // Rollback state for the active transaction lives in this AsyncLocalStorage so
-  // it is bound to the transaction's own async call path. A concurrent
-  // non-transactional write that interleaves during an await runs OUTSIDE this
-  // context and is therefore never recorded — so it survives a rollback. See
-  // transaction() / recordTxMutation().
-  private readonly txContext = new AsyncLocalStorage<{ snapshots: Map<string, Row[]>; dirtyTables: Set<string> }>();
+  // it is bound to the transaction's own async call path. Writes from other
+  // async call paths wait for the transaction to finish and are therefore never
+  // captured by (or reverted with) its rollback snapshots.
+  private readonly txContext = new AsyncLocalStorage<FileTransactionContext>();
+  private transactionQueue: Promise<void> = Promise.resolve();
+  private activeTransactionCount = 0;
+  private transactionIdleWaiters = new Set<() => void>();
+  private pendingTransactionFlush = false;
   private quarantinedTables: QuarantinedStorageTable[] = [];
 
   constructor(
@@ -893,22 +969,41 @@ class FileTableStore {
   async transaction<T>(fn: (tx: FileNativeDB) => Promise<T> | T, tx: FileNativeDB): Promise<T> {
     // Copy-on-write rollback, isolated to this transaction's async context:
     // instead of cloning every table up front (O(total rows) per call, on the
-    // per-turn setMemories hot path) and restoring the whole map on throw (which
-    // also dropped concurrent writes), snapshot each table only on its first
-    // mutation by THIS transaction and restore only those. Mutations made on
-    // other async call paths (concurrent non-transactional writes) run outside
-    // the context, are never recorded, and so survive a rollback.
+    // per-turn setMemories hot path), snapshot each table only on its first
+    // mutation by THIS transaction and restore only those. Other writes wait for
+    // this transaction, then run against its committed or restored state.
     if (this.txContext.getStore()) {
       // Nested call: run inside the outer transaction's context so the whole
       // nest rolls back together; the outermost owns snapshot/restore.
       return await fn(tx);
     }
-    const ctx = { snapshots: new Map<string, Row[]>(), dirtyTables: new Set<string>() };
+
+    let releaseTransaction!: () => void;
+    const previousTransaction = this.transactionQueue;
+    this.transactionQueue = new Promise<void>((resolve) => {
+      releaseTransaction = resolve;
+    });
+    await previousTransaction;
+    if (this.activeFlush) await this.activeFlush;
+
+    const ctx: FileTransactionContext = {
+      snapshots: new Map<string, Row[]>(),
+      dirtyTables: new Set<string>(),
+      flushed: false,
+    };
     const dirtySnapshot = this.dirty;
     const dirtyTablesSnapshot = new Set(this.dirtyTables);
+    this.activeTransactionCount++;
 
     try {
-      return await this.txContext.run(ctx, () => fn(tx));
+      const result = await this.txContext.run(ctx, () => fn(tx));
+      // Flush on commit only for tables whose durability the caller reasons about across a
+      // crash (attempt claims must never be replayed as free budget). Everything else keeps
+      // the batched flush: this runs on hot per-turn paths like setMemories.
+      if ([...ctx.dirtyTables].some((table) => DURABLE_ON_COMMIT_TABLES.has(table))) {
+        await this.txContext.run(ctx, () => this.flush(true, true));
+      }
+      return result;
     } catch (err) {
       for (const tableName of ctx.dirtyTables) {
         const snapshot = ctx.snapshots.get(tableName);
@@ -916,7 +1011,38 @@ class FileTableStore {
       }
       this.dirty = dirtySnapshot;
       this.dirtyTables = dirtyTablesSnapshot;
+      if (ctx.flushed) {
+        this.dirty = true;
+        for (const tableName of ctx.dirtyTables) this.dirtyTables.add(tableName);
+        try {
+          await this.txContext.run(ctx, () => this.flush(true, true));
+        } catch (rollbackError) {
+          throw new AggregateError([err, rollbackError], "File-storage transaction and durable rollback both failed");
+        }
+      }
       throw err;
+    } finally {
+      this.activeTransactionCount--;
+      if (this.activeTransactionCount === 0) {
+        for (const resolve of this.transactionIdleWaiters) resolve();
+        this.transactionIdleWaiters.clear();
+      }
+      releaseTransaction();
+      if (this.pendingTransactionFlush) {
+        this.pendingTransactionFlush = false;
+        void this.flush();
+      }
+    }
+  }
+
+  private async waitForTransactions(): Promise<void> {
+    if (this.activeTransactionCount === 0) return;
+    await new Promise<void>((resolve) => this.transactionIdleWaiters.add(resolve));
+  }
+
+  private async waitForWritableTurn(): Promise<void> {
+    if (this.activeTransactionCount > 0 && !this.txContext.getStore()) {
+      await this.waitForTransactions();
     }
   }
 
@@ -950,6 +1076,7 @@ class FileTableStore {
       values: (rows) => {
         const runInsert = (onConflict?: { target: unknown; set: Row }) =>
           executable(async () => {
+            await this.waitForWritableTurn();
             const conflictColumns = normalizeConflictTargets(onConflict?.target);
             const inputRows = Array.isArray(rows) ? rows : [rows];
             const target = this.rows(meta.name);
@@ -991,6 +1118,7 @@ class FileTableStore {
       set: (patch) => {
         const runUpdate = (condition?: Condition) =>
           executable(async () => {
+            await this.waitForWritableTurn();
             const target = this.rows(meta.name);
             const changedIndexes: number[] = [];
             const nextRows = target.map((row, index) => {
@@ -1024,6 +1152,7 @@ class FileTableStore {
     const meta = getMeta(table);
     const runDelete = (condition?: Condition) =>
       executable(async () => {
+        await this.waitForWritableTurn();
         this.deleteWhere(meta, condition);
       });
     const builder = runDelete() as DeleteBuilder;
@@ -1031,10 +1160,18 @@ class FileTableStore {
     return builder;
   }
 
-  async flush(force = false) {
+  async flush(force = false, throwOnError = false) {
+    const transactionContext = this.txContext.getStore();
+    if (this.activeTransactionCount > 0 && !(force && transactionContext)) {
+      this.pendingTransactionFlush = true;
+      if (transactionContext) return;
+      await this.waitForTransactions();
+    }
+    if (transactionContext && force) transactionContext.flushed = true;
     if (this.activeFlush) {
       await this.activeFlush;
-      if (this.dirty || this.dirtyTables.size > 0) await this.flush(force);
+      if (this.dirty || this.dirtyTables.size > 0) await this.flush(force, throwOnError);
+      else if (throwOnError && this.lastFlushError) throw this.lastFlushError;
       return;
     }
     if (!force && !this.dirty && this.dirtyTables.size === 0) return;
@@ -1064,6 +1201,7 @@ class FileTableStore {
     } finally {
       if (this.activeFlush === flush) this.activeFlush = null;
     }
+    if (throwOnError && this.lastFlushError) throw this.lastFlushError;
   }
 
   async close() {
@@ -1138,12 +1276,12 @@ class FileTableStore {
       let changed = false;
       for (const row of this.rows(childMeta.name)) {
         if (row[relation.childKey] != null && deletedValues.has(row[relation.childKey])) {
+          if (!changed) this.recordTxMutation(childMeta.name);
           row[relation.childKey] = null;
           changed = true;
         }
       }
       if (changed) {
-        this.recordTxMutation(childMeta.name);
         this.markDirty(childMeta.name);
       }
     }
@@ -1172,12 +1310,10 @@ class FileTableStore {
     // hard crash mid-write) shouldn't block startup. Table files recover from
     // .bak when possible, then fall back to [] only when both files are
     // unreadable so startup can still reach the UI.
-    let loadedManifest: TableSnapshotManifest | null = null;
     let needsManifestRewrite = false;
     try {
       const path = manifestPath(this.rootDir);
       const result = parseJsonFile<TableSnapshotManifest | null>(path, null);
-      loadedManifest = result.value;
       needsManifestRewrite = result.recoveredFromBackup || result.recoveredFromFallback;
       if (result.recoveredFromBackup || result.recoveredFromFallback) {
         this.backupRecoveredPaths.add(path);
@@ -1190,7 +1326,6 @@ class FileTableStore {
       );
       needsManifestRewrite = true;
     }
-    this.loadedManifest = loadedManifest;
     if (needsManifestRewrite) {
       // Force a manifest rewrite on next save so the corrupt main file gets
       // replaced rather than persistently triggering the .bak fallback path.
@@ -1207,9 +1342,52 @@ class FileTableStore {
         recoveredFromFallback,
         unreadablePaths,
       } = parseJsonFile<Row[]>(path, []);
-      const normalized = (Array.isArray(rows) ? rows : []).map((row) => normalizeRow(meta, row));
+      const parsedRows = Array.isArray(rows) ? rows : [];
+      const source = parsedRows.filter(isRowRecord);
+      const malformedRowCount = parsedRows.length - source.length;
+      if (malformedRowCount > 0) {
+        const sourcePath = recoveredFromBackup && existsSync(`${path}.bak`) ? `${path}.bak` : path;
+        const files = await preserveMalformedRowSource(sourcePath, table);
+        if (files.length > 0) this.quarantinedTables.push({ table, files });
+        logger.error(
+          { table, file: sourcePath, malformedRowCount, preservedFiles: files.map((file) => file.to) },
+          "[file-storage] Skipped malformed table rows and preserved the source file for manual recovery.",
+        );
+        this.backupRecoveredPaths.add(path);
+        this.dirtyTables.add(table);
+        this.dirty = true;
+      }
+      const migrate =
+        table === "noodle_accounts"
+          ? migrateLegacyNoodleAccountRow
+          : table === "noodle_posts"
+            ? migrateLegacyNoodlePostAccessRow
+            : (RETIRED_CHAT_MODE_TABLES as readonly string[]).includes(table)
+              ? migrateRetiredChatModeRow
+              : null;
+      const normalized = source.map((row) => normalizeRow(meta, migrate ? migrate(row) : row));
       this.tables.set(table, normalized);
       counts[table] = normalized.length;
+      if (source.some((row) => row.mode === "visual_novel")) {
+        // Persist the normalized mode so the rewrite happens once, not on every boot.
+        this.dirtyTables.add(table);
+        this.dirty = true;
+      }
+      const needsMigration =
+        table === "noodle_accounts"
+          ? source.some((row) => row.platform === undefined)
+          : table === "noodle_posts"
+            ? source.some(
+                (row) =>
+                  (row.access !== "public" && row.access !== "locked") || "ppvPrice" in row || "ppv_price" in row,
+              )
+            : false;
+      if (migrate && needsMigration) {
+        // Persist the renamed keys on the next flush, alongside the `visibility` /
+        // `publicAccountId` rollback mirrors the migration deliberately retains.
+        this.dirtyTables.add(table);
+        this.dirty = true;
+      }
       if (recoveredFromBackup || recoveredFromFallback) {
         this.backupRecoveredPaths.add(path);
         // Same self-heal: rewrite the corrupt main file from in-memory data on
@@ -1367,7 +1545,7 @@ export async function createFileNativeDB(testHooks?: FileNativeStoreTestHooks): 
 
   const controller: FileNativeStoreController = {
     rootDir,
-    flush: () => store.flush(true),
+    flush: () => store.flush(true, true),
     close: () => store.close(),
     getQuarantinedTables: () => store.getQuarantinedTables(),
   };

@@ -1,18 +1,19 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   GENERATION_PARAMETER_SEND_KEYS,
-  LOCAL_SIDECAR_CONNECTION_ID,
-  PROVIDERS,
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
+  compileChatSummaryEntries,
   generationParametersSchema,
-  localAuthProviderBaseUrl,
+  normalizeChatSummaryEntries,
   normalizeTextForMatch,
+  normalizeSummaryTailMessages,
   normalizeWorldCustomFields,
   normalizeThinkingTagPairs,
   parseTrackerFieldLocks,
   parseTrackerHiddenFields,
   resolveMacros,
+  resolveChatPersonaCandidate,
   unwrapConversationInstructions,
   wrapConversationInstructions,
   type CharacterStat,
@@ -24,9 +25,30 @@ import {
   type PlayerStats,
   type WrapFormat,
 } from "@marinara-engine/shared";
-import { LOCAL_SIDECAR_MODEL } from "../../services/llm/local-sidecar.js";
-import { sidecarModelService } from "../../services/sidecar/sidecar-model.service.js";
 import { wrapContent } from "../../services/prompt/format-engine.js";
+import {
+  appendReadableAttachmentsToContent,
+  extractFileAttachmentInputs,
+  extractImageAttachmentDataUrls,
+  parseExtra,
+  type PromptAttachment,
+} from "../../services/generation/prompt-attachments.js";
+
+export { resolveBaseUrl } from "../../services/generation/connection-base-url.js";
+export {
+  createLocalSidecarGenerationConnection,
+  type LocalSidecarGenerationConnection,
+} from "../../services/generation/local-sidecar-generation-connection.js";
+export {
+  appendReadableAttachmentsToContent,
+  buildReadableAttachmentBlocks,
+  escapeXmlAttribute,
+  extractFileAttachmentInputs,
+  extractImageAttachmentDataUrls,
+  getAttachmentFilename,
+  parseExtra,
+  type PromptAttachment,
+} from "../../services/generation/prompt-attachments.js";
 
 export type SimpleMessage = {
   role: "system" | "user" | "assistant";
@@ -38,64 +60,22 @@ export type SimpleMessage = {
 export type SpeakerPrefixMessage = SimpleMessage & {
   characterId?: string | null;
   name?: string | null;
+  personaSnapshotName?: string | null;
   providerMetadata?: Record<string, unknown>;
 };
 export type StoredGenerationParameters = Partial<GenerationParameters>;
 
 /**
- * Resolve the persona visible to a chat. An explicit chat persona always wins;
- * non-game chats may fall back to the globally active persona, while Game Mode
- * deliberately remains persona-less unless setup selected one.
+ * Preserve the route-layer export while sharing the same Persona policy with
+ * the client: only Conversation falls back to the globally active Persona.
  */
 export function resolveActivePersonaCandidate<T extends { id: string; isActive?: unknown }>(
   personas: readonly T[],
   chatPersonaId: string | null | undefined,
   chatMode: string | null | undefined,
 ): T | null {
-  return (
-    (chatPersonaId ? personas.find((persona) => persona.id === chatPersonaId) : null) ??
-    (chatMode !== "game" ? personas.find((persona) => persona.isActive === "true") : null) ??
-    null
-  );
+  return resolveChatPersonaCandidate(personas, chatPersonaId, chatMode);
 }
-
-export type LocalSidecarGenerationConnection = {
-  id: typeof LOCAL_SIDECAR_CONNECTION_ID;
-  name: string;
-  provider: "local_sidecar";
-  baseUrl: string;
-  apiKey: string;
-  apiKeyEncrypted: string;
-  model: string;
-  imagePath: null;
-  maxContext: number;
-  isDefault: "false";
-  fallbackForMain: "false";
-  useForRandom: "false";
-  enableCaching: "false";
-  anthropicExtendedCacheTtl: "false";
-  cachingAtDepth: number;
-  defaultForAgents: "false";
-  fallbackForAgents: "false";
-  embeddingModel: string;
-  embeddingBaseUrl: string;
-  embeddingConnectionId: null;
-  openrouterProvider: null;
-  imageGenerationSource: null;
-  comfyuiWorkflow: null;
-  imageService: null;
-  imageEndpointId: null;
-  defaultParameters: null;
-  promptPresetId: null;
-  maxTokensOverride: null;
-  maxParallelJobs: number;
-  treatAsLocalEndpoint: "true";
-  claudeFastMode: "false";
-  folderId: null;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-};
 
 const PROMPT_WRAP_FORMATS = new Set<WrapFormat>(["xml", "markdown", "none"]);
 
@@ -110,21 +90,6 @@ export function formatConversationInstructionsForWrap(prompt: string, wrapFormat
   if (wrapFormat === "markdown") return `## Instructions\n${body}`;
   return body;
 }
-export type PromptAttachment = {
-  type?: string | null;
-  url?: string | null;
-  data?: string | null;
-  filename?: string | null;
-  name?: string | null;
-  prompt?: string | null;
-  galleryId?: string | null;
-  imageCaption?: string | null;
-  imageCaptionConnectionId?: string | null;
-  imageCaptionModel?: string | null;
-  imageCaptionProvider?: string | null;
-  imageCaptionedAt?: string | null;
-};
-
 export function buildGenerationGuideInstruction(
   generationGuide: unknown,
   promptMacroContext: MacroContext,
@@ -146,65 +111,9 @@ export function buildGenerationGuideInstruction(
     : null;
 }
 
-export function createLocalSidecarGenerationConnection(): LocalSidecarGenerationConnection {
-  const config = sidecarModelService.getConfig();
-  return {
-    id: LOCAL_SIDECAR_CONNECTION_ID,
-    name: "Local Model (sidecar)",
-    provider: "local_sidecar",
-    baseUrl: "local-sidecar://runtime",
-    apiKey: "",
-    apiKeyEncrypted: "",
-    model: LOCAL_SIDECAR_MODEL,
-    imagePath: null,
-    maxContext: config.contextSize,
-    isDefault: "false",
-    fallbackForMain: "false",
-    useForRandom: "false",
-    enableCaching: "false",
-    anthropicExtendedCacheTtl: "false",
-    cachingAtDepth: 5,
-    defaultForAgents: "false",
-    fallbackForAgents: "false",
-    embeddingModel: "",
-    embeddingBaseUrl: "",
-    embeddingConnectionId: null,
-    openrouterProvider: null,
-    imageGenerationSource: null,
-    comfyuiWorkflow: null,
-    imageService: null,
-    imageEndpointId: null,
-    defaultParameters: null,
-    promptPresetId: null,
-    maxTokensOverride: null,
-    maxParallelJobs: 1,
-    treatAsLocalEndpoint: "true",
-    claudeFastMode: "false",
-    folderId: null,
-    sortOrder: 0,
-    createdAt: "local-sidecar",
-    updatedAt: "local-sidecar",
-  };
-}
-
 function createEmptyPlayerStats(): PlayerStats {
   return { stats: [], attributes: null, skills: {}, inventory: [], activeQuests: [], status: "" };
 }
-
-const IMAGE_ATTACHMENT_PROVIDER_BYTE_LIMIT = 6 * 1024 * 1024;
-const FILE_ATTACHMENT_PROVIDER_BYTE_LIMIT = 20 * 1024 * 1024;
-const TEXT_ATTACHMENT_EXTENSIONS = new Set([
-  "csv",
-  "json",
-  "jsonl",
-  "log",
-  "markdown",
-  "md",
-  "txt",
-  "xml",
-  "yaml",
-  "yml",
-]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -600,22 +509,28 @@ export function appendNonLeadingSystemMessagesToLastUser<T extends PromptRoleMes
   return result;
 }
 
-/** Parse a JSON extra field safely. */
-export function parseExtra(extra: unknown): Record<string, unknown> {
-  if (!extra) return {};
-  try {
-    return typeof extra === "string" ? JSON.parse(extra) : (extra as Record<string, unknown>);
-  } catch {
-    return {};
-  }
-}
-
 export function isMessageHiddenFromAI(message: { extra?: unknown }): boolean {
   return parseExtra(message.extra).hiddenFromAI === true;
 }
 
+export function getMessageHiddenFromAICharacterIds(message: { extra?: unknown }): string[] {
+  const value = parseExtra(message.extra).hiddenFromAICharacterIds;
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)),
+  );
+}
+
+export function isMessageHiddenFromAIForCharacter(
+  message: { extra?: unknown },
+  characterId: string | null | undefined,
+): boolean {
+  if (isMessageHiddenFromAI(message)) return true;
+  return typeof characterId === "string" && getMessageHiddenFromAICharacterIds(message).includes(characterId);
+}
+
 export function isRoleplaySummaryMode(chatMode: string): boolean {
-  return chatMode === "roleplay" || chatMode === "visual_novel";
+  return chatMode === "roleplay";
 }
 
 /**
@@ -624,14 +539,10 @@ export function isRoleplaySummaryMode(chatMode: string): boolean {
  * `DEFAULT` only when the value is genuinely unset; an explicit `MIN` (0) means
  * "hide the whole batch". A present-but-invalid value (NaN, negative) fails
  * closed to `MIN` so corrupt metadata hides more rather than silently leaking
- * extra context. Clamped to [MIN, MAX].
+ * extra context. There is intentionally no upper cap.
  */
 export function resolveRoleplaySummaryTail(value: unknown): number {
-  const { MIN, MAX, DEFAULT } = SUMMARY_TAIL_MESSAGES;
-  if (value === undefined || value === null) return DEFAULT;
-  const n = Math.floor(Number(value));
-  if (!Number.isFinite(n) || n < MIN) return MIN;
-  return Math.min(MAX, n);
+  return normalizeSummaryTailMessages(value);
 }
 
 /**
@@ -647,14 +558,30 @@ export function computeSummaryHideIds(args: {
 }): string[] {
   const { messages, entryMessageIds, tail } = args;
   if (entryMessageIds.length === 0) return [];
-  const { MIN, MAX } = SUMMARY_TAIL_MESSAGES;
-  const clampedTail = Number.isFinite(tail) ? Math.max(MIN, Math.min(MAX, Math.floor(tail))) : MIN;
+  const { MIN } = SUMMARY_TAIL_MESSAGES;
+  const clampedTail = Number.isFinite(tail) ? Math.max(MIN, Math.floor(tail)) : MIN;
   const visible = messages.filter((message) => !isMessageHiddenFromAI(message));
   const tailIdSet = new Set(clampedTail > 0 ? visible.slice(-clampedTail).map((message) => message.id) : []);
   const entryIdSet = new Set(entryMessageIds);
   return messages
     .filter((message) => entryIdSet.has(message.id) && !tailIdSet.has(message.id))
     .map((message) => message.id);
+}
+
+/** Return the one-based range covered by selected messages in the full chat order. */
+export function computeSummaryMessageRange(
+  allMessages: readonly { id: string }[],
+  selectedMessages: readonly { id: string }[],
+): { startIndex: number; endIndex: number } | null {
+  const messageIndexes = new Map(allMessages.map((message, index) => [message.id, index + 1]));
+  const selectedIndexes = selectedMessages
+    .map((message) => messageIndexes.get(message.id))
+    .filter((index): index is number => index !== undefined);
+  if (selectedIndexes.length === 0) return null;
+  return {
+    startIndex: Math.min(...selectedIndexes),
+    endIndex: Math.max(...selectedIndexes),
+  };
 }
 
 /**
@@ -716,9 +643,25 @@ export function selectRollingSummaryMessages<T extends { id: string; extra?: unk
   return visible.slice(-Math.max(size, sinceBoundary));
 }
 
-export function resolveRoleplayChatSummary(chatMode: string, chatMetadata: Record<string, unknown>): string | null {
+export function resolveRoleplayChatSummary(
+  chatMode: string,
+  chatMetadata: Record<string, unknown>,
+  options: { excludeMessageIds?: readonly string[] } = {},
+): string | null {
   if (!isRoleplaySummaryMode(chatMode)) return null;
-  return ((chatMetadata.summary as string) ?? "").trim() || null;
+  const summary = ((chatMetadata.summary as string) ?? "").trim() || null;
+  const excludedMessageIds = new Set((options.excludeMessageIds ?? []).filter(Boolean));
+  if (excludedMessageIds.size === 0) return summary;
+
+  const entries = normalizeChatSummaryEntries(chatMetadata.summaryEntries);
+  // Legacy summaries have no per-message provenance, so they cannot be
+  // safely retained while regenerating a historical message.
+  if (entries.length === 0) return null;
+  const retainedEntries = entries.filter((entry) => {
+    const coveredMessageIds = [...(entry.messageIds ?? []), ...(entry.hiddenMessageIds ?? [])];
+    return !coveredMessageIds.some((messageId) => excludedMessageIds.has(messageId));
+  });
+  return retainedEntries.length === entries.length ? summary : compileChatSummaryEntries(retainedEntries);
 }
 
 function escapeRegex(value: string): string {
@@ -760,6 +703,13 @@ function prefixSpeakerName(content: string, speakerName: string): string {
   return trimmed ? `${speaker}: ${trimmed}` : `${speaker}:`;
 }
 
+export function readPersonaSnapshotName(extra: unknown): string | null {
+  const snapshot = parseExtra(extra).personaSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const name = (snapshot as { name?: unknown }).name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
 export function prefixGroupIndividualHistorySpeakers<T extends SpeakerPrefixMessage>(
   messages: T[],
   options: {
@@ -772,7 +722,7 @@ export function prefixGroupIndividualHistorySpeakers<T extends SpeakerPrefixMess
   return messages.map((message) => {
     let speakerName: string | null = null;
     if (message.role === "user") {
-      speakerName = personaName;
+      speakerName = message.personaSnapshotName?.trim() || personaName;
     } else if (message.role === "assistant") {
       speakerName =
         (message.characterId ? (options.characterNamesById.get(message.characterId) ?? null) : null) ??
@@ -930,17 +880,21 @@ export function resolveActiveCharacterIds(
 
 export type GroupGenerationMode = "merged" | "individual";
 
-/**
- * Conversation groups are always generated as one merged provider response so
- * the model can decide which present characters speak in the turn. Only
- * roleplay-style chats honor an explicit merged/individual mode.
- */
+/** Resolve the stored generation mode for every group-capable chat mode. */
 export function resolveGroupGenerationMode(
-  chatMode: string | null | undefined,
+  _chatMode: string | null | undefined,
   configuredMode: unknown,
 ): GroupGenerationMode {
-  if (chatMode === "conversation") return "merged";
   return configuredMode === "individual" ? "individual" : "merged";
+}
+
+export function shouldRestoreRegenerationCharacterTarget(
+  chatMode: string | null | undefined,
+  configuredMode: unknown,
+  characterIds: string[],
+): boolean {
+  const isRoleplayGroup = chatMode === "roleplay";
+  return !(isRoleplayGroup && characterIds.length > 1 && resolveGroupGenerationMode(chatMode, configuredMode) === "merged");
 }
 
 export function resolvePromptCharacterIdsForTarget(
@@ -964,11 +918,19 @@ export function shouldPreferLatestVisibleGameState(input: {
 }
 
 export function resolveVisibleGameStateAnchor(
-  messages: Array<{ role?: unknown; id?: unknown; activeSwipeIndex?: unknown }>,
+  messages: Array<{ role?: unknown; id?: unknown; activeSwipeIndex?: unknown; extra?: unknown }>,
 ): { messageId: string; swipeIndex: number } | null {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]!;
-    if (message.role !== "assistant" || typeof message.id !== "string" || !message.id) continue;
+    const markedSystemAnchor =
+      message.role === "system" && parseExtra(message.extra).gameStateAnchor === "checkpoint_restore";
+    if (
+      (message.role !== "assistant" && !markedSystemAnchor) ||
+      typeof message.id !== "string" ||
+      !message.id
+    ) {
+      continue;
+    }
     const swipeIndex =
       typeof message.activeSwipeIndex === "number" &&
       Number.isInteger(message.activeSwipeIndex) &&
@@ -1006,131 +968,6 @@ export function resolveRegenerationGameStateFallbackMessageIds(
   return Array.from(ids);
 }
 
-export function getAttachmentFilename(attachment: PromptAttachment): string {
-  const rawName = attachment.filename ?? attachment.name;
-  return typeof rawName === "string" && rawName.trim() ? rawName.trim() : "attachment";
-}
-
-export function extractImageAttachmentDataUrls(attachments: PromptAttachment[] | undefined): string[] {
-  return (attachments ?? [])
-    .filter((attachment) => typeof attachment.type === "string" && attachment.type.startsWith("image/"))
-    .map((attachment) => attachment.data)
-    .filter((data): data is string => typeof data === "string" && data.length > 0)
-    .filter((data) => estimateDataUrlBytes(data) <= IMAGE_ATTACHMENT_PROVIDER_BYTE_LIMIT);
-}
-
-export function extractFileAttachmentInputs(
-  attachments: PromptAttachment[] | undefined,
-): Array<{ type: string; data: string; filename: string }> {
-  return (attachments ?? []).flatMap((attachment) => {
-    const type = normalizeProviderFileAttachmentType(attachment);
-    if (!type || typeof attachment.data !== "string") return [];
-    if (estimateDataUrlBytes(attachment.data) > FILE_ATTACHMENT_PROVIDER_BYTE_LIMIT) return [];
-    const data = normalizeDataUrlMimeType(attachment.data, type);
-    if (!data) return [];
-    return [{ type, data, filename: getAttachmentFilename(attachment) }];
-  });
-}
-
-function normalizeProviderFileAttachmentType(attachment: PromptAttachment): string | null {
-  const type = typeof attachment.type === "string" ? attachment.type.toLowerCase().trim() : "";
-  const filename = getAttachmentFilename(attachment).toLowerCase();
-  if (type === "application/pdf" || filename.endsWith(".pdf")) return "application/pdf";
-  return null;
-}
-
-function normalizeDataUrlMimeType(dataUrl: string, mimeType: string): string | null {
-  const commaIndex = dataUrl.indexOf(",");
-  if (!dataUrl.startsWith("data:") || commaIndex < 0) return null;
-  const meta = dataUrl.slice(5, commaIndex).toLowerCase();
-  if (!meta.includes(";base64")) return null;
-  return `data:${mimeType};base64,${dataUrl.slice(commaIndex + 1)}`;
-}
-
-function estimateDataUrlBytes(dataUrl: string): number {
-  const commaIndex = dataUrl.indexOf(",");
-  if (!dataUrl.startsWith("data:") || commaIndex < 0) return Buffer.byteLength(dataUrl, "utf8");
-
-  const meta = dataUrl.slice(0, commaIndex).toLowerCase();
-  const payload = dataUrl.slice(commaIndex + 1);
-  if (!meta.includes(";base64")) {
-    try {
-      return Buffer.byteLength(decodeURIComponent(payload), "utf8");
-    } catch {
-      return Buffer.byteLength(payload, "utf8");
-    }
-  }
-
-  const padding = payload.endsWith("==") ? 2 : payload.endsWith("=") ? 1 : 0;
-  return Math.max(0, Math.floor((payload.length * 3) / 4) - padding);
-}
-
-function isReadableTextAttachment(attachment: PromptAttachment): boolean {
-  const type = typeof attachment.type === "string" ? attachment.type.toLowerCase() : "";
-  if (type.startsWith("text/")) return true;
-  if (
-    type === "application/json" ||
-    type === "application/ld+json" ||
-    type === "application/xml" ||
-    type === "application/x-yaml" ||
-    type === "application/yaml"
-  ) {
-    return true;
-  }
-
-  const name = getAttachmentFilename(attachment).toLowerCase();
-  const extension = name.includes(".") ? name.split(".").pop() : "";
-  return !!extension && TEXT_ATTACHMENT_EXTENSIONS.has(extension);
-}
-
-function decodeDataUrlText(dataUrl: string): string | null {
-  const commaIndex = dataUrl.indexOf(",");
-  if (!dataUrl.startsWith("data:") || commaIndex < 0) return null;
-
-  const meta = dataUrl.slice(0, commaIndex).toLowerCase();
-  const payload = dataUrl.slice(commaIndex + 1);
-  try {
-    if (meta.includes(";base64")) {
-      return Buffer.from(payload, "base64").toString("utf8");
-    }
-    return decodeURIComponent(payload);
-  } catch {
-    return null;
-  }
-}
-
-export function escapeXmlAttribute(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-export function buildReadableAttachmentBlocks(attachments: PromptAttachment[] | undefined): string[] {
-  return (attachments ?? []).flatMap((attachment) => {
-    if (!isReadableTextAttachment(attachment) || typeof attachment.data !== "string") return [];
-    const decoded = decodeDataUrlText(attachment.data);
-    if (!decoded?.trim()) return [];
-
-    const filename = getAttachmentFilename(attachment);
-    const type = typeof attachment.type === "string" && attachment.type.trim() ? attachment.type.trim() : "text/plain";
-
-    return [
-      [
-        `<attached_file name="${escapeXmlAttribute(filename)}" type="${escapeXmlAttribute(type)}">`,
-        decoded,
-        `</attached_file>`,
-      ].join("\n"),
-    ];
-  });
-}
-
-export function appendReadableAttachmentsToContent(
-  content: string,
-  attachments: PromptAttachment[] | undefined,
-): string {
-  const blocks = buildReadableAttachmentBlocks(attachments);
-  if (blocks.length === 0) return content;
-  return `${content}${content.trim() ? "\n\n" : ""}${blocks.join("\n\n")}`;
-}
-
 export function formatSeparateAgentInjection(agentType: string, text: string, wrapFormat: string): string {
   const meta =
     agentType === "knowledge-router"
@@ -1139,7 +976,9 @@ export function formatSeparateAgentInjection(agentType: string, text: string, wr
         ? { heading: "Knowledge Retrieval", tag: "knowledge_retrieval" }
         : agentType === "director"
           ? { heading: "Narrative Director", tag: "narrative_director" }
-          : { heading: agentType, tag: agentType.replace(/[^a-z0-9_-]/gi, "_") };
+          : agentType === "long-term-memory"
+            ? { heading: "Long-Term Memory", tag: "long_term_memory" }
+            : { heading: agentType, tag: agentType.replace(/[^a-z0-9_-]/gi, "_") };
 
   if (wrapFormat === "none") return `${meta.heading}:\n${text}`;
   if (wrapFormat === "markdown") return `## ${meta.heading}\n${text}`;
@@ -1159,30 +998,16 @@ export function appendSeparateAgentInjectionMessage(
   });
 }
 
-/** Resolve the base URL for a connection, falling back to the provider default. */
-export function resolveBaseUrl(connection: { baseUrl: string | null; provider: string }): string {
-  if (connection.baseUrl) return connection.baseUrl.replace(/\/+$/, "");
-  // Subscription/login-backed providers own their endpoint internally, but
-  // downstream callers gate on a non-empty baseUrl. Return a sentinel so the
-  // gate passes; the provider ignores the value.
-  const localAuthBaseUrl = localAuthProviderBaseUrl(connection.provider);
-  if (localAuthBaseUrl) return localAuthBaseUrl;
-  const providerDef = PROVIDERS[connection.provider as keyof typeof PROVIDERS];
-  return providerDef?.defaultBaseUrl ?? "";
-}
-
 export function shouldEnableAgentsForGeneration({
   chatEnableAgents,
-  chatMode,
   impersonate,
   impersonateBlockAgents,
 }: {
   chatEnableAgents: boolean;
-  chatMode: string;
   impersonate: boolean;
   impersonateBlockAgents: boolean;
 }): boolean {
-  return chatEnableAgents && chatMode !== "conversation" && !(impersonate && impersonateBlockAgents);
+  return chatEnableAgents && !(impersonate && impersonateBlockAgents);
 }
 
 export function shouldInjectIdentityFallback({
@@ -1276,6 +1101,11 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   if (isPlainRecord(source.customParameters)) {
     out.customParameters = mergeCustomParameters({}, source.customParameters);
   }
+  if (isPlainRecord(source.managedCustomParameters)) {
+    const managedCustomParameters =
+      generationParametersSchema.shape.managedCustomParameters.safeParse(source.managedCustomParameters);
+    if (managedCustomParameters.success) out.managedCustomParameters = managedCustomParameters.data;
+  }
   if (isPlainRecord(source.enabledParameters)) {
     const enabledParameters: GenerationParameterSendMap = {};
     for (const key of GENERATION_PARAMETER_SEND_KEYS) {
@@ -1320,9 +1150,35 @@ export function injectIntoOutputFormatOrLastUser(
     }
   }
 
-  const lastIdx = Math.max(findLastIndex(messages, "user"), messages.length - 1);
+  const lastUserIdx = findLastIndex(messages, "user");
+  const lastIdx = lastUserIdx >= 0 ? lastUserIdx : messages.length - 1;
+  if (lastIdx < 0) {
+    messages.push({ role: "user", content: block });
+    return;
+  }
   const target = messages[lastIdx]!;
   messages[lastIdx] = { ...target, content: target.content + "\n\n" + block };
+}
+
+/**
+ * Remove speaker wrappers from older group-chat history while preserving the
+ * latest assistant turn as a concrete formatting example for the model.
+ */
+export function stripSpeakerTagsExceptLastAssistant(messages: SimpleMessage[]): void {
+  const lastAssistantIdx = findLastIndex(messages, "assistant");
+  const speakerCloseRegex = /<\/speaker>/g;
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]!;
+    if (message.role === "system" || i === lastAssistantIdx || !message.content.includes("<speaker=")) continue;
+
+    const content = message.content
+      .replace(/<speaker="[^"]*">/g, "")
+      .replace(speakerCloseRegex, "")
+      .replace(/^\s*\n/gm, "")
+      .trim();
+    messages[i] = { ...message, content };
+  }
 }
 
 /** Build wrapped field parts from a record of { fieldName: value }. */
@@ -1436,6 +1292,64 @@ type TrackerCharacterCardIdentity = {
   avatarCrop?: unknown;
 };
 
+function getExplicitNameAliases(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  const aliases = new Set<string>();
+  const patterns = [
+    /"([^"\n]{1,80})"/gu,
+    /“([^”\n]{1,80})”/gu,
+    /'([^'\n]{1,80})'/gu,
+    /‘([^’\n]{1,80})’/gu,
+    /\(([^()\n]{1,80})\)/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of value.matchAll(pattern)) {
+      const alias = normalizeTextForMatch(match[1]);
+      if (alias) aliases.add(alias);
+    }
+  }
+  return [...aliases];
+}
+
+function buildUniqueCanonicalNames(names: readonly string[]): Map<string, string> {
+  const namesByKey = new Map<string, string>();
+  const duplicateKeys = new Set<string>();
+  for (const name of names) {
+    const trimmedName = name.trim();
+    const key = normalizeTextForMatch(trimmedName);
+    if (!key) continue;
+    if (namesByKey.has(key)) duplicateKeys.add(key);
+    else namesByKey.set(key, trimmedName);
+  }
+  for (const key of duplicateKeys) namesByKey.delete(key);
+  return namesByKey;
+}
+
+function resolveExplicitCanonicalName(value: unknown, namesByKey: Map<string, string>): string | null {
+  const exactName = namesByKey.get(normalizeTextForMatch(value));
+  if (exactName) return exactName;
+
+  const aliasMatches = getExplicitNameAliases(value)
+    .map((alias) => namesByKey.get(alias))
+    .filter((candidate): candidate is string => !!candidate);
+  const uniqueMatches = new Set(aliasMatches);
+  return uniqueMatches.size === 1 ? aliasMatches[0]! : null;
+}
+
+/** Canonicalize only structured Game Mode VN speaker labels, leaving prose and ambiguous aliases unchanged. */
+export function canonicalizeGamePartySpeakerLabels(content: string, canonicalNames: readonly string[]): string {
+  const namesByKey = buildUniqueCanonicalNames(canonicalNames);
+  if (!content || namesByKey.size === 0) return content;
+
+  return content.replace(
+    /^(\s*)\[([^\]\r\n]+)\](\s+\[(?:main|side|thought|whisper:[^\]\r\n]+)\]\s+\[[^\]\r\n]+\]\s*:)/gmu,
+    (line, indentation: string, speakerName: string, suffix: string) => {
+      const canonicalName = resolveExplicitCanonicalName(speakerName, namesByKey);
+      return canonicalName ? `${indentation}[${canonicalName}]${suffix}` : line;
+    },
+  );
+}
+
 export function applyTrackerCharacterCardIdentity(
   characters: Array<Record<string, unknown>>,
   cards: TrackerCharacterCardIdentity[],
@@ -1450,18 +1364,48 @@ export function applyTrackerCharacterCardIdentity(
     else cardsByName.set(name, card);
   }
   for (const name of duplicateNames) cardsByName.delete(name);
+  const canonicalCardNamesByKey = new Map([...cardsByName].map(([key, card]) => [key, card.name]));
 
   const matchedIds = new Set<string>();
+  const canonicalCharacters: Array<Record<string, unknown>> = [];
+  const canonicalIndexByCardId = new Map<string, number>();
   for (const character of characters) {
-    const card = cardsById.get(trackerCharacterIdKey(character)) ?? cardsByName.get(trackerCharacterNameKey(character));
-    if (!card) continue;
-    character.characterId = card.id;
-    if (typeof card.avatarPath === "string" && card.avatarPath.trim()) {
-      character.avatarPath = card.avatarPath.trim();
+    const explicitCanonicalName = resolveExplicitCanonicalName(character.name, canonicalCardNamesByKey);
+    const card =
+      cardsById.get(trackerCharacterIdKey(character)) ??
+      cardsByName.get(trackerCharacterNameKey(character)) ??
+      (explicitCanonicalName ? cardsByName.get(normalizeTextForMatch(explicitCanonicalName)) : undefined);
+    if (!card) {
+      canonicalCharacters.push(character);
+      continue;
     }
-    character.avatarCrop = card.avatarCrop ?? null;
+
+    const canonicalCharacter = {
+      ...character,
+      characterId: card.id,
+      name: card.name,
+      // Only overwrite an existing avatarPath (e.g. a previously generated NPC
+      // avatar) when the card actually has one — never null it out just
+      // because the linked card doesn't carry its own art.
+      avatarPath:
+        typeof card.avatarPath === "string" && card.avatarPath.trim()
+          ? card.avatarPath.trim()
+          : (character.avatarPath ?? null),
+      avatarCrop: card.avatarCrop ?? null,
+    };
+    const existingIndex = canonicalIndexByCardId.get(card.id);
+    if (existingIndex === undefined) {
+      canonicalIndexByCardId.set(card.id, canonicalCharacters.length);
+      canonicalCharacters.push(canonicalCharacter);
+    } else {
+      canonicalCharacters[existingIndex] = {
+        ...canonicalCharacters[existingIndex],
+        ...canonicalCharacter,
+      };
+    }
     matchedIds.add(card.id);
   }
+  characters.splice(0, characters.length, ...canonicalCharacters);
   return matchedIds;
 }
 

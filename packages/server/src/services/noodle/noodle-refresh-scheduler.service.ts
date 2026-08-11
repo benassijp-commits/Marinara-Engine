@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "../../lib/logger.js";
 import { createNoodleStorage } from "../storage/noodle.storage.js";
+import { AUTOMATIC_GENERATION_HEADER } from "../generation/connection-admission.js";
 import {
   dueNoodleRefreshTimes,
   markNoodleRefreshAttempt,
@@ -128,7 +129,8 @@ export function startNoodleRefreshScheduler(app: FastifyInstance) {
       const response = await app.inject({
         method: "POST",
         url: "/api/noodle/refresh",
-        payload: {},
+        headers: { [AUTOMATIC_GENERATION_HEADER]: "1" },
+        payload: { mode: "public" },
       });
       const completedAt = new Date();
       const latest = await noodle.ensureRefreshSchedule(completedAt);

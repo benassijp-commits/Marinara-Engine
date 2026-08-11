@@ -11,6 +11,10 @@ export const IMAGE_GENERATION_DEFAULTS_VERSION = 1 as const;
 
 export const IMAGE_DEFAULTS_SERVICES: ImageDefaultsService[] = ["automatic1111", "comfyui", "novelai"];
 
+/** Transparent placeholder accepted by ComfyUI image-processing nodes that reject 1×1 inputs. */
+export const COMFYUI_PLACEHOLDER_REFERENCE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNvZnR3YXJlAFBhaW50Lk5FVCA1LjEuMTITAUd0AAAAuGVYSWZJSSoACAAAAAUAGgEFAAEAAABKAAAAGwEFAAEAAABSAAAAKAEDAAEAAAACAAAAMQECABEAAABaAAAAaYcEAAEAAABsAAAAAAAAAGAAAAABAAAAYAAAAAEAAABQYWludC5ORVQgNS4xLjEyAAADAACQBwAEAAAAMDIzMAGhAwABAAAAAQAAAAWgBAABAAAAlgAAAAAAAAACAAEAAgAEAAAAUjk4AAIABwAEAAAAMDEwMAAAAADZp5qVybcLXwAAABJJREFUOE9jYBgFo2AUjAIIAAAEEAABTLtGVQAAAABJRU5ErkJggg==";
+
 export const DEFAULT_AUTOMATIC1111_DEFAULTS: Automatic1111Defaults = {
   promptPrefix: "",
   negativePromptPrefix: "",
@@ -33,6 +37,7 @@ export const DEFAULT_COMFYUI_DEFAULTS: ComfyUiDefaults = {
   denoisingStrength: 1,
   clipSkip: null,
   uploadPlaceholderOnMissingReference: false,
+  loras: [],
 };
 
 export const DEFAULT_NOVELAI_DEFAULTS: NovelAiDefaults = {
@@ -44,6 +49,10 @@ export const DEFAULT_NOVELAI_DEFAULTS: NovelAiDefaults = {
   promptGuidance: 6,
   promptGuidanceRescale: 0,
   undesiredContentPreset: 0,
+  dynamicResolutionBySubjectCount: true,
+  styleReferenceImage: null,
+  styleReferenceStrength: 0.6,
+  styleReferenceFidelity: 0.5,
 };
 
 export const SD_WEBUI_SAMPLER_OPTIONS = [
@@ -154,7 +163,7 @@ export function createDefaultImageGenerationProfile(service: ImageDefaultsServic
     styleProfileId: null,
   };
   if (service === "automatic1111") profile.automatic1111 = { ...DEFAULT_AUTOMATIC1111_DEFAULTS };
-  if (service === "comfyui") profile.comfyui = { ...DEFAULT_COMFYUI_DEFAULTS };
+  if (service === "comfyui") profile.comfyui = { ...DEFAULT_COMFYUI_DEFAULTS, loras: [] };
   if (service === "novelai") profile.novelai = { ...DEFAULT_NOVELAI_DEFAULTS };
   return profile;
 }
@@ -276,7 +285,32 @@ function normalizeComfyUiDefaults(rawDefaults: unknown): ComfyUiDefaults {
       raw.uploadPlaceholderOnMissingReference,
       DEFAULT_COMFYUI_DEFAULTS.uploadPlaceholderOnMissingReference,
     ),
+    loras: normalizeComfyUiLoraSettings(raw.loras),
   };
+}
+
+export function normalizeComfyUiLoraSettings(rawLoras: unknown): ComfyUiDefaults["loras"] {
+  if (!Array.isArray(rawLoras)) return [];
+  return rawLoras.slice(0, 5).map((entry) => {
+    const raw = isRecord(entry) ? entry : {};
+    return {
+      model: readString(raw.model, "").trim(),
+      strength: readNumber(raw.strength, 1, -2, 2),
+    };
+  });
+}
+
+export function buildComfyUiLoraWorkflowReplacements(
+  loras: ComfyUiDefaults["loras"] | null | undefined,
+): Record<string, string | number> {
+  const replacements: Record<string, string | number> = {};
+  for (let index = 0; index < 5; index++) {
+    const number = index + 1;
+    const lora = loras?.[index];
+    replacements[`%LORA_${number}%`] = lora?.model ?? "";
+    replacements[`%LORA_${number}_strength%`] = lora?.strength ?? 1;
+  }
+  return replacements;
 }
 
 function normalizeNovelAiDefaults(rawDefaults: unknown): NovelAiDefaults {
@@ -294,6 +328,26 @@ function normalizeNovelAiDefaults(rawDefaults: unknown): NovelAiDefaults {
       DEFAULT_NOVELAI_DEFAULTS.undesiredContentPreset,
       0,
       4,
+    ),
+    dynamicResolutionBySubjectCount: readBoolean(
+      raw.dynamicResolutionBySubjectCount,
+      DEFAULT_NOVELAI_DEFAULTS.dynamicResolutionBySubjectCount,
+    ),
+    styleReferenceImage: readNullableString(
+      raw.styleReferenceImage,
+      DEFAULT_NOVELAI_DEFAULTS.styleReferenceImage,
+    ),
+    styleReferenceStrength: readNumber(
+      raw.styleReferenceStrength,
+      DEFAULT_NOVELAI_DEFAULTS.styleReferenceStrength,
+      0,
+      1,
+    ),
+    styleReferenceFidelity: readNumber(
+      raw.styleReferenceFidelity,
+      DEFAULT_NOVELAI_DEFAULTS.styleReferenceFidelity,
+      0,
+      1,
     ),
   };
 }

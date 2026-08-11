@@ -1,16 +1,24 @@
 import { isConcurrencyLimitError } from "./generation-parameter-errors";
 
+export type IllustratorRetryTarget = "illustration" | "background";
+
 export interface AgentFailure {
   agentType: string;
   agentName: string;
   error: string | null;
   reasonLabel: string | null;
+  retryTarget: IllustratorRetryTarget | null;
 }
 
 interface RawAgentFailure {
   agentType: string;
   agentName?: string | null;
   error?: string | null;
+  retryTarget?: unknown;
+}
+
+function parseIllustratorRetryTarget(value: unknown): IllustratorRetryTarget | null {
+  return value === "illustration" || value === "background" ? value : null;
 }
 
 function classifyAgentFailureReason(error: string | null | undefined): string | null {
@@ -62,7 +70,31 @@ export function toAgentFailure(raw: RawAgentFailure): AgentFailure {
     agentName,
     error,
     reasonLabel: classifyAgentFailureReason(error),
+    retryTarget: raw.agentType === "illustrator" ? parseIllustratorRetryTarget(raw.retryTarget) : null,
   };
+}
+
+export function mergeAgentFailures(existing: AgentFailure[], incoming: AgentFailure[]): AgentFailure[] {
+  const merged = [...existing];
+  for (const failure of incoming) {
+    for (let index = merged.length - 1; index >= 0; index--) {
+      const current = merged[index]!;
+      if (current.agentType !== failure.agentType) continue;
+      if (current.retryTarget === null || failure.retryTarget === null || current.retryTarget === failure.retryTarget) {
+        merged.splice(index, 1);
+      }
+    }
+    merged.push(failure);
+  }
+  return merged;
+}
+
+export function illustratorRetryTargetsForFailures(failures: AgentFailure[]): IllustratorRetryTarget[] | undefined {
+  const illustratorFailures = failures.filter((failure) => failure.agentType === "illustrator");
+  if (illustratorFailures.length === 0 || illustratorFailures.some((failure) => failure.retryTarget === null)) {
+    return undefined;
+  }
+  return Array.from(new Set(illustratorFailures.map((failure) => failure.retryTarget as IllustratorRetryTarget)));
 }
 
 export function formatAgentFailureTitle(failure: AgentFailure): string {

@@ -1,8 +1,8 @@
 import type { PresentCharacter } from "@marinara-engine/shared";
 import { useCharacterSprites, type SpriteInfo } from "../../../../hooks/use-characters";
 import {
-  FEATURED_PORTRAIT_DEFAULT_FOCUS_X,
-  FEATURED_PORTRAIT_DEFAULT_FOCUS_Y,
+  TRACKER_PORTRAIT_DEFAULT_FOCUS_X,
+  TRACKER_PORTRAIT_DEFAULT_FOCUS_Y,
   TRACKER_PORTRAIT_DEFAULT_ZOOM,
   TRACKER_PORTRAIT_EXPRESSION_DEFAULT_FOCUS_Y,
   TRACKER_PORTRAIT_EXPRESSION_FOCUS_Y_MAX,
@@ -11,7 +11,7 @@ import {
 } from "../../lib/tracker-panel.constants";
 import { getCharacterPortraitFallback } from "../../lib/character-tracker-data";
 import { clampNumber, visibleText } from "../../lib/tracker-display";
-import { getOppositeTrackerProfileSide, type TrackerProfileSide } from "../../lib/tracker-profile-layout";
+import type { TrackerProfileSide } from "../../lib/tracker-profile-layout";
 import { getCharacterExpressionHint, isSpriteLookupCharacterId, resolveSpriteUrl } from "../../lib/sprite-expressions";
 import { TrackerPortraitStage, type TrackerPortraitStageMediaKind } from "../controls/TrackerPortraitStage";
 import { AvatarRemoveButton } from "./AvatarRemoveButton";
@@ -22,7 +22,7 @@ export function FeaturedCharacterPortrait({
   spriteExpression,
   expressionSpritesEnabled,
   characterPicture,
-  detailsSide,
+  outsideSide,
   onUploadAvatar,
   onRemoveAvatar,
   avatarRemovalPending = false,
@@ -33,7 +33,7 @@ export function FeaturedCharacterPortrait({
   spriteExpression?: string;
   expressionSpritesEnabled: boolean;
   characterPicture?: string | null;
-  detailsSide: TrackerProfileSide;
+  outsideSide: TrackerProfileSide;
   onUploadAvatar?: () => void;
   onRemoveAvatar?: () => void;
   avatarRemovalPending?: boolean;
@@ -54,10 +54,10 @@ export function FeaturedCharacterPortrait({
   const canUploadTrackerArt =
     !!onUploadAvatar && !spriteUrl && (!characterPicture || character.preferGeneratedAvatar);
   const defaultPortraitFocusY =
-    mediaKind === "expression" ? TRACKER_PORTRAIT_EXPRESSION_DEFAULT_FOCUS_Y : FEATURED_PORTRAIT_DEFAULT_FOCUS_Y;
+    mediaKind === "expression" ? TRACKER_PORTRAIT_EXPRESSION_DEFAULT_FOCUS_Y : TRACKER_PORTRAIT_DEFAULT_FOCUS_Y;
   const portraitFocusYMax = mediaKind === "expression" ? TRACKER_PORTRAIT_EXPRESSION_FOCUS_Y_MAX : 100;
   const portraitFocusX = clampNumber(
-    typeof character.portraitFocusX === "number" ? character.portraitFocusX : FEATURED_PORTRAIT_DEFAULT_FOCUS_X,
+    typeof character.portraitFocusX === "number" ? character.portraitFocusX : TRACKER_PORTRAIT_DEFAULT_FOCUS_X,
     0,
     100,
   );
@@ -79,7 +79,6 @@ export function FeaturedCharacterPortrait({
           Math.round(clampNumber(nextZoom, TRACKER_PORTRAIT_MIN_ZOOM, TRACKER_PORTRAIT_MAX_ZOOM) * 100) / 100,
         )
     : undefined;
-  const portraitOutsideSide = getOppositeTrackerProfileSide(detailsSide);
   const characterName = visibleText(character.name, "character");
 
   return (
@@ -88,7 +87,7 @@ export function FeaturedCharacterPortrait({
         accessibleLabel={media ? `${characterName} portrait` : `${characterName} portrait placeholder`}
         media={media}
         mediaKind={mediaKind}
-        outsideSide={portraitOutsideSide}
+        outsideSide={outsideSide}
         frameTone="featured"
         placeholder={getCharacterPortraitFallback(character)}
         placeholderVariant="avatar"

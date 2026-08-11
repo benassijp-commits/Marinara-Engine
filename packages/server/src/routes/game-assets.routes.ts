@@ -28,6 +28,9 @@ import { GAME_ASSETS_DIR, buildAssetManifest, getAssetManifest } from "../servic
 import { folderContainsBundledGameAssets, isBundledGameAsset } from "../services/game/native-game-assets.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { assertInsideDir } from "../utils/security.js";
+import { getSharp } from "../utils/sharp.js";
+import { openFolderInFileManager } from "../lib/open-folder-in-file-manager.js";
+import { parseThumbnailWidth, resolveThumbPath } from "../services/image/image-thumbnail.js";
 
 const META_PATH = join(GAME_ASSETS_DIR, "meta.json");
 
@@ -54,38 +57,6 @@ function loadMeta(): Record<string, FolderMeta> {
  */
 function saveMeta(meta: Record<string, FolderMeta>) {
   atomicWriteText(META_PATH, JSON.stringify(meta, null, 2));
-}
-
-// sharp can fail to load on Android/Termux because it has no native Android
-// prebuild. Lazy-load it so metadata enrichment can degrade without blocking
-// server startup.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SharpFn = any;
-let cachedSharp: SharpFn | null = null;
-let sharpLoadFailed = false;
-let sharpLoadPromise: Promise<SharpFn | null> | null = null;
-async function getSharp(): Promise<SharpFn | null> {
-  if (cachedSharp) return cachedSharp;
-  if (sharpLoadFailed) return null;
-  if (sharpLoadPromise) return sharpLoadPromise;
-
-  sharpLoadPromise = (async () => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore - optional native dep, may not load on some platforms
-      const mod = await import("sharp");
-      cachedSharp = (mod.default ?? mod) as SharpFn;
-      return cachedSharp;
-    } catch (error) {
-      sharpLoadFailed = true;
-      logger.debug(error, "[game-assets] Image metadata unavailable because sharp could not be loaded");
-      return null;
-    } finally {
-      sharpLoadPromise = null;
-    }
-  })();
-
-  return sharpLoadPromise;
 }
 
 const MIME_MAP: Record<string, string> = {
@@ -520,16 +491,24 @@ export async function gameAssetsRoutes(app: FastifyInstance) {
 
     const ext = extname(wildcard).toLowerCase();
     const mime = MIME_MAP[ext] ?? "application/octet-stream";
-    const stream = createReadStream(filePath);
-    return reply.header("Content-Type", mime).header("Cache-Control", "public, max-age=604800").send(stream);
+
+    // Downscaled variant when asked for one; falls back to the original on any miss.
+    const width = parseThumbnailWidth((req.query as { w?: string }).w);
+    const thumbPath = width ? await resolveThumbPath(filePath, width) : null;
+
+    const stream = createReadStream(thumbPath ?? filePath);
+    return reply
+      .header("Content-Type", thumbPath ? "image/webp" : mime)
+      .header("Cache-Control", "public, max-age=604800")
+      .send(stream);
   });
 
-  // ── GET /game-assets/local-music-file/:encoded ──
+  // ── GET /game-assets/local-music-file?path=:encoded ──
   // Serves an audio file selected through the local music folder picker.
-  app.get("/local-music-file/:encoded", async (req, reply) => {
+  app.get("/local-music-file", async (req, reply) => {
     if (!requirePrivilegedAccess(req, reply, { feature: "Custom music folder picker" })) return;
 
-    const { encoded } = (req.params as { encoded?: string }) ?? {};
+    const { path: encoded } = (req.query as { path?: string }) ?? {};
     if (!encoded) {
       return reply.status(400).send({ error: "Missing music file" });
     }
@@ -648,7 +627,8 @@ export async function gameAssetsRoutes(app: FastifyInstance) {
     // Strip data URL prefix if present
     const base64Match = data.match(/^data:[^;]+;base64,(.+)$/);
     const rawBase64 = base64Match ? base64Match[1]! : data;
-    let buffer = Buffer.from(rawBase64, "base64");
+    // Widened on purpose: sharp's toBuffer() below returns Buffer<ArrayBufferLike>.
+    let buffer: Buffer = Buffer.from(rawBase64, "base64");
 
     const ext = extname(filename).toLowerCase();
     const isTextFile = TEXT_EXTS.has(ext);
@@ -700,17 +680,19 @@ export async function gameAssetsRoutes(app: FastifyInstance) {
 
   // ── POST /game-assets/open-folder ──
   app.post("/open-folder", async (req, reply) => {
+    if (!requirePrivilegedAccess(req, reply, { loopbackOnly: true, feature: "Game assets folder opening" })) return;
     const { subfolder } = (req.body as { subfolder?: string }) ?? {};
     let target = GAME_ASSETS_DIR;
     if (subfolder && isSafePath(subfolder)) {
       target = join(GAME_ASSETS_DIR, subfolder);
     }
     if (!existsSync(target)) mkdirSync(target, { recursive: true });
-    const os = platform();
-    const cmd = os === "darwin" ? "open" : os === "win32" ? "explorer" : "xdg-open";
-    execFile(cmd, [target], (err) => {
-      if (err) logger.warn(err, "Could not open game assets folder");
-    });
+    try {
+      await openFolderInFileManager(target);
+    } catch (err) {
+      logger.warn(err, "Could not open game assets folder");
+      return reply.status(500).send({ error: "Could not open game assets folder" });
+    }
     return reply.send({ ok: true, path: target });
   });
 
@@ -1089,7 +1071,7 @@ export async function gameAssetsRoutes(app: FastifyInstance) {
   });
 
   // ── POST /game-assets/delete-bulk ──
-  app.post("/delete-bulk", async (req, reply) => {
+  app.post("/delete-bulk", async (req) => {
     const schema = z.object({
       paths: z.array(z.string().min(1).max(500)).min(1).max(100),
     });

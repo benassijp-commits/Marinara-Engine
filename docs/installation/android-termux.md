@@ -85,6 +85,8 @@ To start your installed copy without updating, use the skip flag:
 ./start-termux.sh --skip-update
 ```
 
+To keep the installed Engine version across launches, add `AUTO_UPDATE_ENABLED=false` to the project `.env`. This does not disable manual update commands or **Settings → Advanced → Updates**.
+
 You can also check for updates inside the app. Open **Settings**, go to the **Advanced** tab, and open the **Updates** section. Click **Check for Updates** to see if a newer release exists. The in-app **Apply Update** button is off by default and needs setup. For how to enable and use it, see [Upgrading Marinara Engine](../UPGRADING.md).
 
 ## Related guides

@@ -71,7 +71,7 @@ function resizeSurface(nextWidth: number, nextHeight: number, nextScale: number)
   context.setTransform(scale, 0, 0, scale, 0, 0);
 }
 
-function drawFrame(now: number) {
+function drawFrame(now: number, advanceSimulation = true) {
   if (!context || !config || hidden) {
     previousTime = now;
     return;
@@ -79,7 +79,7 @@ function drawFrame(now: number) {
 
   const elapsed = previousTime === 0 ? FRAME_MS : Math.min(100, now - previousTime);
   previousTime = now;
-  const frameScale = Math.min(3, Math.max(0.5, elapsed / BASE_FRAME_MS));
+  const frameScale = advanceSimulation ? Math.min(3, Math.max(0.5, elapsed / BASE_FRAME_MS)) : 0;
   frameCount += frameScale;
   context.clearRect(0, 0, width, height);
 
@@ -152,7 +152,10 @@ function drawFrame(now: number) {
 }
 
 function scheduleFrame() {
+  if (hidden || timer !== null) return;
   timer = setTimeout(() => {
+    timer = null;
+    if (hidden) return;
     try {
       drawFrame(performance.now());
       scheduleFrame();
@@ -161,6 +164,17 @@ function scheduleFrame() {
       self.postMessage({ type: "render-error" });
     }
   }, FRAME_MS);
+}
+
+function setSuspended(suspended: boolean) {
+  hidden = suspended;
+  previousTime = performance.now();
+  if (hidden) {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+    return;
+  }
+  scheduleFrame();
 }
 
 self.onmessage = (event: MessageEvent<WeatherWorkerMessage>) => {
@@ -173,12 +187,15 @@ self.onmessage = (event: MessageEvent<WeatherWorkerMessage>) => {
     nextLightning = config.lightning ? 200 + Math.random() * 400 : Infinity;
     resizeSurface(message.width, message.height, message.scale);
     populateParticles();
+    drawFrame(performance.now());
     if (timer === null) scheduleFrame();
   } else if (message.type === "resize") {
     resizeSurface(message.width, message.height, message.scale);
+    // Resizing a canvas clears it. Repaint in the same worker task so the
+    // browser never presents a blank weather layer between sidebar layouts.
+    drawFrame(performance.now(), false);
   } else {
-    hidden = message.hidden;
-    previousTime = performance.now();
+    setSuspended(message.hidden);
   }
 };
 

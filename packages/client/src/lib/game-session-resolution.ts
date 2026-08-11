@@ -38,15 +38,6 @@ export function getCurrentGameGroupRepresentative<T extends GameSessionChat>(
   return sessions.reduce((latest, candidate) => (compareGameSessions(candidate, latest) > 0 ? candidate : latest));
 }
 
-export function resolveCurrentGameSessionChatId(
-  activeChat: GameSessionChat | null | undefined,
-  chats: readonly GameSessionChat[] | null | undefined,
-): string | null {
-  if (!activeChat) return null;
-  const current = getCurrentGameGroupRepresentative(activeChat, chats);
-  return current.id !== activeChat.id ? current.id : null;
-}
-
 /** Resolve the canonical stored chat for one numbered Game Mode session, preferring it over user-created branches. */
 export function findReplayableGameSessionChat<T extends GameSessionChat>(
   chats: readonly T[] | null | undefined,

@@ -8,6 +8,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { X } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 interface QteAction {
   label: string;
@@ -22,6 +23,7 @@ interface GameQteOverlayProps {
 }
 
 export function GameQteOverlay({ actions, timerSeconds, onSelect, onTimeout, onDismiss }: GameQteOverlayProps) {
+  const { t: localizeUi } = useUiTranslation();
   const [timeLeft, setTimeLeft] = useState(timerSeconds);
   const [selected, setSelected] = useState<number | null>(null);
   const [flash, setFlash] = useState(false);
@@ -94,8 +96,8 @@ export function GameQteOverlay({ actions, timerSeconds, onSelect, onTimeout, onD
             type="button"
             onClick={handleDismiss}
             className="absolute right-3 top-3 rounded-lg p-1.5 text-white/55 transition-colors hover:bg-white/10 hover:text-white"
-            title="Close quick-time event"
-            aria-label="Close quick-time event"
+            title={localizeUi("ui.game.gameqteoverlay.closeQuickTimeEvent")}
+            aria-label={localizeUi("ui.game.gameqteoverlay.closeQuickTimeEvent")}
           >
             <X size="1rem" />
           </button>
@@ -117,9 +119,8 @@ export function GameQteOverlay({ actions, timerSeconds, onSelect, onTimeout, onD
               isUrgent ? "text-red-400 animate-pulse" : "text-amber-300",
             )}
           >
-            {timeLeft.toFixed(1)}s
-          </span>
-          <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-white/60">React quickly!</p>
+            {timeLeft.toFixed(1)}{localizeUi("ui.noodle.stageprofileview.s")}</span>
+          <p className="mt-1 text-xs font-semibold uppercase tracking-widest text-white/60">{localizeUi("ui.game.gameqteoverlay.reactQuickly")}</p>
         </div>
 
         {/* Action buttons */}
@@ -151,32 +152,10 @@ export function GameQteOverlay({ actions, timerSeconds, onSelect, onTimeout, onD
         {/* Bonus indicator */}
         {selected !== null && timeLeft > 0 && (
           <div className="mt-3 text-center">
-            <span className="text-xs font-semibold text-emerald-400">Quick reflexes! +{Math.ceil(timeLeft)} bonus</span>
+            <span className="text-xs font-semibold text-emerald-400">{localizeUi("ui.game.gameqteoverlay.quickReflexes")}{Math.ceil(timeLeft)} {localizeUi("ui.game.gameqteoverlay.bonus")}</span>
           </div>
         )}
       </div>
     </div>
   );
-}
-
-// ── Tag Parser ──
-
-/** Parse [qte: action1 | action2, timer: 5s] from narration content. */
-export function parseQteTag(content: string): { actions: string[]; timer: number; cleanContent: string } | null {
-  const regex = /\[qte:\s*(.+?),\s*timer:\s*(\d+)s?\]/i;
-  const match = content.match(regex);
-  if (!match) return null;
-
-  const actionsRaw = match[1]!;
-  const timer = parseInt(match[2]!, 10);
-
-  const actions = actionsRaw
-    .split("|")
-    .map((a) => a.trim().replace(/^["']|["']$/g, ""))
-    .filter((a) => a.length > 0);
-
-  if (actions.length === 0 || isNaN(timer)) return null;
-
-  const cleanContent = content.replace(regex, "").trim();
-  return { actions, timer, cleanContent };
 }

@@ -99,7 +99,7 @@ export function useEncounter() {
       store.setSummaryStatus("generating");
 
       try {
-        const _res = await api.post<EncounterSummaryResponse>("/encounter/summary", {
+        await api.post<EncounterSummaryResponse>("/encounter/summary", {
           chatId: activeChatId,
           connectionId: null,
           encounterLog,

@@ -2,7 +2,7 @@
 // Hooks: Agent Configs (React Query)
 // ──────────────────────────────────────────────
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import type { AgentSuiteRewriteInput } from "@marinara-engine/shared";
+import type { AgentSuiteRewriteInput, CustomAgentImportPolicy, ImportAgentConfigInput } from "@marinara-engine/shared";
 import { ApiError, api } from "../lib/api-client";
 
 export const agentKeys = {
@@ -11,6 +11,7 @@ export const agentKeys = {
   customRuns: (chatId: string) => ["agents", "runs", "custom", chatId] as const,
   // SecretPlotPanel also uses agentKeys.memory() directly, so invalidations stay coherent.
   memory: (agentType: string, chatId: string) => ["agent-memory", agentType, chatId] as const,
+  importPolicy: () => ["agents", "policy", "import"] as const,
 };
 
 export interface AgentConfigRow {
@@ -60,12 +61,32 @@ export function useAgentConfigs(enabled = true) {
   });
 }
 
-export function useAgentConfig(id: string | null) {
+export function useAgentImportPolicy() {
   return useQuery({
-    queryKey: agentKeys.detail(id ?? ""),
-    queryFn: () => api.get<AgentConfigRow>(`/agents/${id}`),
-    enabled: !!id,
-    staleTime: 5 * 60_000,
+    queryKey: agentKeys.importPolicy(),
+    queryFn: () => api.get<CustomAgentImportPolicy>("/agents/import-policy"),
+    staleTime: 5_000,
+  });
+}
+
+export function useSetAgentImportsEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => api.patch<CustomAgentImportPolicy>("/agents/import-policy", { enabled }),
+    onSuccess: (policy) => {
+      qc.setQueryData(agentKeys.importPolicy(), policy);
+    },
+  });
+}
+
+export function useImportAgent() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ImportAgentConfigInput) => api.post<AgentConfigRow>("/agents/import", input),
+    onSuccess: (agent) => {
+      qc.setQueryData<AgentConfigRow[] | undefined>(agentKeys.all, (rows) => upsertAgentConfig(rows, agent));
+      qc.invalidateQueries({ queryKey: agentKeys.all });
+    },
   });
 }
 
@@ -96,17 +117,6 @@ export function useUploadAgentImage() {
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: agentKeys.all });
       qc.invalidateQueries({ queryKey: agentKeys.detail(variables.id) });
-    },
-  });
-}
-
-export function useUpdateAgentByType() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ agentType, ...data }: { agentType: string } & Record<string, unknown>) =>
-      api.patch(`/agents/type/${agentType}`, data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: agentKeys.all });
     },
   });
 }
@@ -154,19 +164,10 @@ export function useAgentMemory(agentType: string | null, chatId: string | null, 
 export function useUpdateAgentMemory() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      agentType,
-      chatId,
-      patch,
-    }: {
-      agentType: string;
-      chatId: string;
-      patch: Record<string, unknown>;
-    }) =>
-      api.patch<AgentMemoryResponse>(
-        `/agents/memory/${encodeURIComponent(agentType)}/${encodeURIComponent(chatId)}`,
-        { patch },
-      ),
+    mutationFn: ({ agentType, chatId, patch }: { agentType: string; chatId: string; patch: Record<string, unknown> }) =>
+      api.patch<AgentMemoryResponse>(`/agents/memory/${encodeURIComponent(agentType)}/${encodeURIComponent(chatId)}`, {
+        patch,
+      }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: agentKeys.memory(variables.agentType, variables.chatId) });
     },
@@ -201,16 +202,6 @@ export function useUpdateAgentRunData() {
       api.patch(`/agents/runs/${id}`, { resultData }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: agentKeys.customRuns(variables.chatId) });
-    },
-  });
-}
-
-export function useToggleAgent() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (agentType: string) => api.put(`/agents/toggle/${agentType}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: agentKeys.all });
     },
   });
 }

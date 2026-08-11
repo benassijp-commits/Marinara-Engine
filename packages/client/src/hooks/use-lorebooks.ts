@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────
 import { useInfiniteQuery, useQuery, useQueries, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api-client";
-import type { Lorebook, LorebookEntry, LorebookFolder } from "@marinara-engine/shared";
+import type { BulkUpdateLorebookEntriesInput, Lorebook, LorebookEntry, LorebookFolder } from "@marinara-engine/shared";
 import { characterKeys } from "./use-characters";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import {
@@ -24,7 +24,6 @@ export const lorebookKeys = {
   entries: (lorebookId: string) => [...lorebookKeys.all, "entries", lorebookId] as const,
   entry: (entryId: string) => [...lorebookKeys.all, "entry", entryId] as const,
   folders: (lorebookId: string) => [...lorebookKeys.all, "folders", lorebookId] as const,
-  search: (q: string) => [...lorebookKeys.all, "search", q] as const,
   active: (chatId?: string | null) =>
     chatId ? ([...lorebookKeys.all, "active", chatId] as const) : ([...lorebookKeys.all, "active"] as const),
 };
@@ -36,10 +35,13 @@ export type LorebookListItem = Lorebook & {
 
 // ── Lorebooks ──
 
-export function useLorebooks(category?: string) {
+export function useLorebooks(category?: string, options: { includeHidden?: boolean } = {}) {
   return useQuery({
     queryKey: category ? lorebookKeys.byCategory(category) : lorebookKeys.list(),
     queryFn: () => api.get<Lorebook[]>(category ? `/lorebooks?category=${category}` : "/lorebooks"),
+    select: options.includeHidden
+      ? undefined
+      : (lorebooks) => lorebooks.filter((lorebook) => !lorebook.hiddenFromLibrary),
     staleTime: 5 * 60_000,
   });
 }
@@ -281,14 +283,6 @@ export function useEntriesAcrossLorebooks(lorebookIds: string[]): {
   return { entries, isLoading, isError, error };
 }
 
-export function useLorebookEntry(lorebookId: string | null, entryId: string | null) {
-  return useQuery({
-    queryKey: lorebookKeys.entry(entryId ?? ""),
-    queryFn: () => api.get<LorebookEntry>(`/lorebooks/${lorebookId}/entries/${entryId}`),
-    enabled: !!lorebookId && !!entryId,
-  });
-}
-
 export function useCreateLorebookEntry() {
   const qc = useQueryClient();
   return useMutation({
@@ -324,7 +318,7 @@ export function useBulkUpdateLorebookEntries() {
     }: {
       lorebookId: string;
       entryIds: string[];
-      changes: Record<string, boolean>;
+      changes: BulkUpdateLorebookEntriesInput["changes"];
     }) => api.patch<{ updated: number }>(`/lorebooks/${lorebookId}/entries/bulk`, { entryIds, changes }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
@@ -358,18 +352,6 @@ export function useDuplicateLorebookEntry() {
       delete clone.updatedAt;
       return api.post<LorebookEntry>(`/lorebooks/${lorebookId}/entries`, clone);
     },
-    onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
-      qc.invalidateQueries({ queryKey: lorebookKeys.active() });
-    },
-  });
-}
-
-export function useBulkCreateEntries() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ lorebookId, entries }: { lorebookId: string; entries: unknown[] }) =>
-      api.post<LorebookEntry[]>(`/lorebooks/${lorebookId}/entries/bulk`, { entries }),
     onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
       qc.invalidateQueries({ queryKey: lorebookKeys.active() });
@@ -517,14 +499,6 @@ export function useCloneLorebookFolder() {
       qc.invalidateQueries({ queryKey: lorebookKeys.entries(variables.lorebookId) });
       qc.invalidateQueries({ queryKey: lorebookKeys.active() });
     },
-  });
-}
-
-export function useSearchLorebookEntries(query: string) {
-  return useQuery({
-    queryKey: lorebookKeys.search(query),
-    queryFn: () => api.get<LorebookEntry[]>(`/lorebooks/search/entries?q=${encodeURIComponent(query)}`),
-    enabled: query.length >= 2,
   });
 }
 

@@ -49,10 +49,6 @@ export function getBrowserSpeechRecognitionCtor(): BrowserSpeechRecognitionConst
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
 }
 
-export function isBrowserSpeechRecognitionSupported(): boolean {
-  return Boolean(getBrowserSpeechRecognitionCtor());
-}
-
 export function readBrowserSpeechRecognitionTranscript(result: BrowserSpeechRecognitionResult | undefined): string {
   return result?.[0]?.transcript ?? result?.item(0)?.transcript ?? "";
 }

@@ -10,7 +10,7 @@ import {
   useAgentMemory,
   useAgentSuiteRewrite,
   useApplyCuratorReport,
-  useUpdateAgentByType,
+  useUpdateAgent,
   useUpdateAgentMemory,
 } from "../../hooks/use-agents";
 import { useUpdateChatMetadata } from "../../hooks/use-chats";
@@ -305,7 +305,7 @@ export function NarrativeCuratorPanel() {
   const { data: agentConfigs } = useAgentConfigs();
   const trackerConfig = agentConfigs?.find((a) => a.type === CURATOR_TRACKER_TYPE);
   const sceneConfig = agentConfigs?.find((a) => a.type === CURATOR_SCENE_TYPE);
-  const updateAgentByType = useUpdateAgentByType();
+  const updateAgent = useUpdateAgent();
   const { data: connectionsRaw } = useConnections();
   const connections = (connectionsRaw ?? []) as Array<{ id: string; name: string }>;
 
@@ -522,7 +522,7 @@ export function NarrativeCuratorPanel() {
                       <select
                         className={inputClass}
                         value={config?.connectionId ?? ""}
-                        onChange={(e) => updateAgentByType.mutate({ agentType: type, connectionId: e.target.value })}
+                        onChange={(e) => config?.id && updateAgent.mutate({ id: config.id, connectionId: e.target.value })}
                       >
                         <option value="">Not set</option>
                         {connections.map((c) => (

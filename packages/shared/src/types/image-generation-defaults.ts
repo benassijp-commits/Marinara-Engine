@@ -12,6 +12,11 @@ export interface Automatic1111Defaults {
   denoisingStrength: number;
 }
 
+export interface ComfyUiLoraSetting {
+  model: string;
+  strength: number;
+}
+
 export interface ComfyUiDefaults {
   promptPrefix: string;
   negativePromptPrefix: string;
@@ -22,6 +27,7 @@ export interface ComfyUiDefaults {
   denoisingStrength: number;
   clipSkip: number | null;
   uploadPlaceholderOnMissingReference: boolean;
+  loras: ComfyUiLoraSetting[];
 }
 
 export interface NovelAiDefaults {
@@ -33,6 +39,11 @@ export interface NovelAiDefaults {
   promptGuidance: number;
   promptGuidanceRescale: number;
   undesiredContentPreset: number;
+  dynamicResolutionBySubjectCount: boolean;
+  /** Persistent V4.5 style-only director reference stored with this connection. */
+  styleReferenceImage: string | null;
+  styleReferenceStrength: number;
+  styleReferenceFidelity: number;
 }
 
 export interface ImageGenerationDefaultsProfile {

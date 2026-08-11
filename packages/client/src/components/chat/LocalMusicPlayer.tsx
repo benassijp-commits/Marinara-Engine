@@ -10,9 +10,11 @@ import {
 } from "react";
 import { encodeAssetPath } from "../game-assets/encode-asset-path";
 import { MusicSourceButton, MusicSourceGlyph } from "../music/MusicSourceButton";
+import { api } from "../../lib/api-client";
 import { cn } from "../../lib/utils";
 import { useAgentStore } from "../../stores/agent.store";
 import { useUIStore } from "../../stores/ui.store";
+import { useTranslation as useUiTranslation } from "react-i18next";
 
 const MUSIC_NEUTRAL_SHELL_BORDER_CLASS = "border-[var(--marinara-music-player-shell-border)]";
 const MUSIC_NEUTRAL_SHELL_BG_CLASS = "bg-[var(--marinara-music-player-shell-bg)]";
@@ -90,11 +92,25 @@ function getMobileExpandedPanelStyle(position: { x: number; y: number }): CSSPro
   };
 }
 
-function getTrackUrl(path: string) {
-  if (path.startsWith("local-music:")) {
-    return `/api/game-assets/local-music-file/${encodeURIComponent(path.slice("local-music:".length))}`;
+async function loadTrackSource(path: string): Promise<{ url: string; objectUrl: boolean }> {
+  if (!path.startsWith("local-music:")) {
+    return { url: `/api/game-assets/file/${encodeAssetPath(path)}`, objectUrl: false };
   }
-  return `/api/game-assets/file/${encodeAssetPath(path)}`;
+
+  const encodedPath = encodeURIComponent(path.slice("local-music:".length));
+  const response = await api.raw(`/game-assets/local-music-file?path=${encodedPath}`);
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: unknown; message?: unknown } | null;
+    const detail =
+      typeof payload?.message === "string"
+        ? payload.message
+        : typeof payload?.error === "string"
+          ? payload.error
+          : response.statusText;
+    throw new Error(detail || `Custom music could not be loaded (${response.status}).`);
+  }
+
+  return { url: URL.createObjectURL(await response.blob()), objectUrl: true };
 }
 
 function LocalPlayerIcon({ icon: Icon }: { icon: LucideIcon }) {
@@ -102,6 +118,7 @@ function LocalPlayerIcon({ icon: Icon }: { icon: LucideIcon }) {
 }
 
 export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) {
+  const { t: localizeUi } = useUiTranslation();
   const localMusicPlay = useAgentStore((s) => s.localMusicPlay);
   const localMusicVolume = useAgentStore((s) => s.localMusicVolume);
   const clearLocalMusic = useAgentStore((s) => s.clearLocalMusic);
@@ -117,6 +134,8 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
   const desktopViewport = useMediaQuery("(min-width: 768px)");
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const sourceLoadIdRef = useRef(0);
   const lastNonceRef = useRef(0);
   const prevVolumeRef = useRef(70);
   const dragRef = useRef<{
@@ -133,6 +152,12 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
 
   const active = musicPlayerActive && (mobile || desktopViewport);
 
+  const releaseObjectUrl = useCallback(() => {
+    if (!objectUrlRef.current) return;
+    URL.revokeObjectURL(objectUrlRef.current);
+    objectUrlRef.current = null;
+  }, []);
+
   useEffect(() => {
     if (!active) return;
     if (!localMusicPlay) return;
@@ -142,21 +167,36 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
     const audio = audioRef.current;
     if (!audio) return;
 
-    const src = getTrackUrl(localMusicPlay.path);
+    const sourceLoadId = ++sourceLoadIdRef.current;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    releaseObjectUrl();
     setError(null);
     setNowPlaying({ path: localMusicPlay.path, title: localMusicPlay.title, mood: localMusicPlay.mood });
-    setPaused(false);
-    audio.src = src;
-    audio.loop = true;
-    audio.volume = Math.max(0, Math.min(1, playerVolume / 100));
-    audio
-      .play()
-      .then(() => setPaused(false))
+    setPaused(true);
+
+    void loadTrackSource(localMusicPlay.path)
+      .then(async (source) => {
+        if (sourceLoadId !== sourceLoadIdRef.current) {
+          if (source.objectUrl) URL.revokeObjectURL(source.url);
+          return;
+        }
+
+        releaseObjectUrl();
+        if (source.objectUrl) objectUrlRef.current = source.url;
+        audio.src = source.url;
+        audio.loop = true;
+        audio.volume = Math.max(0, Math.min(1, playerVolume / 100));
+        await audio.play();
+        if (sourceLoadId === sourceLoadIdRef.current) setPaused(false);
+      })
       .catch((err) => {
+        if (sourceLoadId !== sourceLoadIdRef.current) return;
         setPaused(true);
         setError(err instanceof Error ? err.message : "Local playback failed");
       });
-  }, [active, localMusicPlay, playerVolume]);
+  }, [active, localMusicPlay, playerVolume, releaseObjectUrl]);
 
   useEffect(() => {
     if (localMusicVolume != null) setPlayerVolume(localMusicVolume);
@@ -172,10 +212,20 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
 
   useEffect(() => {
     if (active) return;
+    sourceLoadIdRef.current += 1;
     audioRef.current?.pause();
+    releaseObjectUrl();
     setNowPlaying(null);
     setPaused(true);
-  }, [active]);
+  }, [active, releaseObjectUrl]);
+
+  useEffect(
+    () => () => {
+      sourceLoadIdRef.current += 1;
+      releaseObjectUrl();
+    },
+    [releaseObjectUrl],
+  );
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -192,8 +242,13 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
   };
 
   const close = () => {
-    audioRef.current?.pause();
-    if (audioRef.current) audioRef.current.currentTime = 0;
+    sourceLoadIdRef.current += 1;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute("src");
+      audioRef.current.load();
+    }
+    releaseObjectUrl();
     setNowPlaying(null);
     setPaused(true);
     setError(null);
@@ -291,8 +346,8 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
           MUSIC_NEUTRAL_ICON_CLASS,
           MUSIC_NEUTRAL_ICON_HOVER_CLASS,
         )}
-        title={volumeMuted ? "Unmute" : "Mute"}
-        aria-label={volumeMuted ? "Unmute" : "Mute"}
+        title={volumeMuted ?localizeUi("ui.game.gamevolumemixer.unmute") :localizeUi("ui.game.gamevolumemixer.mute")}
+        aria-label={volumeMuted ?localizeUi("ui.game.gamevolumemixer.unmute") :localizeUi("ui.game.gamevolumemixer.mute")}
       >
         <VolumeIcon size="0.75rem" />
       </button>
@@ -304,8 +359,8 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
         value={playerVolume}
         onChange={(event) => setPlayerVolume(Number(event.target.value))}
         className="mari-local-music-volume-slider w-full"
-        title="Volume"
-        aria-label="Custom music volume"
+        title={localizeUi("game.toolbar.volume")}
+        aria-label={localizeUi("ui.chat.localmusicplayer.customMusicVolume")}
         style={{ "--range-progress": `${playerVolume}%` } as CSSProperties}
       />
     </div>
@@ -343,7 +398,7 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
             MUSIC_NEUTRAL_ACTION_BG_CLASS,
             MUSIC_NEUTRAL_ACTION_TEXT_CLASS,
           )}
-          aria-label={paused ? "Play" : "Pause"}
+          aria-label={paused ?localizeUi("ui.chat.localmusicplayer.play") :localizeUi("ui.chat.localmusicplayer.pause")}
         >
           {paused ? <Play size="0.8125rem" className="translate-x-px fill-current" /> : <Pause size="0.8125rem" />}
         </button>
@@ -357,7 +412,7 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
             MUSIC_NEUTRAL_ICON_CLASS,
             MUSIC_NEUTRAL_ICON_HOVER_CLASS,
           )}
-          aria-label="Stop"
+          aria-label={localizeUi("ui.chat.summarypopover.stop")}
         >
           <X size="0.8125rem" />
         </button>
@@ -399,9 +454,7 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
               >
                 <div className="mb-1 flex items-center gap-1">
                   <GripVertical size="0.875rem" className={MUSIC_NEUTRAL_ICON_CLASS} />
-                  <span className={cn("flex-1 truncate text-[0.625rem] font-medium", MUSIC_NEUTRAL_ICON_CLASS)}>
-                    Custom
-                  </span>
+                  <span className={cn("flex-1 truncate text-[0.625rem] font-medium", MUSIC_NEUTRAL_ICON_CLASS)}>{localizeUi("settings.notifications.customSound.status.custom")}</span>
                   <button
                     type="button"
                     onPointerDown={(event) => event.stopPropagation()}
@@ -417,7 +470,7 @@ export function LocalMusicPlayer({ mobile = false }: { mobile?: boolean } = {}) 
                       MUSIC_NEUTRAL_ICON_CLASS,
                       MUSIC_NEUTRAL_ICON_HOVER_CLASS,
                     )}
-                    title="Close player"
+                    title={localizeUi("ui.chat.localmusicplayer.closePlayer")}
                   >
                     <X size="0.875rem" />
                   </button>

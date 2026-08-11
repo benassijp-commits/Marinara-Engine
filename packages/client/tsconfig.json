@@ -14,6 +14,8 @@
     "isolatedModules": true,
     "noEmit": true,
     "declaration": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "paths": {
       "@/*": ["./src/*"]
     }

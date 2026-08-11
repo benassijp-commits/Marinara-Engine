@@ -1,5 +1,5 @@
 // ──────────────────────────────────────────────
-// React Query: Chat Preset hooks
+// React Query: chat settings profiles (legacy hook/route names retain "ChatPreset")
 // ──────────────────────────────────────────────
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api-client";
@@ -9,8 +9,6 @@ import type { Chat, ChatMode, ChatPreset, ChatPresetSettings } from "@marinara-e
 export const chatPresetKeys = {
   all: ["chat-presets"] as const,
   list: (mode?: ChatMode | null) => [...chatPresetKeys.all, "list", mode ?? "all"] as const,
-  detail: (id: string) => [...chatPresetKeys.all, "detail", id] as const,
-  active: (mode: ChatMode) => [...chatPresetKeys.all, "active", mode] as const,
 };
 
 export function useChatPresets(mode?: ChatMode | null) {
@@ -18,24 +16,6 @@ export function useChatPresets(mode?: ChatMode | null) {
     queryKey: chatPresetKeys.list(mode ?? null),
     queryFn: () => api.get<ChatPreset[]>(mode ? `/chat-presets?mode=${encodeURIComponent(mode)}` : "/chat-presets"),
     staleTime: 60_000,
-  });
-}
-
-export function useActiveChatPreset(mode: ChatMode | null) {
-  return useQuery({
-    queryKey: mode ? chatPresetKeys.active(mode) : chatPresetKeys.all,
-    queryFn: () => api.get<ChatPreset | null>(`/chat-presets/active/${mode}`),
-    enabled: !!mode,
-    staleTime: 60_000,
-  });
-}
-
-export function useCreateChatPreset() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { name: string; mode: ChatMode; settings?: ChatPresetSettings }) =>
-      api.post<ChatPreset>("/chat-presets", data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: chatPresetKeys.all }),
   });
 }
 
@@ -90,7 +70,7 @@ export function useImportChatPreset() {
   });
 }
 
-/** Apply a preset's settings to an existing chat. */
+/** Apply a settings profile to an existing chat. */
 export function useApplyChatPreset() {
   const qc = useQueryClient();
   return useMutation({

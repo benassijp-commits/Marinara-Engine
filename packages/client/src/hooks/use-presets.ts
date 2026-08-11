@@ -4,14 +4,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
-import type {
-  PromptPreset,
-  PromptGroup,
-  PromptSection,
-  ChoiceBlock,
-  GenerationParameters,
-  ChatMLMessage,
-} from "@marinara-engine/shared";
+import type { PromptPreset, PromptGroup, PromptSection, ChoiceBlock } from "@marinara-engine/shared";
 
 // ── Query Keys ──
 
@@ -24,7 +17,6 @@ export const presetKeys = {
   groups: (presetId: string) => [...presetKeys.all, "groups", presetId] as const,
   choiceBlocks: (presetId: string) => [...presetKeys.all, "choices", presetId] as const,
   sectionChoice: (sectionId: string) => [...presetKeys.all, "section-choice", sectionId] as const,
-  preview: (presetId: string) => [...presetKeys.all, "preview", presetId] as const,
   default: () => [...presetKeys.all, "default"] as const,
 };
 
@@ -40,15 +32,6 @@ export function usePresets() {
   return useQuery({
     queryKey: presetKeys.list(),
     queryFn: () => api.get<PromptPreset[]>("/prompts"),
-    staleTime: 5 * 60_000,
-  });
-}
-
-export function usePreset(id: string | null) {
-  return useQuery({
-    queryKey: presetKeys.detail(id ?? ""),
-    queryFn: () => api.get<PromptPreset>(`/prompts/${id}`),
-    enabled: !!id,
     staleTime: 5 * 60_000,
   });
 }
@@ -75,16 +58,6 @@ export function useDefaultPreset() {
     queryKey: presetKeys.default(),
     queryFn: () => api.get<PromptPreset | null>("/prompts/default"),
     staleTime: 5 * 60_000,
-  });
-}
-
-export function useCreatePreset() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: Record<string, unknown>) => api.post<PromptPreset>("/prompts", data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: presetKeys.list() });
-    },
   });
 }
 
@@ -139,14 +112,6 @@ export function useSetDefaultPreset() {
 //  Groups
 // ═══════════════════════════════════════════════
 
-export function usePresetGroups(presetId: string | null) {
-  return useQuery({
-    queryKey: presetKeys.groups(presetId ?? ""),
-    queryFn: () => api.get<PromptGroup[]>(`/prompts/${presetId}/groups`),
-    enabled: !!presetId,
-  });
-}
-
 export function useCreateGroup() {
   const qc = useQueryClient();
   return useMutation({
@@ -184,29 +149,9 @@ export function useDeleteGroup() {
   });
 }
 
-export function useReorderGroups() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ presetId, groupIds }: { presetId: string; groupIds: string[] }) =>
-      api.put(`/prompts/${presetId}/groups/reorder`, { groupIds }),
-    onSuccess: (_data, variables) => {
-      qc.invalidateQueries({ queryKey: presetKeys.groups(variables.presetId) });
-      qc.invalidateQueries({ queryKey: presetKeys.full(variables.presetId) });
-    },
-  });
-}
-
 // ═══════════════════════════════════════════════
 //  Sections
 // ═══════════════════════════════════════════════
-
-export function usePresetSections(presetId: string | null) {
-  return useQuery({
-    queryKey: presetKeys.sections(presetId ?? ""),
-    queryFn: () => api.get<PromptSection[]>(`/prompts/${presetId}/sections`),
-    enabled: !!presetId,
-  });
-}
 
 export function useCreateSection() {
   const qc = useQueryClient();
@@ -273,14 +218,6 @@ export function useReorderSections() {
 // ═══════════════════════════════════════════════
 //  Preset Variables (Choice Blocks)
 // ═══════════════════════════════════════════════
-
-export function usePresetVariables(presetId: string | null) {
-  return useQuery({
-    queryKey: presetKeys.choiceBlocks(presetId ?? ""),
-    queryFn: () => api.get<ChoiceBlock[]>(`/prompts/${presetId}/variables`),
-    enabled: !!presetId,
-  });
-}
 
 export function useCreateVariable() {
   const qc = useQueryClient();
@@ -352,28 +289,5 @@ export function useReorderVariables() {
       qc.invalidateQueries({ queryKey: presetKeys.choiceBlocks(presetId) });
       qc.invalidateQueries({ queryKey: presetKeys.full(presetId) });
     },
-  });
-}
-
-// ═══════════════════════════════════════════════
-//  Preview
-// ═══════════════════════════════════════════════
-
-export function usePreviewPreset() {
-  return useMutation({
-    mutationFn: ({
-      presetId,
-      chatId,
-      choices,
-    }: {
-      presetId: string;
-      chatId: string;
-      choices?: Record<string, string>;
-    }) =>
-      api.post<{
-        messages: ChatMLMessage[];
-        parameters: GenerationParameters;
-        messageCount: number;
-      }>(`/prompts/${presetId}/preview`, { chatId, choices }),
   });
 }

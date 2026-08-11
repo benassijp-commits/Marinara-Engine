@@ -1,6 +1,4 @@
 import type { BuiltInAgentManifest } from "./agent-manifest.types.js";
-/** The lightweight Engine ships no agent definitions; packages populate the active registry. */
-export const BUNDLED_AGENT_MANIFESTS: readonly BuiltInAgentManifest[] = [];
 
 /** Active runtime registry. Fresh installs populate it only from downloaded packages. */
 export const BUILT_IN_AGENT_MANIFESTS: BuiltInAgentManifest[] = [];
@@ -13,14 +11,11 @@ export function getBuiltInAgentManifest(agentId: string): BuiltInAgentManifest |
   return BUILT_IN_AGENT_MANIFESTS.find((agent) => agent.id === agentId) ?? null;
 }
 
-export function getBuiltInAgentDefaultPrompt(agentId: string): string {
-  return getBuiltInAgentManifest(agentId)?.defaultPromptTemplate ?? "";
-}
-
-export function isBuiltInAgentHiddenFromLibrary(agentId: string): boolean {
-  return getBuiltInAgentManifest(agentId)?.libraryHidden === true;
-}
-
 export function isBuiltInAgentRuntimeDisabled(agentId: string): boolean {
   return getBuiltInAgentManifest(agentId)?.runtimeDisabled === true;
+}
+
+/** Dedicated Engine workflows invoke host-managed agents outside the generic agent pipeline. */
+export function isBuiltInAgentHostManaged(agentId: string): boolean {
+  return getBuiltInAgentManifest(agentId)?.execution === "host";
 }

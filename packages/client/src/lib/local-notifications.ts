@@ -1,4 +1,4 @@
-export type LocalNotificationPermission = NotificationPermission | "unsupported";
+export type LocalNotificationPermission = NotificationPermission | "insecure" | "unsupported";
 export type NativeNotificationPermission = "default" | "denied" | "granted" | "unsupported";
 
 type MarinaraAndroidNotificationBridge = {
@@ -15,7 +15,9 @@ export type LocalMessageNotificationOptions = {
 };
 
 function getBrowserNotificationPermission(): LocalNotificationPermission {
-  if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
+  if (typeof window === "undefined") return "unsupported";
+  if (window.isSecureContext === false) return "insecure";
+  if (!("Notification" in window)) return "unsupported";
   return window.Notification.permission;
 }
 
@@ -67,7 +69,8 @@ export async function requestNativeNotificationPermission(): Promise<NativeNotif
 }
 
 async function requestBrowserNotificationPermission(): Promise<LocalNotificationPermission> {
-  if (typeof window === "undefined" || !("Notification" in window)) return "unsupported";
+  const current = getBrowserNotificationPermission();
+  if (current === "insecure" || current === "unsupported") return current;
   if (window.Notification.permission !== "default") return window.Notification.permission;
   return window.Notification.requestPermission();
 }

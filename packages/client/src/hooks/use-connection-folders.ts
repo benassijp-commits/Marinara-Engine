@@ -6,7 +6,6 @@ import { api } from "../lib/api-client";
 import type {
   ConnectionFolder,
   CreateConnectionFolderInput,
-  MoveConnectionToFolderInput,
   ReorderConnectionsInFolderInput,
   ReorderFoldersInput,
   UpdateFolderInput,
@@ -37,10 +36,8 @@ export function useCreateConnectionFolder() {
 export function useUpdateConnectionFolder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      id,
-      ...data
-    }: UpdateFolderInput & { id: string }) => api.patch<ConnectionFolder>(`/connection-folders/${id}`, data),
+    mutationFn: ({ id, ...data }: UpdateFolderInput & { id: string }) =>
+      api.patch<ConnectionFolder>(`/connection-folders/${id}`, data),
     onSuccess: () => qc.invalidateQueries({ queryKey: connectionFolderKeys.list() }),
   });
 }
@@ -62,14 +59,6 @@ export function useReorderConnectionFolders() {
     mutationFn: (orderedIds: ReorderFoldersInput["orderedIds"]) =>
       api.post("/connection-folders/reorder", { orderedIds } satisfies ReorderFoldersInput),
     onSuccess: () => qc.invalidateQueries({ queryKey: connectionFolderKeys.list() }),
-  });
-}
-
-export function useMoveConnection() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data: MoveConnectionToFolderInput) => api.post("/connection-folders/move-connection", data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: connectionKeys.list() }),
   });
 }
 

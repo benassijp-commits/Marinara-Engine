@@ -6,6 +6,7 @@ import {
   noodleGeneratedRefreshSchema,
   type NoodleGeneratedRefresh,
 } from "@marinara-engine/shared";
+import { parseGameJsonishSequence } from "../game/jsonish.js";
 import { normalizeNoodleHandle } from "./noodle-handle.js";
 
 type RefreshCollection = keyof NoodleGeneratedRefresh;
@@ -39,6 +40,71 @@ export function validateNoodleGeneratedRefresh(
         knownHandles.has(normalizeNoodleHandle(follow.targetHandle)),
     );
   return hasUsableAttribution ? null : "the response used no selected participant handle";
+}
+
+function normalizedGeneratedContentKey(handle: string, content: string): string {
+  const normalizedContent = content.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
+  return `${normalizeNoodleHandle(handle)}\u0000${normalizedContent}`;
+}
+
+/**
+ * Keep the first generated post or reply for each account and discard later
+ * copies. Posts take precedence because the response groups posts before
+ * interactions. Filtering before media preparation ensures a copy never
+ * reaches image generation or persistence.
+ */
+export function deduplicateGeneratedNoodleContent(generated: NoodleGeneratedRefresh): {
+  generated: NoodleGeneratedRefresh;
+  removedCount: number;
+} {
+  const seenContent = new Set<string>();
+  const retainedPosts = new Map<string, { index: number; tempId: string | undefined }>();
+  const tempIdAliases = new Map<string, string>();
+  let removedCount = 0;
+  const keepFirst = (key: string): boolean => {
+    if (seenContent.has(key)) {
+      removedCount += 1;
+      return false;
+    }
+    seenContent.add(key);
+    return true;
+  };
+
+  const posts: NoodleGeneratedRefresh["posts"] = [];
+  for (const post of generated.posts) {
+    const key = normalizedGeneratedContentKey(post.authorHandle, post.content);
+    if (keepFirst(key)) {
+      retainedPosts.set(key, { index: posts.length, tempId: post.tempId });
+      posts.push(post);
+      continue;
+    }
+    if (!post.tempId) continue;
+
+    const retained = retainedPosts.get(key);
+    if (!retained) continue;
+    if (!retained.tempId) {
+      const retainedPost = posts[retained.index];
+      if (!retainedPost) continue;
+      retained.tempId = post.tempId;
+      posts[retained.index] = { ...retainedPost, tempId: retained.tempId };
+    }
+    tempIdAliases.set(post.tempId, retained.tempId);
+  }
+
+  const interactions = generated.interactions
+    .filter((interaction) => {
+      if (interaction.type !== "reply" || !interaction.content?.trim()) return true;
+      return keepFirst(normalizedGeneratedContentKey(interaction.actorHandle, interaction.content));
+    })
+    .map((interaction) => {
+      const targetTempId = interaction.targetTempId && tempIdAliases.get(interaction.targetTempId);
+      return targetTempId ? { ...interaction, targetTempId } : interaction;
+    });
+
+  return {
+    generated: { ...generated, posts, interactions },
+    removedCount,
+  };
 }
 
 const collectionSchemas = {
@@ -82,6 +148,41 @@ export function parseNoodleGeneratedRefresh(value: unknown): {
         rejected.push({ collection, index, issueCount: parsed.error.issues.length });
       }
     });
+  }
+
+  return { refresh, rejected };
+}
+
+/**
+ * Recover a complete refresh from adjacent JSON objects. Local models
+ * sometimes emit one object per collection (posts, interactions, follows,
+ * digests) even though the prompt requests a single enclosing object.
+ */
+export function parseNoodleGeneratedRefreshResponse(raw: string): {
+  refresh: NoodleGeneratedRefresh;
+  rejected: RejectedNoodleGeneratedRefreshItem[];
+} {
+  const parsedValues = parseGameJsonishSequence(raw).flatMap((value) => (Array.isArray(value) ? value : [value]));
+  if (parsedValues.length === 1) return parseNoodleGeneratedRefresh(parsedValues[0]);
+
+  const refresh: NoodleGeneratedRefresh = { posts: [], interactions: [], follows: [], digests: [] };
+  const rejected: RejectedNoodleGeneratedRefreshItem[] = [];
+  const sourceOffsets: Record<RefreshCollection, number> = { posts: 0, interactions: 0, follows: 0, digests: 0 };
+
+  for (const value of parsedValues) {
+    const parsed = parseNoodleGeneratedRefresh(value);
+    for (const collection of Object.keys(collectionSchemas) as RefreshCollection[]) {
+      (refresh[collection] as unknown[]).push(...parsed.refresh[collection]);
+      const collectionRejected = parsed.rejected.filter((item) => item.collection === collection);
+      rejected.push(
+        ...collectionRejected.map((item) => ({
+          ...item,
+          index: item.index < 0 ? item.index : item.index + sourceOffsets[collection],
+        })),
+      );
+      sourceOffsets[collection] +=
+        parsed.refresh[collection].length + collectionRejected.filter((item) => item.index >= 0).length;
+    }
   }
 
   return { refresh, rejected };

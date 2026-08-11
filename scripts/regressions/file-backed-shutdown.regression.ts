@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "../../packages/server/src/db/file-query.js";
@@ -55,6 +55,32 @@ try {
   rmSync(storageDir, { recursive: true, force: true });
 }
 
+const malformedRowStorageDir = mkdtempSync(join(tmpdir(), "marinara-file-malformed-row-"));
+process.env.FILE_STORAGE_DIR = malformedRowStorageDir;
+try {
+  const tablesDir = join(malformedRowStorageDir, "tables");
+  const settingsPath = join(tablesDir, "app_settings.json");
+  const originalRows = [{ key: "valid-setting", value: "preserved", updatedAt: "2026-08-01" }, null, "invalid", 42, []];
+  mkdirSync(tablesDir, { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(originalRows));
+
+  const db = await createFileNativeDB();
+  const rows = await db.select().from(appSettings);
+  assert.deepEqual(rows, [{ key: "valid-setting", value: "preserved", updatedAt: "2026-08-01" }]);
+
+  const quarantined = db._fileStore.getQuarantinedTables().find((entry) => entry.table === "app_settings");
+  assert.equal(quarantined?.files.length, 1);
+  const preservedPath = quarantined?.files[0]?.to;
+  assert.ok(preservedPath);
+  assert.deepEqual(JSON.parse(readFileSync(preservedPath, "utf8")), originalRows);
+  assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), [originalRows[0]]);
+
+  await db._fileStore.close();
+  console.info("File-backed malformed-row recovery regression passed.");
+} finally {
+  rmSync(malformedRowStorageDir, { recursive: true, force: true });
+}
+
 const failingStorageDir = mkdtempSync(join(tmpdir(), "marinara-file-close-failure-"));
 process.env.FILE_STORAGE_DIR = failingStorageDir;
 try {
@@ -68,6 +94,95 @@ try {
   await assert.rejects(db._fileStore.close(), expectedFailure);
 } finally {
   rmSync(failingStorageDir, { recursive: true, force: true });
+}
+
+const transactionStorageDir = mkdtempSync(join(tmpdir(), "marinara-file-transaction-"));
+process.env.FILE_STORAGE_DIR = transactionStorageDir;
+try {
+  const db = await createFileNativeDB();
+  await db.insert(appSettings).values({ key: "transaction-value", value: "live", updatedAt: "2026-07-16" });
+  await db._fileStore.flush();
+
+  let releaseTransaction!: () => void;
+  const transactionGate = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let transactionStarted!: () => void;
+  const transactionReady = new Promise<void>((resolve) => {
+    transactionStarted = resolve;
+  });
+  const failedTransaction = db.transaction(async (tx) => {
+    await tx.update(appSettings).set({ value: "imported" }).where(eq(appSettings.key, "transaction-value"));
+    await db._fileStore.flush();
+    transactionStarted();
+    await transactionGate;
+    throw new Error("simulated profile asset promotion failure");
+  });
+  await transactionReady;
+
+  let outsideWriteFinished = false;
+  const outsideWrite = db
+    .insert(appSettings)
+    .values({ key: "outside-write", value: "preserved", updatedAt: "2026-07-16" })
+    .then(() => {
+      outsideWriteFinished = true;
+    });
+  await Promise.resolve();
+  assert.equal(outsideWriteFinished, false, "non-transaction writes must wait for the active transaction");
+
+  releaseTransaction();
+  await assert.rejects(failedTransaction, /simulated profile asset promotion failure/u);
+  await outsideWrite;
+  await db._fileStore.flush();
+
+  const rows = await db.select().from(appSettings);
+  assert.equal(rows.find((row) => row.key === "transaction-value")?.value, "live");
+  assert.equal(rows.find((row) => row.key === "outside-write")?.value, "preserved");
+  const persistedRows = JSON.parse(
+    readFileSync(join(transactionStorageDir, "tables", "app_settings.json"), "utf8"),
+  ) as Array<{ key: string; value: string }>;
+  assert.equal(persistedRows.find((row) => row.key === "transaction-value")?.value, "live");
+  assert.equal(persistedRows.find((row) => row.key === "outside-write")?.value, "preserved");
+  await db._fileStore.close();
+  console.info("File-backed serialized durable transaction regression passed.");
+} finally {
+  rmSync(transactionStorageDir, { recursive: true, force: true });
+}
+
+const transactionFlushFailureDir = mkdtempSync(join(tmpdir(), "marinara-file-transaction-flush-failure-"));
+process.env.FILE_STORAGE_DIR = transactionFlushFailureDir;
+let rejectNextTransactionWrite = false;
+try {
+  const expectedFailure = new Error("simulated transaction flush failure");
+  const db = await createFileNativeDB({
+    beforeTableWrite: (table) => {
+      if (table !== "app_settings" || !rejectNextTransactionWrite) return;
+      rejectNextTransactionWrite = false;
+      throw expectedFailure;
+    },
+  });
+  await db.insert(appSettings).values({ key: "flush-rollback", value: "live", updatedAt: "2026-07-16" });
+  await db._fileStore.flush();
+
+  await assert.rejects(
+    db.transaction(async (tx) => {
+      await tx.update(appSettings).set({ value: "imported" }).where(eq(appSettings.key, "flush-rollback"));
+      rejectNextTransactionWrite = true;
+      await db._fileStore.flush();
+    }),
+    expectedFailure,
+  );
+
+  const rows = await db.select().from(appSettings);
+  assert.equal(rows.find((row) => row.key === "flush-rollback")?.value, "live");
+  const persistedRows = JSON.parse(
+    readFileSync(join(transactionFlushFailureDir, "tables", "app_settings.json"), "utf8"),
+  ) as Array<{ key: string; value: string }>;
+  assert.equal(persistedRows.find((row) => row.key === "flush-rollback")?.value, "live");
+  await db._fileStore.close();
+  console.info("File-backed failed transaction flush rollback regression passed.");
+} finally {
+  rmSync(transactionFlushFailureDir, { recursive: true, force: true });
 }
 
 const packagedSchemaStorageDir = mkdtempSync(join(tmpdir(), "marinara-file-package-schema-"));
