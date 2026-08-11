@@ -565,7 +565,7 @@
         "Node name for S&R": "LoraTagLoader"
       },
       "widgets_values": [
-        "masterpiece, best quality, amazing quality, very aesthetic, highres, absurdres, expressive, detailed background, detailed pupils, 20r0j_2, r0kud3n4shi, mass, solo, human, <lora:furr_mass_SDXL:0>, <lora:Rokudenashi_Style_V2_ILXL:0.15>, <lora:zoroj_ill11:0>, <lora:Teterun:0>, 1man, male focus, adult, short hair, brown hair, stubble, beard, glasses, black t-shirt, print t-shirt, leather bracelet, standing, holding book, looking at viewer, classroom, desk, measuring tape, digital scale, (muscular:-0.2), (obese:1.3)"
+        "masterpiece, best quality, amazing quality, very aesthetic, highres, absurdres, expressive, detailed background, detailed pupils, 20r0j_2, r0kud3n4shi, mass, solo, human, <lora:furr_mass_SDXL:0>, <lora:Rokudenashi_Style_V2_ILXL:0.15>, <lora:ripped-saurian_illustrious_v:0>, <lora:Teterun:0>, 1man, male focus, adult, short hair, brown hair, stubble, beard, glasses, black t-shirt, print t-shirt, leather bracelet, standing, holding book, looking at viewer, classroom, desk, measuring tape, digital scale, (muscular:-0.2), (obese:1.3)"
       ]
     }
   ],
